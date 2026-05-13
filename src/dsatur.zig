@@ -397,7 +397,7 @@ fn targetPosition(
     return positions_per_color;
 }
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
@@ -474,6 +474,83 @@ pub fn main() !void {
         alloc.free(aod_targets);
     }
     debugAodTargets(&g, aod_order.items, aod_targets, edge_colors);
+
+    // ----------
+    // 3
+    // ----------
+    const schedule = try logicalSchedule(alloc, &g, edge_colors, slm_order, aod_order.items, aod_targets);
+    defer {
+        for (1..schedule.max_color + 1) |c| {
+            alloc.free(schedule.gates_per_color[c]);
+        }
+        alloc.free(schedule.gates_per_color);
+    }
+
+    const io = init.io;
+    try writeToJsonCompact(alloc, io, &schedule, "schedule.json");
+
+    std.debug.print(">> Gate compilation completed", .{});
+}
+
+const Gate = struct { u: usize, v: usize };
+
+const Schedule = struct {
+    aod_order: []const usize,
+    slm_order: []const usize,
+    aod_targets_per_color: [][]usize,
+    gates_per_color: [][]Gate,
+    max_color: usize,
+};
+
+fn logicalSchedule(
+    allocator: std.mem.Allocator,
+    g: *Graph,
+    edge_color: [][]?usize,
+    slm_order: []const usize,
+    aod_order: []const usize,
+    aod_targets: [][]usize,
+) !Schedule {
+    // Find max color
+    var max_c: usize = 0;
+    for (0..g.n) |u| {
+        for (0..g.n) |v| {
+            if (edge_color[u][v]) |c| {
+                max_c = @max(max_c, c);
+            }
+        }
+    }
+
+    // Collect gates per color.
+    var gates_per_color = try allocator.alloc([]Gate, max_c + 1);
+    errdefer {
+        for (1..max_c + 1) |c| allocator.free(gates_per_color[c]);
+        allocator.free(gates_per_color);
+    }
+
+    for (1..max_c + 1) |c| {
+        var list: std.ArrayList(Gate) = .empty;
+        defer list.deinit(allocator);
+
+        for (0..g.n) |u| {
+            var e = g.edges[u];
+            while (e) |edge| : (e = edge.next) {
+                const v = edge.y;
+                if (u < v and edge_color[u][v] == c) {
+                    try list.append(allocator, .{ .u = u, .v = v });
+                }
+            }
+        }
+
+        gates_per_color[c] = try list.toOwnedSlice(allocator);
+    }
+
+    return Schedule{
+        .aod_order = aod_order,
+        .slm_order = slm_order,
+        .aod_targets_per_color = aod_targets,
+        .gates_per_color = gates_per_color,
+        .max_color = max_c,
+    };
 }
 
 fn debugAodTargets(
@@ -514,4 +591,101 @@ fn debugAodTargets(
             }
         }
     }
+}
+
+fn writeToJson(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    schedule: *const Schedule,
+    filename: []const u8,
+) !void {
+    const JsonSchedule = struct {
+        aod_order: []const usize,
+        slm_order: []const usize,
+        aod_targets_per_color: []const []const usize,
+        gates_per_color: []const []const Gate,
+        max_color: usize,
+    };
+
+    const json_val = JsonSchedule{
+        .aod_order = schedule.aod_order,
+        .slm_order = schedule.slm_order,
+        .aod_targets_per_color = schedule.aod_targets_per_color[1..],
+        .gates_per_color = schedule.gates_per_color[1..],
+        .max_color = schedule.max_color,
+    };
+
+    const json_data = try std.json.Stringify.valueAlloc(
+        allocator,
+        json_val,
+        .{ .whitespace = .indent_2 },
+    );
+    defer allocator.free(json_data);
+
+    const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
+    defer file.close(io);
+    try file.writePositionalAll(io, json_data, 0);
+}
+
+fn writeToJsonCompact(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    schedule: *const Schedule,
+    filename: []const u8,
+) !void {
+    var buf: std.Io.Writer.Allocating = .init(allocator);
+    defer buf.deinit();
+    const w = &buf.writer;
+
+    try w.writeAll("{\n");
+
+    // aod_order
+    try w.writeAll("  \"aod_order\": [");
+    for (schedule.aod_order, 0..) |v, i| {
+        if (i > 0) try w.writeAll(", ");
+        try w.print("{d}", .{v});
+    }
+    try w.writeAll("],\n");
+
+    // slm_order
+    try w.writeAll("  \"slm_order\": [");
+    for (schedule.slm_order, 0..) |v, i| {
+        if (i > 0) try w.writeAll(", ");
+        try w.print("{d}", .{v});
+    }
+    try w.writeAll("],\n");
+
+    // aod_targets_per_color
+    try w.writeAll("  \"aod_targets_per_color\": [\n");
+    const targets = schedule.aod_targets_per_color[1..];
+    for (targets, 0..) |row, ci| {
+        try w.writeAll("    [");
+        for (row, 0..) |v, i| {
+            if (i > 0) try w.writeAll(", ");
+            try w.print("{d}", .{v});
+        }
+        try w.writeAll(if (ci < targets.len - 1) "],\n" else "]\n");
+    }
+    try w.writeAll("  ],\n");
+
+    // gates_per_color
+    try w.writeAll("  \"gates_per_color\": [\n");
+    const gates = schedule.gates_per_color[1..];
+    for (gates, 0..) |layer, ci| {
+        try w.writeAll("    [");
+        for (layer, 0..) |gate, i| {
+            if (i > 0) try w.writeAll(", ");
+            try w.print("{{\"u\": {d}, \"v\": {d}}}", .{ gate.u, gate.v });
+        }
+        try w.writeAll(if (ci < gates.len - 1) "],\n" else "]\n");
+    }
+    try w.writeAll("  ],\n");
+
+    // max_color
+    try w.print("  \"max_color\": {d}\n", .{schedule.max_color});
+    try w.writeAll("}");
+
+    const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
+    defer file.close(io);
+    try file.writePositionalAll(io, buf.written(), 0);
 }
