@@ -463,6 +463,8 @@ pub fn main() !void {
     for (0..g.n) |i| {
         if (I[i]) try aod_order.append(alloc, i);
     }
+    // FIXME
+    std.mem.reverse(usize, aod_order.items);
 
     const aod_targets = try targetPosition(alloc, &g, aod_order.items, slm_order, edge_colors);
     defer {
@@ -502,11 +504,11 @@ fn debugAodTargets(
             const target = targets[i];
             if (partner) |p| {
                 // ACTIVE
-                std.debug.print("  AOD {d} -> ACTIVE partner {d} | column {d} (shift={d})\n", .{ aod_id, p, target, shift });
+                std.debug.print("  AOD {d} (qubit {d}) -> ACTIVE partner {d} | column {d} (shift={d})\n", .{ i, aod_id, p, target, shift });
                 current_col = target + 1;
             } else {
                 // RESTING
-                std.debug.print("  AOD {d} -> RESTING          | column {d} (shift={d} -> {d})\n", .{ aod_id, target, shift, shift + 1 });
+                std.debug.print("  AOD {d} (qubit {d}) -> RESTING          | column {d} (shift={d} -> {d})\n", .{ i, aod_id, target, shift, shift + 1 });
                 current_col = target + 1;
                 shift += 1;
             }
