@@ -331,6 +331,72 @@ fn topoSort(allocator: std.mem.Allocator, g: Graph, I: []const bool) ![]usize {
     return order.toOwnedSlice(allocator);
 }
 
+fn targetPosition(
+    allocator: std.mem.Allocator,
+    g: *Graph,
+    aod_order: []const usize,
+    slm_order: []const usize,
+    edge_color: [][]?usize,
+) ![][]usize {
+    // 1. Precompute max color used.
+    var max_c: usize = 0;
+    for (0..g.n) |u| {
+        for (0..g.n) |v| {
+            if (edge_color[u][v]) |c| {
+                max_c = @max(max_c, c);
+            }
+        }
+    }
+    if (max_c == 0) return error.NoColors;
+
+    // 2. Precompute slm_pos[slm_id] = its index in slm_order
+    var slm_pos = try allocator.alloc(usize, g.n);
+    defer allocator.free(slm_pos);
+    for (0..slm_order.len) |i| {
+        slm_pos[slm_order[i]] = i;
+    }
+
+    // 3. Allocate result: one slice per color.
+    var positions_per_color = try allocator.alloc([]usize, max_c + 1);
+    for (1..max_c + 1) |c| {
+        positions_per_color[c] = try allocator.alloc(usize, aod_order.len);
+    }
+
+    // 4. For each color, compute targets with the shift trick.
+    for (1..max_c + 1) |c| {
+        var targets = positions_per_color[c];
+        var shift: usize = 0;
+        var current_column: usize = 0;
+
+        for (aod_order, 0..) |aod, i| {
+            // Check if AOD has a partner for this color.
+            var partnet_y: ?usize = null;
+            var e = g.edges[aod];
+            while (e) |edge| : (e = edge.next) {
+                if (edge_color[aod][edge.y] == c) {
+                    partnet_y = edge.y;
+                    break;
+                }
+            }
+
+            if (partnet_y) |y| {
+                // ACTIVE: move to the shifted SLM position.
+                const base = slm_pos[y];
+                const target = base + shift;
+                targets[i] = target;
+                current_column = target + 1;
+            } else {
+                // INACTIVE: park in the resting position at the current column.
+                targets[i] = current_column;
+                current_column += 1;
+                shift += 1;
+            }
+        }
+    }
+
+    return positions_per_color;
+}
+
 pub fn main() !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -356,6 +422,10 @@ pub fn main() !void {
     try g.addEdge(3, 2);
     try g.addEdge(4, 2);
 
+    // ----------
+    // 0
+    // ----------
+
     const I = try independentSet(alloc, g);
     defer alloc.free(I);
     for (I, 0..) |v, i| {
@@ -369,6 +439,10 @@ pub fn main() !void {
     }
     printEdgeColors(g, edge_colors);
 
+    // ----------
+    // 1
+    // ----------
+
     // Build the SLM dependency DAQ from colors.
     var dep_graph = try slmGraph(alloc, &g, I, edge_colors);
     defer dep_graph.deinit();
@@ -379,4 +453,63 @@ pub fn main() !void {
     defer alloc.free(slm_order);
     std.debug.print(">> Topological Order of SLM Qubits\n", .{});
     std.debug.print("{any}\n", .{slm_order});
+
+    // ----------
+    // 2
+    // ----------
+
+    var aod_order: std.ArrayList(usize) = .empty;
+    defer aod_order.deinit(alloc);
+    for (0..g.n) |i| {
+        if (I[i]) try aod_order.append(alloc, i);
+    }
+
+    const aod_targets = try targetPosition(alloc, &g, aod_order.items, slm_order, edge_colors);
+    defer {
+        for (1..aod_targets.len) |c| {
+            alloc.free(aod_targets[c]);
+        }
+        alloc.free(aod_targets);
+    }
+    debugAodTargets(&g, aod_order.items, aod_targets, edge_colors);
+}
+
+fn debugAodTargets(
+    g: *Graph,
+    aod_order: []const usize,
+    aod_targets: [][]usize,
+    edge_color: [][]?usize,
+) void {
+    std.debug.print(">> AOD Order\n", .{});
+
+    for (1..aod_targets.len) |c| {
+        const targets = aod_targets[c];
+        std.debug.print("Color {d} (parallel CZ layer):\n", .{c});
+
+        var shift: usize = 0;
+        var current_col: usize = 0;
+
+        for (aod_order, 0..) |aod_id, i| {
+            var partner: ?usize = null;
+            var e = g.edges[aod_id];
+            while (e) |edge| : (e = edge.next) {
+                if (edge_color[aod_id][edge.y] == c) {
+                    partner = edge.y;
+                    break;
+                }
+            }
+
+            const target = targets[i];
+            if (partner) |p| {
+                // ACTIVE
+                std.debug.print("  AOD {d} -> ACTIVE partner {d} | column {d} (shift={d})\n", .{ aod_id, p, target, shift });
+                current_col = target + 1;
+            } else {
+                // RESTING
+                std.debug.print("  AOD {d} -> RESTING          | column {d} (shift={d} -> {d})\n", .{ aod_id, target, shift, shift + 1 });
+                current_col = target + 1;
+                shift += 1;
+            }
+        }
+    }
 }
