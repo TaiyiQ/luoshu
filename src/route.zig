@@ -1,8 +1,9 @@
 const std = @import("std");
 
 const INF = std.math.maxInt(usize);
+const MIN = std.math.minInt(i32);
 
-const Adj = struct { y: usize, col: usize };
+const Adj = struct { y: usize, col: i32 };
 
 const SortCtx = struct {
     g: *Graph,
@@ -11,7 +12,7 @@ const SortCtx = struct {
 
 const EdgeNode = struct {
     y: usize,
-    color: ?usize,
+    color: ?i32,
     next: ?*EdgeNode,
 };
 
@@ -160,8 +161,8 @@ fn dsatur(allocator: std.mem.Allocator, g: *Graph, I: []const bool) !void {
     }
 }
 
-fn leastAdmissible(g: *Graph, v: usize, y: usize) usize {
-    var forbidden = std.AutoHashMap(usize, void).init(g.allocator);
+fn leastAdmissible(g: *Graph, v: usize, y: usize) i32 {
+    var forbidden = std.AutoHashMap(i32, void).init(g.allocator);
     defer forbidden.deinit();
 
     // All edges from v.
@@ -177,7 +178,7 @@ fn leastAdmissible(g: *Graph, v: usize, y: usize) usize {
     }
 
     // Max color from adj edges not sharing the AOD node v.
-    var order_max: usize = 0;
+    var order_max: i32 = -1;
 
     // All edges from y.
     // Do not share AOD node v.
@@ -186,6 +187,7 @@ fn leastAdmissible(g: *Graph, v: usize, y: usize) usize {
     while (e) |edge| : (e = edge.next) {
         if (edge.y != v) {
             if (edge.color) |c| {
+                std.debug.print(">>>>> {} \n", .{c});
                 _ = forbidden.getOrPut(c) catch {};
                 order_max = @max(order_max, c);
             }
@@ -193,14 +195,16 @@ fn leastAdmissible(g: *Graph, v: usize, y: usize) usize {
     }
 
     // Smallest k > order_max that is not forbidden.
-    var k: usize = order_max + 1;
+    var k: i32 = order_max + 1;
     while (true) : (k += 1) {
-        if (forbidden.get(k) == null) return k;
+        if (forbidden.get(k) == null) {
+            return k;
+        }
     }
 }
 
 fn countSaturation(g: *Graph, u: usize, v: usize) usize {
-    var seen = std.AutoHashMap(usize, void).init(g.allocator);
+    var seen = std.AutoHashMap(i32, void).init(g.allocator);
     defer seen.deinit();
 
     // Edges from u.
@@ -318,14 +322,105 @@ fn topoSort(allocator: std.mem.Allocator, g: Graph, I: []const bool) ![]usize {
     return order.toOwnedSlice(allocator);
 }
 
-fn targetPosition(
+fn matchingForColor(
     allocator: std.mem.Allocator,
-    g: *Graph,
+    g: *const Graph,
+    aod_order: []const usize,
+    I: []const bool,
+    color: i32,
+) ![]?usize {
+    if (aod_order.len == 0) {
+        return try allocator.alloc(?usize, 0);
+    }
+
+    const matching = try allocator.alloc(?usize, aod_order.len);
+    @memset(matching, null);
+    errdefer allocator.free(matching);
+
+    for (aod_order, 0..) |x, i| {
+        var e = g.edges[x];
+        while (e) |edge| : (e = edge.next) {
+            if (edge.color == color and !I[edge.y]) {
+                matching[i] = edge.y;
+                break;
+            }
+        }
+    }
+
+    return matching;
+}
+
+const Slot = struct {
+    aod: []usize,
+    slm: []usize,
+};
+
+fn timestepPositions(
+    allocator: std.mem.Allocator,
     aod_order: []const usize,
     slm_order: []const usize,
-) ![][]usize {
+    matching: []const ?usize,
+) !Slot {
+    const n_aod = aod_order.len;
+    const n_slm = slm_order.len;
+
+    var aod_slot = try allocator.alloc(usize, n_aod);
+    errdefer allocator.free(aod_slot);
+
+    var slm_slot = try allocator.alloc(usize, n_slm);
+    errdefer allocator.free(slm_slot);
+
+    //    var slm_idx = try allocator.alloc(?usize, if (n_slm == 0) 1 else n_slm);
+    var max_id: usize = 0;
+    for (slm_order) |v| max_id = @max(max_id, v);
+    var slm_idx = try allocator.alloc(?usize, max_id + 1);
+    @memset(slm_idx, null);
+    defer allocator.free(slm_idx);
+
+    for (slm_order, 0..) |v, idx| {
+        if (v >= slm_idx.len) return error.InvalidNodeId;
+        slm_idx[v] = idx;
+    }
+
+    var current_slot: usize = 0;
+    var slm_ptr: usize = 0;
+
+    for (0..n_aod) |i| {
+        if (matching[i]) |slm_v| {
+            const sid = slm_idx[slm_v] orelse return error.InvalidMatching;
+
+            while (slm_ptr < sid) : (slm_ptr += 1) {
+                slm_slot[slm_ptr] = current_slot;
+                current_slot += 1;
+            }
+
+            slm_slot[sid] = current_slot;
+            aod_slot[i] = current_slot;
+            current_slot += 1;
+            slm_ptr = sid + 1;
+        } else {
+            aod_slot[i] = current_slot;
+            current_slot += 1;
+        }
+    }
+
+    while (slm_ptr < n_slm) : (slm_ptr += 1) {
+        slm_slot[slm_ptr] = current_slot;
+        current_slot += 1;
+    }
+
+    return .{ .slm = slm_slot, .aod = aod_slot };
+}
+
+fn addRestingPositions(
+    allocator: std.mem.Allocator,
+    g: *const Graph,
+    aod_order: []const usize,
+    slm_order: []const usize,
+    I: []const bool,
+) !void {
     // 1. Precompute max color used.
-    var max_c: usize = 0;
+    var max_c: i32 = MIN;
     for (0..g.n) |x| {
         var e = g.edges[x];
         while (e) |edge| : (e = edge.next) {
@@ -334,7 +429,40 @@ fn targetPosition(
             }
         }
     }
-    if (max_c == 0) return error.NoColors;
+    if (max_c == MIN) return error.NoColors;
+
+    var t: usize = 0;
+    while (t < max_c + 1) : (t += 1) {
+        const matching = try matchingForColor(allocator, g, aod_order, I, @intCast(t));
+        defer allocator.free(matching);
+
+        const slot = try timestepPositions(allocator, aod_order, slm_order, matching);
+        defer {
+            allocator.free(slot.aod);
+            allocator.free(slot.slm);
+        }
+
+        debugPrintPositions(t, aod_order, slm_order, matching, slot.aod, slot.slm);
+    }
+}
+
+fn targetPosition(
+    allocator: std.mem.Allocator,
+    g: *Graph,
+    aod_order: []const usize,
+    slm_order: []const usize,
+) ![][]usize {
+    // 1. Precompute max color used.
+    var max_c: i32 = MIN;
+    for (0..g.n) |x| {
+        var e = g.edges[x];
+        while (e) |edge| : (e = edge.next) {
+            if (edge.color) |c| {
+                max_c = @max(max_c, c);
+            }
+        }
+    }
+    if (max_c == MIN) return error.NoColors;
 
     // 2. Precompute slm_pos[slm_id] = its index in slm_order
     var slm_pos = try allocator.alloc(usize, g.n);
@@ -391,7 +519,7 @@ const Schedule = struct {
     slm_order: []const usize,
     aod_targets_per_color: [][]usize,
     gates_per_color: [][]Gate,
-    max_color: usize,
+    max_color: i32,
 };
 
 fn logicalSchedule(
@@ -403,7 +531,7 @@ fn logicalSchedule(
     aod_targets: [][]usize,
 ) !Schedule {
     // Find max color
-    var max_c: usize = 0;
+    var max_c: i32 = MIN;
     for (0..g.n) |u| {
         for (0..g.n) |v| {
             if (edge_color[u][v]) |c| {
@@ -503,6 +631,84 @@ fn debugAodTargets(g: *Graph, aod_order: []const usize, aod_targets: [][]usize) 
             }
         }
     }
+}
+
+/// debugPrintPositions
+/// Drop-in debug helper to visually inspect the exact trap layout produced
+/// by `computeTimeStepPositions`. It clearly highlights:
+///   • Resting positions (idle AODs)
+///   • Matched AOD ↔ SLM pairs (same slot)
+///   • SLM shifts caused by inserted resting positions
+///
+/// Call this right after `computeTimeStepPositions` for any time step.
+/// Works with Zig 0.16.0 and uses only std.debug.print.
+pub fn debugPrintPositions(
+    time_step: usize,
+    aod_order: []const usize,
+    slm_order: []const usize,
+    matching: []const ?usize,
+    aod_slot: []const usize,
+    slm_slot: []const usize,
+) void {
+    std.debug.print("\n=== Resting Positions Debug — Time Step t = {} ===\n", .{time_step});
+
+    // Quick summary of inputs
+    std.debug.print("AOD order  : ", .{});
+    for (aod_order) |id| std.debug.print("{d} ", .{id});
+
+    std.debug.print("\nMatching   : ", .{});
+    for (matching) |m| {
+        if (m) |v| std.debug.print("{d} ", .{v}) else std.debug.print("null ", .{});
+    }
+    std.debug.print("\n\n", .{});
+
+    // Find the rightmost slot used this step
+    var max_slot: usize = 0;
+    for (aod_slot) |s| max_slot = @max(max_slot, s);
+    for (slm_slot) |s| max_slot = @max(max_slot, s);
+
+    // === VISUAL TRAP LAYOUT (exactly what the hardware sees) ===
+    std.debug.print("Trap layout (slot 0 → {}):\n", .{max_slot});
+    std.debug.print("────────────────────────────────────\n", .{});
+
+    var slot: usize = 0;
+    while (slot <= max_slot) : (slot += 1) {
+        std.debug.print("Slot {d:2} → ", .{slot});
+
+        // Look for AOD in this slot
+        var found = false;
+        for (aod_order, 0..) |aod_id, i| {
+            if (aod_slot[i] == slot) {
+                if (matching[i]) |slm_id| {
+                    // Matched pair — exactly the position where the CZ gate happens
+                    std.debug.print("AOD{d} ↔ SLM{d}", .{ aod_id, slm_id });
+                } else {
+                    // Resting position (the key thing we want to verify)
+                    std.debug.print("AOD{d} (RESTING)", .{aod_id});
+                }
+                found = true;
+                break;
+            }
+        }
+
+        // If no AOD, the slot should be empty (or possibly an SLM that was shifted,
+        // but in the resting-positions algorithm every SLM shares a slot with its AOD).
+        if (!found) {
+            std.debug.print("(empty)", .{});
+        }
+        std.debug.print("\n", .{});
+    }
+
+    std.debug.print("────────────────────────────────────\n", .{});
+
+    // SLM mapping table (useful for double-checking topological order + shifts)
+    std.debug.print("\nSLM positions (topological order):\n", .{});
+    for (slm_order, 0..) |slm_id, i| {
+        std.debug.print("  SLM {d:2} → slot {d}\n", .{ slm_id, slm_slot[i] });
+    }
+
+    std.debug.print("\nTotal slots used this step: {d}\n", .{max_slot + 1});
+    std.debug.print("====================================\n\n", .{});
 }
 
 fn writeToJsonCompact(allocator: std.mem.Allocator, io: std.Io, schedule: *const Schedule, filename: []const u8) !void {
@@ -630,14 +836,16 @@ pub fn main() !void {
     std.debug.print(">> AOD Order\n", .{});
     std.debug.print("{any}\n", .{aod_order});
 
-    const aod_targets = try targetPosition(alloc, &g, aod_order.items, slm_order);
-    defer {
-        for (1..aod_targets.len) |c| {
-            alloc.free(aod_targets[c]);
-        }
-        alloc.free(aod_targets);
-    }
-    debugAodTargets(&g, aod_order.items, aod_targets);
+    try addRestingPositions(alloc, &g, aod_order.items, slm_order, aod_set);
+
+    //    const aod_targets = try targetPosition(alloc, &g, aod_order.items, slm_order);
+    //    defer {
+    //        for (1..aod_targets.len) |c| {
+    //            alloc.free(aod_targets[c]);
+    //        }
+    //        alloc.free(aod_targets);
+    //    }
+    //    debugAodTargets(&g, aod_order.items, aod_targets);
 
     //    // ----------
     //    // 3
