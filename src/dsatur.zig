@@ -12,6 +12,7 @@ const SortCtx = struct {
 
 const EdgeNode = struct {
     y: usize,
+    color: usize,
     next: ?*EdgeNode,
 };
 
@@ -55,7 +56,7 @@ const Graph = struct {
 
     fn addNode(s: *Graph, x: usize, y: usize) !void {
         const n = try s.allocator.create(EdgeNode);
-        n.* = .{ .y = y, .next = s.edges[x] };
+        n.* = .{ .y = y, .color = INF, .next = s.edges[x] };
         s.edges[x] = n;
         s.degree[x] += 1;
     }
@@ -80,8 +81,8 @@ const Graph = struct {
 };
 
 fn independentSet(allocator: std.mem.Allocator, g: Graph) ![]bool {
-    var I = try allocator.alloc(bool, g.n);
-    @memset(I, false);
+    var aod_set = try allocator.alloc(bool, g.n);
+    @memset(aod_set, false);
 
     // Sort nodes descending by degree.
     var order = try std.ArrayList(usize).initCapacity(allocator, g.n);
@@ -89,24 +90,26 @@ fn independentSet(allocator: std.mem.Allocator, g: Graph) ![]bool {
 
     for (0..g.n) |i| order.appendAssumeCapacity(i);
     std.sort.heap(usize, order.items, g, struct {
-        fn lessThan(graph: Graph, a: usize, b: usize) bool {
+        fn less(graph: Graph, a: usize, b: usize) bool {
             return graph.degree[a] > graph.degree[b];
         }
-    }.lessThan);
+    }.less);
+    std.debug.print("order: {any}\n", .{order});
 
+    // Add node when all it's neighbours are false.
     for (order.items) |v| {
-        var can_add = true;
+        var add = true;
         var e = g.edges[v];
         while (e) |edge| : (e = edge.next) {
-            if (I[edge.y]) {
-                can_add = false;
+            if (aod_set[edge.y]) {
+                add = false;
                 break;
             }
         }
-        if (can_add) I[v] = true;
+        if (add) aod_set[v] = true;
     }
 
-    return I;
+    return aod_set;
 }
 
 fn dsatur(allocator: std.mem.Allocator, g: *Graph, I: []const bool) ![][]?usize {
@@ -582,14 +585,14 @@ pub fn main(init: std.process.Init) !void {
     // 0
     // ----------
 
-    const I = try independentSet(alloc, g);
-    defer alloc.free(I);
+    const aod_set = try independentSet(alloc, g);
+    defer alloc.free(aod_set);
     std.debug.print(">> AOD Independent Set\n", .{});
-    for (I, 0..) |v, i| {
+    for (aod_set, 0..) |v, i| {
         std.debug.print("{} {}\n", .{ i, v });
     }
 
-    const edge_colors = try dsatur(alloc, &g, I);
+    const edge_colors = try dsatur(alloc, &g, aod_set);
     defer {
         for (edge_colors) |row| alloc.free(row);
         alloc.free(edge_colors);
@@ -601,12 +604,12 @@ pub fn main(init: std.process.Init) !void {
     // ----------
 
     // Build the SLM dependency DAQ from colors.
-    var dep_graph = try slmGraph(alloc, &g, I, edge_colors);
+    var dep_graph = try slmGraph(alloc, &g, aod_set, edge_colors);
     defer dep_graph.deinit();
     dep_graph.print();
 
     // Get the perfect left-to-right SLM order.
-    const slm_order = try topoSort(alloc, dep_graph, I);
+    const slm_order = try topoSort(alloc, dep_graph, aod_set);
     defer alloc.free(slm_order);
     std.debug.print(">> Topological Order of SLM Qubits\n", .{});
     std.debug.print("{any}\n", .{slm_order});
@@ -618,7 +621,7 @@ pub fn main(init: std.process.Init) !void {
     var aod_order: std.ArrayList(usize) = .empty;
     defer aod_order.deinit(alloc);
     for (0..g.n) |i| {
-        if (I[i]) try aod_order.append(alloc, i);
+        if (aod_set[i]) try aod_order.append(alloc, i);
     }
     std.debug.print(">> AOD Order\n", .{});
     std.debug.print("{any}\n", .{aod_order});
