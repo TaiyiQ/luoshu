@@ -66,8 +66,8 @@ const Graph = struct {
         s.m += 1;
     }
 
-    fn print(self: *const Graph) void {
-        std.debug.print(">> Graph(n={d}, m={d}, directed={}) \n", .{ self.n, self.m, self.directed });
+    fn print(self: *const Graph, name: []const u8) void {
+        std.debug.print(">> Graph(name={s}, n={d}, m={d}, directed={}) \n", .{ name, self.n, self.m, self.directed });
         for (0..self.n) |u| {
             std.debug.print("  {d} -> ", .{u});
             var e = self.edges[u];
@@ -228,7 +228,7 @@ fn countSaturation(g: *Graph, u: usize, v: usize) usize {
     return seen.count();
 }
 
-fn slmGraph(allocator: std.mem.Allocator, g: *Graph, I: []const bool, edge_color: [][]?usize) !Graph {
+fn slmGraph(allocator: std.mem.Allocator, g: *Graph, I: []const bool) !Graph {
     var dep = try Graph.init(allocator, g.n, true);
 
     // For each AOD v...
@@ -243,9 +243,10 @@ fn slmGraph(allocator: std.mem.Allocator, g: *Graph, I: []const bool, edge_color
         var e = g.edges[v];
         while (e) |edge| : (e = edge.next) {
             const u = edge.y;
+            // If the neighbour is an SLM.
             if (!I[u]) {
-                if (edge_color[v][u]) |col| {
-                    try adj.append(allocator, .{ .y = u, .col = col });
+                if (edge.color) |c| {
+                    try adj.append(allocator, Adj{ .y = u, .col = c });
                 }
             }
         }
@@ -322,13 +323,13 @@ fn targetPosition(
     g: *Graph,
     aod_order: []const usize,
     slm_order: []const usize,
-    edge_color: [][]?usize,
 ) ![][]usize {
     // 1. Precompute max color used.
     var max_c: usize = 0;
-    for (0..g.n) |u| {
-        for (0..g.n) |v| {
-            if (edge_color[u][v]) |c| {
+    for (0..g.n) |x| {
+        var e = g.edges[x];
+        while (e) |edge| : (e = edge.next) {
+            if (edge.color) |c| {
                 max_c = @max(max_c, c);
             }
         }
@@ -359,7 +360,7 @@ fn targetPosition(
             var partnet_y: ?usize = null;
             var e = g.edges[aod];
             while (e) |edge| : (e = edge.next) {
-                if (edge_color[aod][edge.y] == c) {
+                if (edge.color == c) {
                     partnet_y = edge.y;
                     break;
                 }
@@ -468,7 +469,7 @@ fn debugEdgeColors(g: Graph) void {
     }
 }
 
-fn debugAodTargets(g: *Graph, aod_order: []const usize, aod_targets: [][]usize, edge_color: [][]?usize) void {
+fn debugAodTargets(g: *Graph, aod_order: []const usize, aod_targets: [][]usize) void {
     std.debug.print(">> AOD Target Positions\n", .{});
 
     for (1..aod_targets.len) |c| {
@@ -480,9 +481,10 @@ fn debugAodTargets(g: *Graph, aod_order: []const usize, aod_targets: [][]usize, 
 
         for (aod_order, 0..) |aod_id, i| {
             var partner: ?usize = null;
+
             var e = g.edges[aod_id];
             while (e) |edge| : (e = edge.next) {
-                if (edge_color[aod_id][edge.y] == c) {
+                if (edge.color == c) {
                     partner = edge.y;
                     break;
                 }
@@ -601,42 +603,42 @@ pub fn main() !void {
     try dsatur(alloc, &g, aod_set);
     debugEdgeColors(g);
 
-    //    // ----------
-    //    // 1
-    //    // ----------
-    //
-    //    // Build the SLM dependency DAQ from colors.
-    //    var dep_graph = try slmGraph(alloc, &g, aod_set, edge_colors);
-    //    defer dep_graph.deinit();
-    //    dep_graph.print();
-    //
-    //    // Get the perfect left-to-right SLM order.
-    //    const slm_order = try topoSort(alloc, dep_graph, aod_set);
-    //    defer alloc.free(slm_order);
-    //    std.debug.print(">> Topological Order of SLM Qubits\n", .{});
-    //    std.debug.print("{any}\n", .{slm_order});
-    //
-    //    // ----------
-    //    // 2
-    //    // ----------
-    //
-    //    var aod_order: std.ArrayList(usize) = .empty;
-    //    defer aod_order.deinit(alloc);
-    //    for (0..g.n) |i| {
-    //        if (aod_set[i]) try aod_order.append(alloc, i);
-    //    }
-    //    std.debug.print(">> AOD Order\n", .{});
-    //    std.debug.print("{any}\n", .{aod_order});
-    //
-    //    const aod_targets = try targetPosition(alloc, &g, aod_order.items, slm_order, edge_colors);
-    //    defer {
-    //        for (1..aod_targets.len) |c| {
-    //            alloc.free(aod_targets[c]);
-    //        }
-    //        alloc.free(aod_targets);
-    //    }
-    //    debugAodTargets(&g, aod_order.items, aod_targets, edge_colors);
-    //
+    // ----------
+    // 1
+    // ----------
+
+    // Build the SLM dependency DAQ from colors.
+    var dep_graph = try slmGraph(alloc, &g, aod_set);
+    defer dep_graph.deinit();
+    dep_graph.print("slm-dep");
+
+    // Get the perfect left-to-right SLM order.
+    const slm_order = try topoSort(alloc, dep_graph, aod_set);
+    defer alloc.free(slm_order);
+    std.debug.print(">> Topological Order of SLM Qubits\n", .{});
+    std.debug.print("{any}\n", .{slm_order});
+
+    // ----------
+    // 2
+    // ----------
+
+    var aod_order: std.ArrayList(usize) = .empty;
+    defer aod_order.deinit(alloc);
+    for (0..g.n) |i| {
+        if (aod_set[i]) try aod_order.append(alloc, i);
+    }
+    std.debug.print(">> AOD Order\n", .{});
+    std.debug.print("{any}\n", .{aod_order});
+
+    const aod_targets = try targetPosition(alloc, &g, aod_order.items, slm_order);
+    defer {
+        for (1..aod_targets.len) |c| {
+            alloc.free(aod_targets[c]);
+        }
+        alloc.free(aod_targets);
+    }
+    debugAodTargets(&g, aod_order.items, aod_targets);
+
     //    // ----------
     //    // 3
     //    // ----------
