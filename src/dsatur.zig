@@ -224,24 +224,6 @@ fn countSaturation(edge_color: [][]?usize, g: *Graph, u: usize, v: usize) usize 
     return seen.count();
 }
 
-fn printEdgeColors(g: Graph, edge_color: [][]?usize) void {
-    for (0..g.n) |u| {
-        var has_any = false;
-        for (0..g.n) |v| {
-            if (u < v) {
-                if (edge_color[u][v]) |c| {
-                    if (!has_any) {
-                        std.debug.print("  {d} -> ", .{u});
-                        has_any = true;
-                    }
-                    std.debug.print("{d}:{d} ", .{ v, c });
-                }
-            }
-        }
-        if (has_any) std.debug.print("\n", .{});
-    }
-}
-
 fn slmGraph(allocator: std.mem.Allocator, g: *Graph, I: []const bool, edge_color: [][]?usize) !Graph {
     var dep = try Graph.init(allocator, g.n, true);
 
@@ -397,101 +379,6 @@ fn targetPosition(
     return positions_per_color;
 }
 
-pub fn main(init: std.process.Init) !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
-
-    var g = try Graph.init(alloc, 7, false);
-    defer g.deinit();
-
-    // Ex. 1
-    //    try g.addEdge(0, 1);
-    //    try g.addEdge(0, 3);
-    //    try g.addEdge(1, 2);
-    //    try g.addEdge(2, 3);
-
-    // Ex. 2
-    try g.addEdge(0, 1);
-    try g.addEdge(0, 5);
-    try g.addEdge(1, 6);
-    try g.addEdge(5, 6);
-    try g.addEdge(6, 3);
-    try g.addEdge(6, 4);
-    try g.addEdge(3, 4);
-    try g.addEdge(3, 2);
-    try g.addEdge(4, 2);
-
-    // ----------
-    // 0
-    // ----------
-
-    const I = try independentSet(alloc, g);
-    defer alloc.free(I);
-    for (I, 0..) |v, i| {
-        std.debug.print("{} {}\n", .{ i, v });
-    }
-
-    const edge_colors = try dsatur(alloc, &g, I);
-    defer {
-        for (edge_colors) |row| alloc.free(row);
-        alloc.free(edge_colors);
-    }
-    printEdgeColors(g, edge_colors);
-
-    // ----------
-    // 1
-    // ----------
-
-    // Build the SLM dependency DAQ from colors.
-    var dep_graph = try slmGraph(alloc, &g, I, edge_colors);
-    defer dep_graph.deinit();
-    dep_graph.print();
-
-    // Get the perfect left-to-right SLM order.
-    const slm_order = try topoSort(alloc, dep_graph, I);
-    defer alloc.free(slm_order);
-    std.debug.print(">> Topological Order of SLM Qubits\n", .{});
-    std.debug.print("{any}\n", .{slm_order});
-
-    // ----------
-    // 2
-    // ----------
-
-    var aod_order: std.ArrayList(usize) = .empty;
-    defer aod_order.deinit(alloc);
-    for (0..g.n) |i| {
-        if (I[i]) try aod_order.append(alloc, i);
-    }
-    // FIXME
-    std.mem.reverse(usize, aod_order.items);
-
-    const aod_targets = try targetPosition(alloc, &g, aod_order.items, slm_order, edge_colors);
-    defer {
-        for (1..aod_targets.len) |c| {
-            alloc.free(aod_targets[c]);
-        }
-        alloc.free(aod_targets);
-    }
-    debugAodTargets(&g, aod_order.items, aod_targets, edge_colors);
-
-    // ----------
-    // 3
-    // ----------
-    const schedule = try logicalSchedule(alloc, &g, edge_colors, slm_order, aod_order.items, aod_targets);
-    defer {
-        for (1..schedule.max_color + 1) |c| {
-            alloc.free(schedule.gates_per_color[c]);
-        }
-        alloc.free(schedule.gates_per_color);
-    }
-
-    const io = init.io;
-    try writeToJsonCompact(alloc, io, &schedule, "schedule.json");
-
-    std.debug.print(">> Gate compilation completed", .{});
-}
-
 const Gate = struct { u: usize, v: usize };
 
 const Schedule = struct {
@@ -553,13 +440,28 @@ fn logicalSchedule(
     };
 }
 
-fn debugAodTargets(
-    g: *Graph,
-    aod_order: []const usize,
-    aod_targets: [][]usize,
-    edge_color: [][]?usize,
-) void {
-    std.debug.print(">> AOD Order\n", .{});
+fn debugEdgeColors(g: Graph, edge_color: [][]?usize) void {
+    std.debug.print(">> Edge colors\n", .{});
+    std.debug.print("{any}", .{edge_color});
+    for (0..g.n) |u| {
+        var has_any = false;
+        for (0..g.n) |v| {
+            if (u < v) {
+                if (edge_color[u][v]) |c| {
+                    if (!has_any) {
+                        std.debug.print("  {d} -> ", .{u});
+                        has_any = true;
+                    }
+                    std.debug.print("{d}:{d} ", .{ v, c });
+                }
+            }
+        }
+        if (has_any) std.debug.print("\n", .{});
+    }
+}
+
+fn debugAodTargets(g: *Graph, aod_order: []const usize, aod_targets: [][]usize, edge_color: [][]?usize) void {
+    std.debug.print(">> AOD Target Positions\n", .{});
 
     for (1..aod_targets.len) |c| {
         const targets = aod_targets[c];
@@ -593,46 +495,7 @@ fn debugAodTargets(
     }
 }
 
-fn writeToJson(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    schedule: *const Schedule,
-    filename: []const u8,
-) !void {
-    const JsonSchedule = struct {
-        aod_order: []const usize,
-        slm_order: []const usize,
-        aod_targets_per_color: []const []const usize,
-        gates_per_color: []const []const Gate,
-        max_color: usize,
-    };
-
-    const json_val = JsonSchedule{
-        .aod_order = schedule.aod_order,
-        .slm_order = schedule.slm_order,
-        .aod_targets_per_color = schedule.aod_targets_per_color[1..],
-        .gates_per_color = schedule.gates_per_color[1..],
-        .max_color = schedule.max_color,
-    };
-
-    const json_data = try std.json.Stringify.valueAlloc(
-        allocator,
-        json_val,
-        .{ .whitespace = .indent_2 },
-    );
-    defer allocator.free(json_data);
-
-    const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
-    defer file.close(io);
-    try file.writePositionalAll(io, json_data, 0);
-}
-
-fn writeToJsonCompact(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    schedule: *const Schedule,
-    filename: []const u8,
-) !void {
+fn writeToJsonCompact(allocator: std.mem.Allocator, io: std.Io, schedule: *const Schedule, filename: []const u8) !void {
     var buf: std.Io.Writer.Allocating = .init(allocator);
     defer buf.deinit();
     const w = &buf.writer;
@@ -688,4 +551,100 @@ fn writeToJsonCompact(
     const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
     defer file.close(io);
     try file.writePositionalAll(io, buf.written(), 0);
+}
+
+pub fn main(init: std.process.Init) !void {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const alloc = gpa.allocator();
+
+    var g = try Graph.init(alloc, 7, false);
+    defer g.deinit();
+
+    // Ex. 1
+    //    try g.addEdge(0, 1);
+    //    try g.addEdge(0, 3);
+    //    try g.addEdge(1, 2);
+    //    try g.addEdge(2, 3);
+
+    // Ex. 2
+    try g.addEdge(0, 1);
+    try g.addEdge(0, 5);
+    try g.addEdge(1, 6);
+    try g.addEdge(5, 6);
+    try g.addEdge(6, 3);
+    try g.addEdge(6, 4);
+    try g.addEdge(3, 4);
+    try g.addEdge(3, 2);
+    try g.addEdge(4, 2);
+
+    // ----------
+    // 0
+    // ----------
+
+    const I = try independentSet(alloc, g);
+    defer alloc.free(I);
+    std.debug.print(">> AOD Independent Set\n", .{});
+    for (I, 0..) |v, i| {
+        std.debug.print("{} {}\n", .{ i, v });
+    }
+
+    const edge_colors = try dsatur(alloc, &g, I);
+    defer {
+        for (edge_colors) |row| alloc.free(row);
+        alloc.free(edge_colors);
+    }
+    debugEdgeColors(g, edge_colors);
+
+    // ----------
+    // 1
+    // ----------
+
+    // Build the SLM dependency DAQ from colors.
+    var dep_graph = try slmGraph(alloc, &g, I, edge_colors);
+    defer dep_graph.deinit();
+    dep_graph.print();
+
+    // Get the perfect left-to-right SLM order.
+    const slm_order = try topoSort(alloc, dep_graph, I);
+    defer alloc.free(slm_order);
+    std.debug.print(">> Topological Order of SLM Qubits\n", .{});
+    std.debug.print("{any}\n", .{slm_order});
+
+    // ----------
+    // 2
+    // ----------
+
+    var aod_order: std.ArrayList(usize) = .empty;
+    defer aod_order.deinit(alloc);
+    for (0..g.n) |i| {
+        if (I[i]) try aod_order.append(alloc, i);
+    }
+    std.debug.print(">> AOD Order\n", .{});
+    std.debug.print("{any}\n", .{aod_order});
+
+    const aod_targets = try targetPosition(alloc, &g, aod_order.items, slm_order, edge_colors);
+    defer {
+        for (1..aod_targets.len) |c| {
+            alloc.free(aod_targets[c]);
+        }
+        alloc.free(aod_targets);
+    }
+    debugAodTargets(&g, aod_order.items, aod_targets, edge_colors);
+
+    // ----------
+    // 3
+    // ----------
+    const schedule = try logicalSchedule(alloc, &g, edge_colors, slm_order, aod_order.items, aod_targets);
+    defer {
+        for (1..schedule.max_color + 1) |c| {
+            alloc.free(schedule.gates_per_color[c]);
+        }
+        alloc.free(schedule.gates_per_color);
+    }
+
+    const io = init.io;
+    try writeToJsonCompact(alloc, io, &schedule, "schedule.json");
+
+    std.debug.print(">> Gate compilation completed\n", .{});
 }
