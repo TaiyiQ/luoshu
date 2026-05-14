@@ -5,14 +5,13 @@ const INF = std.math.maxInt(usize);
 const Adj = struct { y: usize, col: usize };
 
 const SortCtx = struct {
-    edge_color: [][]?usize,
     g: *Graph,
     v: usize,
 };
 
 const EdgeNode = struct {
     y: usize,
-    color: usize,
+    color: ?usize,
     next: ?*EdgeNode,
 };
 
@@ -56,7 +55,7 @@ const Graph = struct {
 
     fn addNode(s: *Graph, x: usize, y: usize) !void {
         const n = try s.allocator.create(EdgeNode);
-        n.* = .{ .y = y, .color = INF, .next = s.edges[x] };
+        n.* = .{ .y = y, .color = null, .next = s.edges[x] };
         s.edges[x] = n;
         s.degree[x] += 1;
     }
@@ -112,54 +111,56 @@ fn independentSet(allocator: std.mem.Allocator, g: Graph) ![]bool {
     return aod_set;
 }
 
-fn dsatur(allocator: std.mem.Allocator, g: *Graph, I: []const bool) ![][]?usize {
-    // edge_color[u][v] = color of edge u-v (null if no edge).
-    var edge_color = try allocator.alloc([]?usize, g.n);
-    for (0..g.n) |i| {
-        edge_color[i] = try allocator.alloc(?usize, g.n);
-        @memset(edge_color[i], null);
-    }
-
+fn dsatur(allocator: std.mem.Allocator, g: *Graph, I: []const bool) !void {
     // 1. Get AOD nodes sorted by degree descending.
-    var I_list: std.ArrayList(usize) = .empty;
-    defer I_list.deinit(allocator);
+    var aod_nodes: std.ArrayList(usize) = .empty;
+    defer aod_nodes.deinit(allocator);
 
-    for (0..g.n) |i| if (I[i]) try I_list.append(allocator, i);
-    std.sort.heap(usize, I_list.items, g, struct {
+    for (0..g.n) |i| if (I[i]) try aod_nodes.append(allocator, i);
+
+    std.sort.heap(usize, aod_nodes.items, g, struct {
         fn less(graph: *Graph, a: usize, b: usize) bool {
             return graph.degree[a] > graph.degree[b];
         }
     }.less);
 
-    // 2. For each AOD v...
-    for (I_list.items) |v| {
-        var S: std.ArrayList(usize) = .empty;
-        defer S.deinit(allocator);
+    // 2. For each AOD node.
+    for (aod_nodes.items) |v| {
+        var adj: std.ArrayList(usize) = .empty;
+        defer adj.deinit(allocator);
 
         var e = g.edges[v];
-        while (e) |edge| : (e = edge.next) try S.append(allocator, edge.y);
+        while (e) |edge| : (e = edge.next) try adj.append(allocator, edge.y);
 
-        std.sort.heap(usize, S.items, SortCtx{ .edge_color = edge_color, .g = g, .v = v }, struct {
+        std.sort.heap(usize, adj.items, SortCtx{ .g = g, .v = v }, struct {
             fn less(ctx: SortCtx, a: usize, b: usize) bool {
-                const sat_a = countSaturation(ctx.edge_color, ctx.g, ctx.v, a);
-                const sat_b = countSaturation(ctx.edge_color, ctx.g, ctx.v, b);
+                const sat_a = countSaturation(ctx.g, ctx.v, a);
+                const sat_b = countSaturation(ctx.g, ctx.v, b);
                 if (sat_a != sat_b) return sat_a > sat_b;
                 return ctx.g.degree[a] > ctx.g.degree[b];
             }
         }.less);
 
         // 3. Color each edge in the sorted order.
-        for (S.items) |y| {
-            const c = leastAdmissible(edge_color, g, v, y);
-            edge_color[v][y] = c;
-            edge_color[y][v] = c; // undirected;
+        for (adj.items) |y| {
+            const c = leastAdmissible(g, v, y);
+
+            // Color edge v -> u
+            var n = g.edges[v];
+            while (n) |edge| : (n = edge.next) {
+                if (edge.y == y) edge.color = c;
+            }
+
+            // Color edge u -> v
+            n = g.edges[y];
+            while (n) |edge| : (n = edge.next) {
+                if (edge.y == v) edge.color = c;
+            }
         }
     }
-
-    return edge_color;
 }
 
-fn leastAdmissible(edge_color: [][]?usize, g: *Graph, v: usize, y: usize) usize {
+fn leastAdmissible(g: *Graph, v: usize, y: usize) usize {
     var forbidden = std.AutoHashMap(usize, void).init(g.allocator);
     defer forbidden.deinit();
 
@@ -169,7 +170,7 @@ fn leastAdmissible(edge_color: [][]?usize, g: *Graph, v: usize, y: usize) usize 
     var e = g.edges[v];
     while (e) |edge| : (e = edge.next) {
         if (edge.y != y) {
-            if (edge_color[v][edge.y]) |c| {
+            if (edge.color) |c| {
                 _ = forbidden.getOrPut(c) catch {};
             }
         }
@@ -184,7 +185,7 @@ fn leastAdmissible(edge_color: [][]?usize, g: *Graph, v: usize, y: usize) usize 
     e = g.edges[y];
     while (e) |edge| : (e = edge.next) {
         if (edge.y != v) {
-            if (edge_color[y][edge.y]) |c| {
+            if (edge.color) |c| {
                 _ = forbidden.getOrPut(c) catch {};
                 order_max = @max(order_max, c);
             }
@@ -198,7 +199,7 @@ fn leastAdmissible(edge_color: [][]?usize, g: *Graph, v: usize, y: usize) usize 
     }
 }
 
-fn countSaturation(edge_color: [][]?usize, g: *Graph, u: usize, v: usize) usize {
+fn countSaturation(g: *Graph, u: usize, v: usize) usize {
     var seen = std.AutoHashMap(usize, void).init(g.allocator);
     defer seen.deinit();
 
@@ -207,7 +208,7 @@ fn countSaturation(edge_color: [][]?usize, g: *Graph, u: usize, v: usize) usize 
     while (e) |edge| : (e = edge.next) {
         const w = edge.y;
         if (w != v) {
-            if (edge_color[u][w]) |c| {
+            if (edge.color) |c| {
                 _ = seen.getOrPut(c) catch {};
             }
         }
@@ -218,7 +219,7 @@ fn countSaturation(edge_color: [][]?usize, g: *Graph, u: usize, v: usize) usize 
     while (e) |edge| : (e = edge.next) {
         const w = edge.y;
         if (w != v) {
-            if (edge_color[v][w]) |c| {
+            if (edge.color) |c| {
                 _ = seen.getOrPut(c) catch {};
             }
         }
@@ -443,22 +444,26 @@ fn logicalSchedule(
     };
 }
 
-fn debugEdgeColors(g: Graph, edge_color: [][]?usize) void {
-    std.debug.print(">> Edge colors\n", .{});
-    std.debug.print("{any}", .{edge_color});
-    for (0..g.n) |u| {
+fn debugEdgeColors(g: Graph) void {
+    std.debug.print(">> Edge Colors\n", .{});
+
+    for (0..g.n) |x| {
         var has_any = false;
-        for (0..g.n) |v| {
-            if (u < v) {
-                if (edge_color[u][v]) |c| {
+
+        var e = g.edges[x];
+        while (e) |edge| : (e = edge.next) {
+            const y = edge.y;
+            if (x < y) {
+                if (edge.color) |c| {
                     if (!has_any) {
-                        std.debug.print("  {d} -> ", .{u});
+                        std.debug.print("  {d} -> ", .{x});
                         has_any = true;
                     }
-                    std.debug.print("{d}:{d} ", .{ v, c });
+                    std.debug.print("{d}:{d} ", .{ y, c });
                 }
             }
         }
+
         if (has_any) std.debug.print("\n", .{});
     }
 }
@@ -556,7 +561,8 @@ fn writeToJsonCompact(allocator: std.mem.Allocator, io: std.Io, schedule: *const
     try file.writePositionalAll(io, buf.written(), 0);
 }
 
-pub fn main(init: std.process.Init) !void {
+//pub fn main(init: std.process.Init) !void {
+pub fn main() !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
@@ -592,62 +598,58 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("{} {}\n", .{ i, v });
     }
 
-    const edge_colors = try dsatur(alloc, &g, aod_set);
-    defer {
-        for (edge_colors) |row| alloc.free(row);
-        alloc.free(edge_colors);
-    }
-    debugEdgeColors(g, edge_colors);
+    try dsatur(alloc, &g, aod_set);
+    debugEdgeColors(g);
 
-    // ----------
-    // 1
-    // ----------
-
-    // Build the SLM dependency DAQ from colors.
-    var dep_graph = try slmGraph(alloc, &g, aod_set, edge_colors);
-    defer dep_graph.deinit();
-    dep_graph.print();
-
-    // Get the perfect left-to-right SLM order.
-    const slm_order = try topoSort(alloc, dep_graph, aod_set);
-    defer alloc.free(slm_order);
-    std.debug.print(">> Topological Order of SLM Qubits\n", .{});
-    std.debug.print("{any}\n", .{slm_order});
-
-    // ----------
-    // 2
-    // ----------
-
-    var aod_order: std.ArrayList(usize) = .empty;
-    defer aod_order.deinit(alloc);
-    for (0..g.n) |i| {
-        if (aod_set[i]) try aod_order.append(alloc, i);
-    }
-    std.debug.print(">> AOD Order\n", .{});
-    std.debug.print("{any}\n", .{aod_order});
-
-    const aod_targets = try targetPosition(alloc, &g, aod_order.items, slm_order, edge_colors);
-    defer {
-        for (1..aod_targets.len) |c| {
-            alloc.free(aod_targets[c]);
-        }
-        alloc.free(aod_targets);
-    }
-    debugAodTargets(&g, aod_order.items, aod_targets, edge_colors);
-
-    // ----------
-    // 3
-    // ----------
-    const schedule = try logicalSchedule(alloc, &g, edge_colors, slm_order, aod_order.items, aod_targets);
-    defer {
-        for (1..schedule.max_color + 1) |c| {
-            alloc.free(schedule.gates_per_color[c]);
-        }
-        alloc.free(schedule.gates_per_color);
-    }
-
-    const io = init.io;
-    try writeToJsonCompact(alloc, io, &schedule, "schedule.json");
+    //    // ----------
+    //    // 1
+    //    // ----------
+    //
+    //    // Build the SLM dependency DAQ from colors.
+    //    var dep_graph = try slmGraph(alloc, &g, aod_set, edge_colors);
+    //    defer dep_graph.deinit();
+    //    dep_graph.print();
+    //
+    //    // Get the perfect left-to-right SLM order.
+    //    const slm_order = try topoSort(alloc, dep_graph, aod_set);
+    //    defer alloc.free(slm_order);
+    //    std.debug.print(">> Topological Order of SLM Qubits\n", .{});
+    //    std.debug.print("{any}\n", .{slm_order});
+    //
+    //    // ----------
+    //    // 2
+    //    // ----------
+    //
+    //    var aod_order: std.ArrayList(usize) = .empty;
+    //    defer aod_order.deinit(alloc);
+    //    for (0..g.n) |i| {
+    //        if (aod_set[i]) try aod_order.append(alloc, i);
+    //    }
+    //    std.debug.print(">> AOD Order\n", .{});
+    //    std.debug.print("{any}\n", .{aod_order});
+    //
+    //    const aod_targets = try targetPosition(alloc, &g, aod_order.items, slm_order, edge_colors);
+    //    defer {
+    //        for (1..aod_targets.len) |c| {
+    //            alloc.free(aod_targets[c]);
+    //        }
+    //        alloc.free(aod_targets);
+    //    }
+    //    debugAodTargets(&g, aod_order.items, aod_targets, edge_colors);
+    //
+    //    // ----------
+    //    // 3
+    //    // ----------
+    //    const schedule = try logicalSchedule(alloc, &g, edge_colors, slm_order, aod_order.items, aod_targets);
+    //    defer {
+    //        for (1..schedule.max_color + 1) |c| {
+    //            alloc.free(schedule.gates_per_color[c]);
+    //        }
+    //        alloc.free(schedule.gates_per_color);
+    //    }
+    //
+    //    const io = init.io;
+    //    try writeToJsonCompact(alloc, io, &schedule, "schedule.json");
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }
