@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const INF = std.math.maxInt(usize);
-const MIN = std.math.minInt(i32);
+const MIN = -1; // -1 to help k in leastAdmissible start at 0.
 
 const Adj = struct { y: usize, col: i32 };
 
@@ -43,7 +43,7 @@ const Graph = struct {
     degree: []usize,
     n: usize,
     m: usize,
-    directed: bool,
+    directed: bool, // Used for topological sorting of SLMs.
 
     fn init(allocator: std.mem.Allocator, n: usize, directed: bool) !Graph {
         const edges = try allocator.alloc(?*EdgeNode, n);
@@ -86,6 +86,20 @@ const Graph = struct {
         try s.addNode(x, y);
         if (!s.directed) try s.addNode(y, x);
         s.m += 1;
+    }
+
+    fn maxColor(g: *const Graph) !i32 {
+        var max_c: i32 = MIN;
+        for (0..g.n) |x| {
+            var e = g.edges[x];
+            while (e) |edge| : (e = edge.next) {
+                if (edge.color) |c| {
+                    max_c = @max(max_c, c);
+                }
+            }
+        }
+        if (max_c == MIN) return error.NoColors;
+        return max_c;
     }
 
     fn print(self: *const Graph, name: []const u8) void {
@@ -199,7 +213,7 @@ fn leastAdmissible(g: *Graph, v: usize, y: usize) i32 {
     }
 
     // Max color from adj edges not sharing the AOD node v.
-    var order_max: i32 = -1;
+    var order_max: i32 = MIN;
 
     // All edges from y.
     // Do not share AOD node v.
@@ -208,7 +222,6 @@ fn leastAdmissible(g: *Graph, v: usize, y: usize) i32 {
     while (e) |edge| : (e = edge.next) {
         if (edge.y != v) {
             if (edge.color) |c| {
-                std.debug.print(">>>>> {} \n", .{c});
                 _ = forbidden.getOrPut(c) catch {};
                 order_max = @max(order_max, c);
             }
@@ -379,17 +392,6 @@ fn logicalSchedule(
     I: []const bool,
 ) !Schedule {
     std.debug.print("\n\n>> logicalSchedule\n", .{});
-    // 1. Precompute max color used.
-    var max_c: i32 = MIN;
-    for (0..g.n) |x| {
-        var e = g.edges[x];
-        while (e) |edge| : (e = edge.next) {
-            if (edge.color) |c| {
-                max_c = @max(max_c, c);
-            }
-        }
-    }
-    if (max_c == MIN) return error.NoColors;
 
     // 2. Precompute slm_pos[slm_id] = its index in slm_order
     var slm_pos = std.AutoHashMap(usize, usize).init(allocator);
@@ -406,6 +408,7 @@ fn logicalSchedule(
     }
 
     // Collect gates per color.
+    const max_c = try g.maxColor();
     const n_slot = @as(usize, @intCast(max_c)) + 1;
     var aod_slots_per_color = try allocator.alloc([]?usize, n_slot);
     errdefer {
@@ -473,18 +476,6 @@ fn placeSlmQubits(
     slm_order: []const usize,
     I: []const bool,
 ) ![]?usize {
-    // 1. Precompute max color used.
-    var max_c: i32 = MIN;
-    for (0..g.n) |x| {
-        var e = g.edges[x];
-        while (e) |edge| : (e = edge.next) {
-            if (edge.color) |c| {
-                max_c = @max(max_c, c);
-            }
-        }
-    }
-    if (max_c == MIN) return error.NoColors;
-
     // 2. Precompute slm_pos[slm_id] = its index in slm_order
     var slm_slot = try allocator.alloc(?usize, g.n);
     @memset(slm_slot, null);
@@ -510,6 +501,7 @@ fn placeSlmQubits(
     }
 
     var t: usize = 0;
+    const max_c = try g.maxColor();
     while (t < max_c + 1) : (t += 1) {
         const matching = try matchingForColor(allocator, g, aod_order, I, @intCast(t));
         defer allocator.free(matching);
