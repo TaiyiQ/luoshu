@@ -3,13 +3,6 @@ const std = @import("std");
 const INF = std.math.maxInt(usize);
 const MIN = -1; // -1 to help k in leastAdmissible start at 0.
 
-const Adj = struct { y: usize, col: i32 };
-
-const SortCtx = struct {
-    g: *Graph,
-    v: usize,
-};
-
 const Schedule = struct {
     slm_slots: []const ?usize,
     aod_slots_per_color: [][]?usize,
@@ -129,7 +122,6 @@ fn aodSet(allocator: std.mem.Allocator, g: Graph) ![]bool {
             return graph.degree[a] > graph.degree[b];
         }
     }.less);
-    std.debug.print("order: {any}\n", .{order});
 
     // Add node when all it's neighbours are false.
     for (order.items) |v| {
@@ -147,12 +139,12 @@ fn aodSet(allocator: std.mem.Allocator, g: Graph) ![]bool {
     return aod_set;
 }
 
-fn dsatur(allocator: std.mem.Allocator, g: *Graph, I: []const bool) !void {
+fn dsatur(allocator: std.mem.Allocator, g: *Graph, aod_set: []const bool) !void {
     // 1. Get AOD nodes sorted by degree descending.
     var aod_nodes: std.ArrayList(usize) = .empty;
     defer aod_nodes.deinit(allocator);
 
-    for (0..g.n) |i| if (I[i]) try aod_nodes.append(allocator, i);
+    for (0..g.n) |i| if (aod_set[i]) try aod_nodes.append(allocator, i);
 
     std.sort.heap(usize, aod_nodes.items, g, struct {
         fn less(graph: *Graph, a: usize, b: usize) bool {
@@ -168,8 +160,9 @@ fn dsatur(allocator: std.mem.Allocator, g: *Graph, I: []const bool) !void {
         var e = g.edges[v];
         while (e) |edge| : (e = edge.next) try adj.append(allocator, edge.y);
 
-        std.sort.heap(usize, adj.items, SortCtx{ .g = g, .v = v }, struct {
-            fn less(ctx: SortCtx, a: usize, b: usize) bool {
+        const Ctx = struct { g: *Graph, v: usize };
+        std.sort.heap(usize, adj.items, Ctx{ .g = g, .v = v }, struct {
+            fn less(ctx: Ctx, a: usize, b: usize) bool {
                 const sat_a = countSaturation(ctx.g, ctx.v, a);
                 const sat_b = countSaturation(ctx.g, ctx.v, b);
                 if (sat_a != sat_b) return sat_a > sat_b;
@@ -266,15 +259,16 @@ fn countSaturation(g: *Graph, u: usize, v: usize) usize {
     return seen.count();
 }
 
-fn slmGraph(allocator: std.mem.Allocator, g: *Graph, I: []const bool) !Graph {
+fn slmGraph(allocator: std.mem.Allocator, g: *Graph, aod_set: []const bool) !Graph {
     var dep = try Graph.init(allocator, g.n, true);
 
     // For each AOD v...
     for (0..g.n) |v| {
         // Only AODs give constraints.
-        if (!I[v]) continue;
+        if (!aod_set[v]) continue;
 
         // Collect SLM neighbours and their colors.
+        const Adj = struct { y: usize, col: i32 };
         var adj: std.ArrayList(Adj) = .empty;
         defer adj.deinit(allocator);
 
@@ -282,9 +276,9 @@ fn slmGraph(allocator: std.mem.Allocator, g: *Graph, I: []const bool) !Graph {
         while (e) |edge| : (e = edge.next) {
             const u = edge.y;
             // If the neighbour is an SLM.
-            if (!I[u]) {
+            if (!aod_set[u]) {
                 if (edge.color) |c| {
-                    try adj.append(allocator, Adj{ .y = u, .col = c });
+                    try adj.append(allocator, .{ .y = u, .col = c });
                 }
             }
         }
@@ -307,11 +301,11 @@ fn slmGraph(allocator: std.mem.Allocator, g: *Graph, I: []const bool) !Graph {
     return dep;
 }
 
-fn topoSort(allocator: std.mem.Allocator, g: Graph, I: []const bool) ![]usize {
+fn topoSort(allocator: std.mem.Allocator, g: Graph, aod_set: []const bool) ![]usize {
     // Only SLM qubits
     var n_slm: usize = 0;
     for (0..g.n) |i| {
-        if (!I[i]) n_slm += 1;
+        if (!aod_set[i]) n_slm += 1;
     }
 
     var order = try std.ArrayList(usize).initCapacity(allocator, n_slm);
@@ -323,10 +317,10 @@ fn topoSort(allocator: std.mem.Allocator, g: Graph, I: []const bool) ![]usize {
     defer allocator.free(in_degree);
 
     for (0..g.n) |u| {
-        if (I[u]) continue;
+        if (aod_set[u]) continue;
         var e = g.edges[u];
         while (e) |edge| : (e = edge.next) {
-            if (!I[edge.y]) in_degree[edge.y] += 1;
+            if (!aod_set[edge.y]) in_degree[edge.y] += 1;
         }
     }
 
@@ -335,7 +329,7 @@ fn topoSort(allocator: std.mem.Allocator, g: Graph, I: []const bool) ![]usize {
     defer queue.deinit(allocator);
 
     for (0..g.n) |i| {
-        if (!I[i] and in_degree[i] == 0) try queue.append(allocator, i);
+        if (!aod_set[i] and in_degree[i] == 0) try queue.append(allocator, i);
     }
 
     while (queue.items.len > 0) {
@@ -346,7 +340,7 @@ fn topoSort(allocator: std.mem.Allocator, g: Graph, I: []const bool) ![]usize {
         var e = g.edges[u];
         while (e) |edge| : (e = edge.next) {
             const v = edge.y;
-            if (!I[v]) {
+            if (!aod_set[v]) {
                 in_degree[v] -= 1;
                 if (in_degree[v] == 0) try queue.append(allocator, v);
             }
@@ -356,32 +350,30 @@ fn topoSort(allocator: std.mem.Allocator, g: Graph, I: []const bool) ![]usize {
     return order.toOwnedSlice(allocator);
 }
 
-fn matchingForColor(
+fn matchAodToSlm(
     allocator: std.mem.Allocator,
     g: *const Graph,
     aod_order: []const usize,
-    I: []const bool,
+    aod_set: []const bool,
     t: i32,
 ) ![]?usize {
-    if (aod_order.len == 0) {
-        return try allocator.alloc(?usize, 0);
-    }
+    if (aod_order.len == 0) return try allocator.alloc(?usize, 0);
 
-    const matching = try allocator.alloc(?usize, aod_order.len);
-    @memset(matching, null);
-    errdefer allocator.free(matching);
+    const match = try allocator.alloc(?usize, aod_order.len);
+    @memset(match, null);
+    errdefer allocator.free(match);
 
     for (aod_order, 0..) |x, i| {
         var e = g.edges[x];
         while (e) |edge| : (e = edge.next) {
-            if (edge.color == t and !I[edge.y]) {
-                matching[i] = edge.y;
+            if (edge.color == t and !aod_set[edge.y]) {
+                match[i] = edge.y;
                 break; // There can only be 1 SLM-AOD match per timestep.
             }
         }
     }
 
-    return matching;
+    return match;
 }
 
 fn logicalSchedule(
@@ -389,7 +381,7 @@ fn logicalSchedule(
     g: *Graph,
     aod_order: []const usize,
     slm_slots: []const ?usize,
-    I: []const bool,
+    aod_set: []const bool,
 ) !Schedule {
     std.debug.print("\n\n>> logicalSchedule\n", .{});
 
@@ -421,15 +413,15 @@ fn logicalSchedule(
 
     var t: usize = 0;
     while (t < max_c + 1) : (t += 1) {
-        const matching = try matchingForColor(allocator, g, aod_order, I, @intCast(t));
-        defer allocator.free(matching);
-        std.debug.print("{} - Matching: {any}\n", .{ t, matching });
+        const match = try matchAodToSlm(allocator, g, aod_order, aod_set, @intCast(t));
+        defer allocator.free(match);
+        std.debug.print("{} - Matching: {any}\n", .{ t, match });
 
         const aod_slot = try allocator.alloc(?usize, slm_slots.len);
         @memset(aod_slot, null);
 
         // First pass: place matched AODs (existing code)
-        for (matching, 0..) |slm, i| {
+        for (match, 0..) |slm, i| {
             if (slm == null) continue;
             const aod = aod_order[i];
             const idx: usize = slm_pos.get(slm.?).?;
@@ -440,7 +432,7 @@ fn logicalSchedule(
         // Second pass: place unmatched AODs into resting (gap) positions
         var gap_ptr: usize = 0;
         for (aod_order, 0..) |aod, i| {
-            if (matching[i]) |slm_v| {
+            if (match[i]) |slm_v| {
                 // Jump gap_ptr past this matched AOD's slot so the
                 // next unmatched AOD searches only in the region after it.
                 gap_ptr = slm_pos.get(slm_v).? + 1;
@@ -474,7 +466,7 @@ fn placeSlmQubits(
     g: *const Graph,
     aod_order: []const usize,
     slm_order: []const usize,
-    I: []const bool,
+    aod_set: []const bool,
 ) ![]?usize {
     // 2. Precompute slm_pos[slm_id] = its index in slm_order
     var slm_slot = try allocator.alloc(?usize, g.n);
@@ -503,91 +495,64 @@ fn placeSlmQubits(
     var t: usize = 0;
     const max_c = try g.maxColor();
     while (t < max_c + 1) : (t += 1) {
-        const matching = try matchingForColor(allocator, g, aod_order, I, @intCast(t));
-        defer allocator.free(matching);
-        std.debug.print("{} - Matching: {any}\n", .{ t, matching });
+        const match = try matchAodToSlm(allocator, g, aod_order, aod_set, @intCast(t));
+        defer allocator.free(match);
+        std.debug.print("{} - Matching: {any}\n", .{ t, match });
 
         var i: usize = 0;
-        while (matching[i] == null) : (i += 1) {}
+        while (match[i] == null) : (i += 1) {}
 
         // If i is already at the end, move to the next time step.
         // FIXME: Maybe this is always the case for the first iter.
-        if (i == matching.len - 1) continue;
+        if (i == match.len - 1) continue;
 
         var j: usize = i + 1;
-        while (j < matching.len - 1) : (j += 1) {
-            if (matching[j] != null) break;
+        while (j < match.len - 1) : (j += 1) {
+            if (match[j] != null) break;
         }
 
         // Ignore is no more qubits to the right.
         // For example, t4: [1, null, null]
-        if (matching[j] == null) continue;
+        if (match[j] == null) continue;
 
         std.debug.print("i:{} - j:{}\n", .{ i, j });
         var m = j - i;
         while (m > 1) : (m -= 1) {
-            const p = slm_pos.get(matching[i].?).? + 1;
+            const p = slm_pos.get(match[i].?).? + 1;
             const temp = slm_slot[p];
             slm_slot[p] = null;
             slm_slot[p + 1] = temp;
         }
-        //std.debug.print("New SLM Slots: {} - {any}\n", .{ t, slm_slot });
-
-        //    const aod_slot = try computeAodSlotsForTimeStep(allocator, aod_order, matching, fixed_slm_slots, slm_order);
-        //   defer allocator.free(aod_slot);
-
-        //debugPrintPositions(t, aod_order, slm_order, matching, fixed_slm_slots, aod_slot);
     }
 
     return slm_slot;
 }
 
-fn writeToJsonCompact(allocator: std.mem.Allocator, io: std.Io, schedule: *const Schedule, filename: []const u8) !void {
+fn writeToJson(allocator: std.mem.Allocator, io: std.Io, schedule: *const Schedule, filename: []const u8) !void {
     var buf: std.Io.Writer.Allocating = .init(allocator);
     defer buf.deinit();
     const w = &buf.writer;
 
     try w.writeAll("{\n");
 
-    // aod_order
-    try w.writeAll("  \"aod_order\": [");
-    for (schedule.aod_order, 0..) |v, i| {
+    // slm_slots
+    try w.writeAll("  \"slm_slots\": [");
+    for (schedule.slm_slots, 0..) |v, i| {
         if (i > 0) try w.writeAll(", ");
-        try w.print("{d}", .{v});
+        if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
     }
     try w.writeAll("],\n");
 
-    // slm_order
-    try w.writeAll("  \"slm_order\": [");
-    for (schedule.slm_order, 0..) |v, i| {
-        if (i > 0) try w.writeAll(", ");
-        try w.print("{d}", .{v});
-    }
-    try w.writeAll("],\n");
-
-    // aod_targets_per_color
-    try w.writeAll("  \"aod_targets_per_color\": [\n");
-    const targets = schedule.aod_targets_per_color[1..];
-    for (targets, 0..) |row, ci| {
+    // aod_slots_per_color
+    try w.writeAll("  \"aod_slots_per_color\": [\n");
+    for (schedule.aod_slots_per_color, 0..) |row, ci| {
         try w.writeAll("    [");
         for (row, 0..) |v, i| {
             if (i > 0) try w.writeAll(", ");
-            try w.print("{d}", .{v});
+            if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
         }
-        try w.writeAll(if (ci < targets.len - 1) "],\n" else "]\n");
-    }
-    try w.writeAll("  ],\n");
-
-    // gates_per_color
-    try w.writeAll("  \"gates_per_color\": [\n");
-    const gates = schedule.gates_per_color[1..];
-    for (gates, 0..) |layer, ci| {
-        try w.writeAll("    [");
-        for (layer, 0..) |gate, i| {
-            if (i > 0) try w.writeAll(", ");
-            try w.print("{{\"u\": {d}, \"v\": {d}}}", .{ gate.u, gate.v });
-        }
-        try w.writeAll(if (ci < gates.len - 1) "],\n" else "]\n");
+        const last = ci == schedule.aod_slots_per_color.len - 1;
+        try w.writeAll(if (last) "]\n" else "],\n");
     }
     try w.writeAll("  ],\n");
 
@@ -664,7 +629,7 @@ pub fn debugPrintPositions(
     time_step: usize,
     aod_order: []const usize,
     slm_order: []const usize,
-    matching: []const ?usize,
+    match: []const ?usize,
     fixed_slm_slots: []const usize,
     aod_slot: []const usize,
 ) void {
@@ -672,7 +637,7 @@ pub fn debugPrintPositions(
     std.debug.print("AOD order : ", .{});
     for (aod_order) |id| std.debug.print("AOD{d} ", .{id});
     std.debug.print("\nMatching  : ", .{});
-    for (matching) |m| {
+    for (match) |m| {
         if (m) |v| std.debug.print("SLM{d} ", .{v}) else std.debug.print("null ", .{});
     }
     std.debug.print("\n\nFIXED SLM layout (never changes):\n", .{});
@@ -697,7 +662,7 @@ pub fn debugPrintPositions(
         if (!printed) {
             for (aod_order, 0..) |aod_id, i| {
                 if (aod_slot[i] == slot) {
-                    if (matching[i]) |slm_id| {
+                    if (match[i]) |slm_id| {
                         std.debug.print("AOD{d} ↔ SLM{d}", .{ aod_id, slm_id });
                     } else {
                         std.debug.print("AOD{d} (RESTING GAP)", .{aod_id});
@@ -713,8 +678,7 @@ pub fn debugPrintPositions(
     std.debug.print("────────────────────────────────────\nTotal slots used: {d}\n====================================\n\n", .{max_slot + 1});
 }
 
-//pub fn main(init: std.process.Init) !void {
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
@@ -771,8 +735,8 @@ pub fn main() !void {
     defer schedule.deinit(alloc);
     schedule.print();
 
-    //    const io = init.io;
-    //    try writeToJsonCompact(alloc, io, &schedule, "schedule.json");
+    const io = init.io;
+    try writeToJson(alloc, io, &schedule, "/tmp/schedule.json");
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }
