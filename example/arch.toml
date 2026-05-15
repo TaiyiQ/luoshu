@@ -1,0 +1,80 @@
+# arch.toml
+
+# Neutral Atom Layout Architecture
+
+# ── Platform identity ──────────────────────────────────────────
+[platform]
+name = "taiyi-v1"
+version = "0.1"
+
+# ── Single AOD array ───────────────────────────────────────────
+# One AOD is sufficient for MVP — add aod_id = 1 later for
+# parallel shuttling across multiple entanglement zones.
+[aod]
+aod_id = 0
+min_sep_um = 4.0 # minimum row-to-row and col-to-col separation
+max_num_row = 7  # physical limit of your AOD row component
+max_num_col = 20 # physical limit of your AOD column component
+
+# ── Storage zone ───────────────────────────────────────────────
+# One rectangular SLM grid where idle qubits live.
+# Rydberg laser does NOT illuminate this region.
+[storage_zone]
+zone_id = 0
+offset_um = [0.0, 0.0]        # bottom-left corner (x, y)
+dimension_um = [300.0, 300.0] # width x height
+
+[storage_zone.slm]
+slm_id = 0
+num_row = 100
+num_col = 100
+sep_um = [3.0, 3.0]    # trap spacing (x, y)
+offset_um = [0.0, 0.0] # relative to storage_zone.offset_um
+
+# ── Entanglement zone ──────────────────────────────────────────
+# Where Rydberg laser fires. Atoms must be shuttled here for 2Q gates.
+# Two SLM arrays define Rydberg sites (pairs of traps separated by
+# dRyd). Engineer sets these from laser spot size measurements.
+[entanglement_zone]
+zone_id = 1
+offset_um = [0.0, 307.0]
+dimension_um = [240.0, 70.0]
+dr_um = 2.0                  # trap separation within a Rydberg site (laser spot size)
+dw_um = 10.0                 # site-to-site separation (must exceed blockade radius)
+
+# Each Rydberg site = one trap from slm_a + one trap from slm_b,
+# paired along x, separated by dRyd = slm_b.offset - slm_a.offset.
+# dRyd = 2um here (37 - 35 = 2).
+# Site-to-site spacing dω = 10um (sep_um values below).
+[[entanglement_zone.slms]]
+slm_id = 1
+num_row = 7
+num_col = 20
+sep_um = [12.0, 10.0]     # [dr_um + dw_um, dw_um]
+offset_um = [35.0, 307.0]
+
+[[entanglement_zone.slms]]
+slm_id = 2
+num_row = 7
+num_col = 20
+sep_um = [12.0, 10.0]
+offset_um = [37.0, 307.0]
+
+# ── Readout zone ───────────────────────────────────────────────
+# Where atoms are imaged. No SLM traps needed for MVP —
+# compiler just needs to know where to shuttle atoms for measurement.
+[readout_zone]
+zone_id = 2
+offset_um = [0.0, 390.0]
+dimension_um = [240.0, 30.0]
+
+# ── Physical constraints ───────────────────────────────────────
+# Compiler uses these to validate shuttles and estimate timing.
+[constraints]
+db_um = 10.0 # Rydberg interaction range (blockage radius)
+dz_um = 10.0 # min gap between zones (avoid stray excitation)
+
+# Gate and readout fidelity
+one_qubit_gate_fidelity = 0.999
+two_qubit_gate_fidelity = 0.995
+readout_fidelity = 0.990

@@ -1,0 +1,75 @@
+{
+  "version": "1.0",
+  "platform": "taiyi-v1",
+  "init": [
+    { "q": 0, "slm": 0, "x": 0, "y": 0 },
+    { "q": 1, "slm": 0, "x": 2, "y": 0 }
+  ],
+  "ops": [
+    {
+      "op": "raman",
+      "angle": 1.5708,
+      "phase": 3.1416,
+      "targets": [
+        { "q": 0, "slm": 0, "x": 0, "y": 0 },
+        { "q": 1, "slm": 0, "x": 2, "y": 0 }
+      ]
+    },
+    {
+      "op": "move",
+      "aod": 0,
+      "translate": "y",
+      "from_zone": "storage_zone",
+      "to_zone": "entanglement_zone",
+      "atoms": [
+        {
+          "q": 0,
+          "from": { "slm": 0, "x": 0, "y": 0 },
+          "to":   { "slm": 1, "x": 0, "y": 0 }
+        },
+        {
+          "q": 1,
+          "from": { "slm": 0, "x": 2, "y": 0 },
+          "to":   { "slm": 2, "x": 0, "y": 0 }
+        }
+      ]
+    },
+    {
+      "op": "rydberg",
+      "zone": "entanglement_zone"
+    },
+    {
+      "op": "raman",
+      "angle": 1.5708,
+      "phase": 0.0,
+      "targets": [
+        { "q": 1, "slm": 2, "x": 0, "y": 0 }
+      ]
+    },
+    {
+      "op": "move",
+      "aod": 0,
+      "translate": "y",
+      "from_zone": "entanglement_zone",
+      "to_zone": "readout_zone",
+      "atoms": [
+        {
+          "q": 0,
+          "from": { "slm": 1, "x": 0, "y": 0 },
+          "to":   { "slm": null, "x": 0, "y": 0 }
+        },
+        {
+          "q": 1,
+          "from": { "slm": 2, "x": 0, "y": 0 },
+          "to":   { "slm": null, "x": 1, "y": 0 }
+        }
+      ]
+    },
+    {
+      "op": "measure",
+      "zone": "readout_zone",
+      "basis": "Z",
+      "qubits": [0, 1]
+    }
+  ]
+}
