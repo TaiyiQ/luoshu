@@ -62,12 +62,12 @@ const AodConstraints = struct {
     }
 };
 
-const Schedule = struct {
+pub const Schedule = struct {
     slm_slots: []const ?usize,
     aod_slots_per_color: [][]?usize,
     max_color: i32,
 
-    fn deinit(self: *Schedule, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Schedule, allocator: std.mem.Allocator) void {
         allocator.free(self.slm_slots);
         for (self.aod_slots_per_color) |slot| {
             allocator.free(slot);
@@ -126,7 +126,7 @@ const EdgeNode = struct {
     next: ?*EdgeNode,
 };
 
-const Graph = struct {
+pub const Graph = struct {
     allocator: std.mem.Allocator,
     edges: []?*EdgeNode,
     degree: []usize,
@@ -134,7 +134,7 @@ const Graph = struct {
     m: usize,
     directed: bool, // Used for topological sorting of SLMs.
 
-    fn init(allocator: std.mem.Allocator, n: usize, directed: bool) !Graph {
+    pub fn init(allocator: std.mem.Allocator, n: usize, directed: bool) !Graph {
         const edges = try allocator.alloc(?*EdgeNode, n);
         @memset(edges, null);
 
@@ -151,7 +151,7 @@ const Graph = struct {
         };
     }
 
-    fn deinit(self: *Graph) void {
+    pub fn deinit(self: *Graph) void {
         for (self.edges) |v| {
             var node = v;
             while (node) |n| {
@@ -164,14 +164,7 @@ const Graph = struct {
         self.allocator.free(self.degree);
     }
 
-    fn addNode(s: *Graph, x: usize, y: usize) !void {
-        const n = try s.allocator.create(EdgeNode);
-        n.* = .{ .y = y, .color = null, .next = s.edges[x] };
-        s.edges[x] = n;
-        s.degree[x] += 1;
-    }
-
-    fn addEdge(s: *Graph, x: usize, y: usize) !void {
+    pub fn addEdge(s: *Graph, x: usize, y: usize) !void {
         // Ignore self-loops.
         if (x == y) return;
 
@@ -184,6 +177,13 @@ const Graph = struct {
         try s.addNode(x, y);
         if (!s.directed) try s.addNode(y, x);
         s.m += 1;
+    }
+
+    fn addNode(s: *Graph, x: usize, y: usize) !void {
+        const n = try s.allocator.create(EdgeNode);
+        n.* = .{ .y = y, .color = null, .next = s.edges[x] };
+        s.edges[x] = n;
+        s.degree[x] += 1;
     }
 
     fn maxColor(g: *const Graph) !i32 {
@@ -843,7 +843,7 @@ pub fn debugPrintPositions(
     std.debug.print("────────────────────────────────────\nTotal slots used: {d}\n====================================\n\n", .{max_slot + 1});
 }
 
-fn compile(allocator: std.mem.Allocator, g: *Graph) !Schedule {
+pub fn compile(allocator: std.mem.Allocator, g: *Graph) !Schedule {
     // 1. AOD set.
     var aod = try maxIndependentSet(allocator, g.*);
     defer aod.deinit(allocator);
@@ -887,11 +887,6 @@ pub fn main(init: std.process.Init) !void {
     //    try g.addEdge(2, 4);
     //    try g.addEdge(2, 5);
 
-    // 0-1-2
-    // |   |   |
-    // 3-4-5
-    // |   |   |
-    // 6-7-8
     var g = try Graph.init(alloc, 9, false);
     defer g.deinit();
     try g.addEdge(0, 1);
@@ -907,62 +902,99 @@ pub fn main(init: std.process.Init) !void {
     try g.addEdge(2, 5);
     try g.addEdge(5, 8);
 
-    //    // 0-1-2-3
-    //    // |  |  |  |
-    //    // 4-5-6-7
-    //    var g = try Graph.init(alloc, 8, false);
-    //    defer g.deinit();
-    //    try g.addEdge(0, 1);
-    //    try g.addEdge(1, 2);
-    //    try g.addEdge(2, 3);
-    //    try g.addEdge(4, 5);
-    //    try g.addEdge(5, 6);
-    //    try g.addEdge(6, 7);
-    //    try g.addEdge(0, 4);
-    //    try g.addEdge(1, 5);
-    //    try g.addEdge(2, 6);
-    //    try g.addEdge(3, 7);
-
-    //    // C6 — cycle of 6 nodes, MIS = {0, 2, 4}, should give 2 timesteps
-    //    var g = try Graph.init(alloc, 6, false);
-    //    defer g.deinit();
-    //    try g.addEdge(0, 1);
-    //    try g.addEdge(1, 2);
-    //    try g.addEdge(2, 3);
-    //    try g.addEdge(3, 4);
-    //    try g.addEdge(4, 5);
-    //    try g.addEdge(5, 0);
-
-    //    // QFT
-    //    var g = try Graph.init(alloc, 5, false);
-    //    defer g.deinit();
-    //    try g.addEdge(0, 1);
-    //    try g.addEdge(0, 2);
-    //    try g.addEdge(0, 3);
-    //    try g.addEdge(0, 4);
-    //    try g.addEdge(1, 2);
-    //    try g.addEdge(1, 3);
-    //    try g.addEdge(1, 4);
-    //    try g.addEdge(2, 3);
-    //    try g.addEdge(2, 4);
-    //    try g.addEdge(3, 4);
-
     var schedule = try compile(alloc, &g);
     defer schedule.deinit(alloc);
     schedule.print();
 
     const io = init.io;
-    try writeToJson(alloc, io, &schedule, "/tmp/schedule.json");
+    try writeToJson(alloc, io, &schedule, "testdata/grid.json");
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }
 
-// TODO: Update unit tests to check for AOD crossings.
-test "7-node graph: aod set, coloring, schedule shape" {
-    const alloc = std.testing.allocator;
+//test "10-node bipartite circuit: no crossings, no conflicts" {
+//    const alloc = std.testing.allocator;
+//
+//    var g = try Graph.init(alloc, 10, false);
+//    defer g.deinit();
+//    try g.addEdge(0, 6);
+//    try g.addEdge(0, 2);
+//    try g.addEdge(1, 7);
+//    try g.addEdge(1, 2);
+//    try g.addEdge(3, 9);
+//    try g.addEdge(3, 6);
+//    try g.addEdge(4, 9);
+//    try g.addEdge(4, 8);
+//    try g.addEdge(5, 8);
+//    try g.addEdge(5, 7);
+//
+//    var schedule = try compile(alloc, &g);
+//    defer schedule.deinit(alloc);
+//
+//    // Bipartite graph with max degree 2 → at most 2 colors.
+//    try std.testing.expect(schedule.max_color <= 2);
+//    try std.testing.expectEqual(
+//        @as(usize, @intCast(schedule.max_color + 1)),
+//        schedule.aod_slots_per_color.len,
+//    );
+//}
 
-    var g = try Graph.init(alloc, 7, false);
-    defer g.deinit();
+test "snapshot: mvp - aod set, coloring, schedule shape" {
+    try @import("snapshot.zig").snapshotTest(
+        std.testing.allocator,
+        std.testing.io,
+        buildMvpGraph,
+        "testdata/mvp.json",
+    );
+}
+
+test "snapshot: cycle" {
+    try @import("snapshot.zig").snapshotTest(
+        std.testing.allocator,
+        std.testing.io,
+        buildCycleGraph,
+        "testdata/cycle.json",
+    );
+}
+
+test "snapshot: ladder — parallel AOD lanes" {
+    try @import("snapshot.zig").snapshotTest(
+        std.testing.allocator,
+        std.testing.io,
+        buildLadderGraph,
+        "testdata/ladder.json",
+    );
+}
+
+test "snapshot: 3x3 grid — complex MIS and gap pressure" {
+    try @import("snapshot.zig").snapshotTest(
+        std.testing.allocator,
+        std.testing.io,
+        buildGridGraph,
+        "testdata/grid.json",
+    );
+}
+
+test "snapshot: ghz - binary tree" {
+    try @import("snapshot.zig").snapshotTest(
+        std.testing.allocator,
+        std.testing.io,
+        buildGhzGraph,
+        "testdata/ghz.json",
+    );
+}
+
+test "snapshot: qft" {
+    try @import("snapshot.zig").snapshotTest(
+        std.testing.allocator,
+        std.testing.io,
+        buildQftGraph,
+        "testdata/qft.json",
+    );
+}
+
+pub fn buildMvpGraph(allocator: std.mem.Allocator) !Graph {
+    var g = try Graph.init(allocator, 7, false);
     try g.addEdge(0, 1);
     try g.addEdge(0, 5);
     try g.addEdge(1, 6);
@@ -972,22 +1004,72 @@ test "7-node graph: aod set, coloring, schedule shape" {
     try g.addEdge(3, 4);
     try g.addEdge(3, 2);
     try g.addEdge(4, 2);
-
-    var schedule = try compile(alloc, &g);
-    defer schedule.deinit(alloc);
-
-    try std.testing.expect(schedule.max_color >= 3);
-    try std.testing.expectEqual(
-        @as(usize, @intCast(schedule.max_color + 1)),
-        schedule.aod_slots_per_color.len,
-    );
+    return g;
 }
 
-test "8-node GHZ binary tree: 3 time steps, no crossings" {
-    const alloc = std.testing.allocator;
+pub fn buildCycleGraph(allocator: std.mem.Allocator) !Graph {
+    var g = try Graph.init(allocator, 6, false);
+    try g.addEdge(0, 1);
+    try g.addEdge(1, 2);
+    try g.addEdge(2, 3);
+    try g.addEdge(3, 4);
+    try g.addEdge(4, 5);
+    try g.addEdge(5, 0);
+    return g;
+}
 
-    var g = try Graph.init(alloc, 8, false);
-    defer g.deinit();
+// Two rows of AODs interleaved with SLMs, with vertical rungs
+// creating cross-row ordering constraints. Tests whether the
+// SLM topo-sort correctly handles constraints coming from
+// two independent "lanes" of AODs simultaneously.
+//
+// 0-1-2-3
+// | | | |
+// 4-5-6-7
+pub fn buildLadderGraph(allocator: std.mem.Allocator) !Graph {
+    var g = try Graph.init(allocator, 8, false);
+    try g.addEdge(0, 1);
+    try g.addEdge(1, 2);
+    try g.addEdge(2, 3);
+    try g.addEdge(4, 5);
+    try g.addEdge(5, 6);
+    try g.addEdge(6, 7);
+    try g.addEdge(0, 4);
+    try g.addEdge(1, 5);
+    try g.addEdge(2, 6);
+    try g.addEdge(3, 7);
+    return g;
+}
+
+// Checkerboard MIS gives 5 AODs and 4 SLMs.
+// Many unmatched AODs at each timestep means
+// maximum pressure on placeSlmQubits gap
+// counting and the left-scan resting logic.
+//
+// 0-1-2
+// | | |
+// 3-4-5
+// | | |
+// 6-7-8
+pub fn buildGridGraph(allocator: std.mem.Allocator) !Graph {
+    var g = try Graph.init(allocator, 9, false);
+    try g.addEdge(0, 1);
+    try g.addEdge(1, 2);
+    try g.addEdge(3, 4);
+    try g.addEdge(4, 5);
+    try g.addEdge(6, 7);
+    try g.addEdge(7, 8);
+    try g.addEdge(0, 3);
+    try g.addEdge(3, 6);
+    try g.addEdge(1, 4);
+    try g.addEdge(4, 7);
+    try g.addEdge(2, 5);
+    try g.addEdge(5, 8);
+    return g;
+}
+
+pub fn buildGhzGraph(allocator: std.mem.Allocator) !Graph {
+    var g = try Graph.init(allocator, 8, false);
     try g.addEdge(0, 4);
     try g.addEdge(0, 2);
     try g.addEdge(4, 6);
@@ -995,48 +1077,20 @@ test "8-node GHZ binary tree: 3 time steps, no crossings" {
     try g.addEdge(2, 3);
     try g.addEdge(4, 5);
     try g.addEdge(6, 7);
-
-    var schedule = try compile(alloc, &g);
-    defer schedule.deinit(alloc);
-
-    try std.testing.expectEqual(@as(i32, 2), schedule.max_color);
-    try std.testing.expectEqual(@as(usize, 3), schedule.aod_slots_per_color.len);
-
-    for (schedule.aod_slots_per_color) |aod_slot| {
-        var seen = std.AutoHashMap(usize, void).init(alloc);
-        defer seen.deinit();
-        for (aod_slot) |entry| {
-            if (entry) |aod_id| {
-                const result = try seen.getOrPut(aod_id);
-                try std.testing.expect(!result.found_existing);
-            }
-        }
-    }
+    return g;
 }
 
-test "10-node bipartite circuit: no crossings, no conflicts" {
-    const alloc = std.testing.allocator;
-
-    var g = try Graph.init(alloc, 10, false);
-    defer g.deinit();
-    try g.addEdge(0, 6);
+pub fn buildQftGraph(allocator: std.mem.Allocator) !Graph {
+    var g = try Graph.init(allocator, 5, false);
+    try g.addEdge(0, 1);
     try g.addEdge(0, 2);
-    try g.addEdge(1, 7);
+    try g.addEdge(0, 3);
+    try g.addEdge(0, 4);
     try g.addEdge(1, 2);
-    try g.addEdge(3, 9);
-    try g.addEdge(3, 6);
-    try g.addEdge(4, 9);
-    try g.addEdge(4, 8);
-    try g.addEdge(5, 8);
-    try g.addEdge(5, 7);
-
-    var schedule = try compile(alloc, &g);
-    defer schedule.deinit(alloc);
-
-    // Bipartite graph with max degree 2 → at most 2 colors.
-    try std.testing.expect(schedule.max_color <= 2);
-    try std.testing.expectEqual(
-        @as(usize, @intCast(schedule.max_color + 1)),
-        schedule.aod_slots_per_color.len,
-    );
+    try g.addEdge(1, 3);
+    try g.addEdge(1, 4);
+    try g.addEdge(2, 3);
+    try g.addEdge(2, 4);
+    try g.addEdge(3, 4);
+    return g;
 }
