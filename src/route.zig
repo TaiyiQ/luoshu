@@ -3,6 +3,16 @@ const std = @import("std");
 const INF = std.math.maxInt(usize);
 const MIN = -1; // -1 to help k in leastAdmissible start at 0.
 
+const Aod = struct {
+    set: []bool,
+    nodes: std.ArrayList(usize), // ordered nodes
+
+    fn deinit(s: *Aod, allocator: std.mem.Allocator) void {
+        allocator.free(s.set);
+        s.nodes.deinit(allocator);
+    }
+};
+
 const AodConstraints = struct {
     adj: []std.ArrayList(usize), // adj[i] = AOD indices that i must come before
     n: usize,
@@ -52,12 +62,12 @@ const AodConstraints = struct {
     }
 };
 
-const Schedule = struct {
+pub const Schedule = struct {
     slm_slots: []const ?usize,
     aod_slots_per_color: [][]?usize,
     max_color: i32,
 
-    fn deinit(self: *Schedule, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Schedule, allocator: std.mem.Allocator) void {
         allocator.free(self.slm_slots);
         for (self.aod_slots_per_color) |slot| {
             allocator.free(slot);
@@ -68,16 +78,6 @@ const Schedule = struct {
     fn print(self: Schedule) void {
         const n_slots = self.slm_slots.len;
 
-        std.debug.print("\n", .{});
-
-        // Divider
-        std.debug.print("     +", .{});
-        for (0..n_slots) |_| std.debug.print("-----+", .{});
-        std.debug.print("\n", .{});
-
-        // Header
-        std.debug.print("     |", .{});
-        for (0..n_slots) |s| std.debug.print("{d:^5}|", .{s});
         std.debug.print("\n", .{});
 
         // Divider
@@ -126,7 +126,7 @@ const EdgeNode = struct {
     next: ?*EdgeNode,
 };
 
-const Graph = struct {
+pub const Graph = struct {
     allocator: std.mem.Allocator,
     edges: []?*EdgeNode,
     degree: []usize,
@@ -134,7 +134,7 @@ const Graph = struct {
     m: usize,
     directed: bool, // Used for topological sorting of SLMs.
 
-    fn init(allocator: std.mem.Allocator, n: usize, directed: bool) !Graph {
+    pub fn init(allocator: std.mem.Allocator, n: usize, directed: bool) !Graph {
         const edges = try allocator.alloc(?*EdgeNode, n);
         @memset(edges, null);
 
@@ -151,7 +151,7 @@ const Graph = struct {
         };
     }
 
-    fn deinit(self: *Graph) void {
+    pub fn deinit(self: *Graph) void {
         for (self.edges) |v| {
             var node = v;
             while (node) |n| {
@@ -164,14 +164,7 @@ const Graph = struct {
         self.allocator.free(self.degree);
     }
 
-    fn addNode(s: *Graph, x: usize, y: usize) !void {
-        const n = try s.allocator.create(EdgeNode);
-        n.* = .{ .y = y, .color = null, .next = s.edges[x] };
-        s.edges[x] = n;
-        s.degree[x] += 1;
-    }
-
-    fn addEdge(s: *Graph, x: usize, y: usize) !void {
+    pub fn addEdge(s: *Graph, x: usize, y: usize) !void {
         // Ignore self-loops.
         if (x == y) return;
 
@@ -184,6 +177,13 @@ const Graph = struct {
         try s.addNode(x, y);
         if (!s.directed) try s.addNode(y, x);
         s.m += 1;
+    }
+
+    fn addNode(s: *Graph, x: usize, y: usize) !void {
+        const n = try s.allocator.create(EdgeNode);
+        n.* = .{ .y = y, .color = null, .next = s.edges[x] };
+        s.edges[x] = n;
+        s.degree[x] += 1;
     }
 
     fn maxColor(g: *const Graph) !i32 {
@@ -213,130 +213,62 @@ const Graph = struct {
     }
 };
 
-//fn aodSet(allocator: std.mem.Allocator, g: Graph) ![]bool {
-//    var aod_set = try allocator.alloc(bool, g.n);
-//    @memset(aod_set, false);
-//
-//    // Sort nodes descending by degree.
-//    var order = try std.ArrayList(usize).initCapacity(allocator, g.n);
-//    defer order.deinit(allocator);
-//
-//    for (0..g.n) |i| order.appendAssumeCapacity(i);
-//    std.sort.heap(usize, order.items, g, struct {
-//        fn less(graph: Graph, a: usize, b: usize) bool {
-//            return graph.degree[a] > graph.degree[b];
-//        }
-//    }.less);
-//    std.debug.print("1 -- order: {any}", .{order.items});
-//
-//    // Add node when all it's neighbours are false.
-//    for (order.items) |v| {
-//        var add = true;
-//        var e = g.edges[v];
-//        while (e) |edge| : (e = edge.next) {
-//            if (aod_set[edge.y]) {
-//                add = false;
-//                break;
-//            }
-//        }
-//        if (add) aod_set[v] = true;
-//    }
-//
-//    return aod_set;
-//}
+fn maxIndependentSet(allocator: std.mem.Allocator, g: Graph) !Aod {
+    var set = try allocator.alloc(bool, g.n);
+    @memset(set, false);
 
-fn aodSet(allocator: std.mem.Allocator, g: Graph) ![]bool {
-    // Try 2-coloring (BFS). For bipartite graphs this gives a valid
-    // vertex cover, ensuring every edge has one AOD endpoint.
-    const color = try allocator.alloc(i8, g.n); // -1=unvisited, 0=SLM, 1=AOD
-    defer allocator.free(color);
-    @memset(color, -1);
-
-    var queue: std.ArrayList(usize) = .empty;
-    defer queue.deinit(allocator);
-
-    // Handle disconnected components.
-    for (0..g.n) |start| {
-        if (color[start] != -1) continue;
-        color[start] = 1; // seed each component as AOD
-        try queue.append(allocator, start);
-
-        while (queue.items.len > 0) {
-            const u = queue.orderedRemove(0);
-            var e = g.edges[u];
-            while (e) |edge| : (e = edge.next) {
-                const v = edge.y;
-                if (color[v] == -1) {
-                    color[v] = 1 - color[u]; // flip color
-                    try queue.append(allocator, v);
-                } else if (color[v] == color[u]) {
-                    // Odd cycle — not bipartite. Fall back to greedy MIS.
-                    return aodSetGreedy(allocator, g);
-                }
-            }
-        }
-    }
-
-    // Use the smaller partition as AODs to minimize atom moves.
-    var count: [2]usize = .{ 0, 0 };
-    for (color) |c| count[@intCast(c)] += 1;
-    const aod_color: i8 = if (count[0] <= count[1]) 0 else 1;
-
-    const aod_set = try allocator.alloc(bool, g.n);
-    for (0..g.n) |i| aod_set[i] = (color[i] == aod_color);
-    return aod_set;
-}
-
-// Original greedy MIS as fallback for non-bipartite graphs.
-fn aodSetGreedy(allocator: std.mem.Allocator, g: Graph) ![]bool {
-    var aod_set = try allocator.alloc(bool, g.n);
-    @memset(aod_set, false);
-
+    // Sort nodes descending by degree.
     var order = try std.ArrayList(usize).initCapacity(allocator, g.n);
-    defer order.deinit(allocator);
+    defer order.deinit(allocator); // ← free the temp sort buffer
+
     for (0..g.n) |i| order.appendAssumeCapacity(i);
     std.sort.heap(usize, order.items, g, struct {
         fn less(graph: Graph, a: usize, b: usize) bool {
-            if (graph.degree[a] != graph.degree[b]) return graph.degree[a] > graph.degree[b];
-            return a < b;
+            //return graph.degree[a] > graph.degree[b];
+            if (graph.degree[a] != graph.degree[b]) {
+                return graph.degree[a] > graph.degree[b];
+            }
+            return a > b;
         }
     }.less);
 
+    // Greedy MIS: add a node when none of its neighbours are in the set.
     for (order.items) |v| {
         var add = true;
         var e = g.edges[v];
         while (e) |edge| : (e = edge.next) {
-            if (aod_set[edge.y]) {
+            if (set[edge.y]) {
                 add = false;
                 break;
             }
         }
-        if (add) aod_set[v] = true;
+        if (add) set[v] = true;
     }
-    return aod_set;
+
+    // nodes holds only AOD nodes, in degree-sorted order.
+    var nodes = try std.ArrayList(usize).initCapacity(allocator, g.n);
+    for (order.items) |v| {
+        if (set[v]) try nodes.append(allocator, v);
+    }
+
+    std.debug.print(">> AOD ordered nodes: {any}\n", .{nodes.items});
+
+    return .{ .set = set, .nodes = nodes };
 }
-fn dsatur(allocator: std.mem.Allocator, g: *Graph, aod_set: []const bool) !void {
-    var aod_nodes: std.ArrayList(usize) = .empty;
-    defer aod_nodes.deinit(allocator);
-    for (0..g.n) |i| if (aod_set[i]) try aod_nodes.append(allocator, i);
 
-    std.sort.heap(usize, aod_nodes.items, g, struct {
-        fn less(graph: *Graph, a: usize, b: usize) bool {
-            if (graph.degree[a] != graph.degree[b]) return graph.degree[a] > graph.degree[b];
-            return a < b;
-        }
-    }.less);
-
+// Use a modified DSatur algorithm to color edges instead of nodes.
+fn colorEdges(allocator: std.mem.Allocator, g: *Graph, aod: Aod) !void {
     // Map node_id -> index in aod_nodes (stable across the whole coloring).
     var aod_idx = std.AutoHashMap(usize, usize).init(allocator);
     defer aod_idx.deinit();
-    for (aod_nodes.items, 0..) |a, i| try aod_idx.put(a, i);
+
+    for (aod.nodes.items, 0..) |a, i| try aod_idx.put(a, i);
 
     // Constraint graph: maintained incrementally to detect cycles early.
-    var constraints = try AodConstraints.init(allocator, aod_nodes.items.len);
+    var constraints = try AodConstraints.init(allocator, aod.nodes.items.len);
     defer constraints.deinit();
 
-    for (aod_nodes.items) |v| {
+    for (aod.nodes.items) |v| {
         var adj: std.ArrayList(usize) = .empty;
         defer adj.deinit(allocator);
 
@@ -360,6 +292,7 @@ fn dsatur(allocator: std.mem.Allocator, g: *Graph, aod_set: []const bool) !void 
             while (n) |edge| : (n = edge.next) {
                 if (edge.y == y) edge.color = c;
             }
+
             n = g.edges[y];
             while (n) |edge| : (n = edge.next) {
                 if (edge.y == v) edge.color = c;
@@ -518,99 +451,6 @@ fn slmGraph(allocator: std.mem.Allocator, g: *Graph, aod_set: []const bool) !Gra
     return dep;
 }
 
-fn topoSortAods(
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    aod_set: []const bool,
-    slm_order: []const usize,
-    max_c: i32,
-) !?[]usize {
-    // Rank map: slm_id -> left-to-right rank from topo sort
-    var slm_rank = std.AutoHashMap(usize, usize).init(allocator);
-    defer slm_rank.deinit();
-    for (slm_order, 0..) |s, i| try slm_rank.put(s, i);
-
-    // Collect AOD nodes in stable index order
-    var aods: std.ArrayList(usize) = .empty;
-    defer aods.deinit(allocator);
-
-    for (0..g.n) |i| if (aod_set[i]) try aods.append(allocator, i);
-    const n = aods.items.len;
-
-    var aod_idx = std.AutoHashMap(usize, usize).init(allocator);
-    defer aod_idx.deinit();
-    for (aods.items, 0..) |a, i| try aod_idx.put(a, i);
-
-    // Boolean adjacency matrix for "must be left of" constraints
-    const matrix = try allocator.alloc(bool, n * n);
-    defer allocator.free(matrix);
-    @memset(matrix, false);
-
-    // For each time step, sort active AODs by SLM rank and record ordering constraints
-    var t: i32 = 0;
-    while (t <= max_c) : (t += 1) {
-        const Pair = struct { ai: usize, rank: usize };
-        var active: std.ArrayList(Pair) = .empty;
-        defer active.deinit(allocator);
-
-        for (aods.items, 0..) |aod, ai| {
-            var e = g.edges[aod];
-            while (e) |edge| : (e = edge.next) {
-                if (!aod_set[edge.y] and edge.color == t) {
-                    if (slm_rank.get(edge.y)) |rank| {
-                        try active.append(allocator, .{ .ai = ai, .rank = rank });
-                    }
-                    break;
-                }
-            }
-        }
-
-        std.sort.heap(Pair, active.items, {}, struct {
-            fn less(_: void, a: Pair, b: Pair) bool {
-                return a.rank < b.rank;
-            }
-        }.less);
-
-        for (0..active.items.len -| 1) |i| {
-            matrix[active.items[i].ai * n + active.items[i + 1].ai] = true;
-        }
-    }
-
-    // Topological sort on the AOD constraint graph
-    var in_deg = try allocator.alloc(usize, n);
-    defer allocator.free(in_deg);
-    @memset(in_deg, 0);
-    for (0..n) |i| {
-        for (0..n) |j| {
-            if (matrix[i * n + j]) in_deg[j] += 1;
-        }
-    }
-
-    var queue: std.ArrayList(usize) = .empty;
-    defer queue.deinit(allocator);
-    for (0..n) |i| if (in_deg[i] == 0) try queue.append(allocator, i);
-
-    var result: std.ArrayList(usize) = .empty;
-    defer result.deinit(allocator);
-
-    while (queue.items.len > 0) {
-        const u = queue.orderedRemove(0);
-        try result.append(allocator, aods.items[u]);
-        for (0..n) |v| {
-            if (matrix[u * n + v]) {
-                in_deg[v] -= 1;
-                if (in_deg[v] == 0) try queue.append(allocator, v);
-            }
-        }
-    }
-
-    // Cycle detected — not all nodes were sorted.
-    if (result.items.len != n) return null;
-
-    const slice = try result.toOwnedSlice(allocator);
-    return slice;
-}
-
 fn topoSort(allocator: std.mem.Allocator, g: Graph, aod_set: []const bool) ![]usize {
     // Only SLM qubits
     var n_slm: usize = 0;
@@ -663,20 +503,19 @@ fn topoSort(allocator: std.mem.Allocator, g: Graph, aod_set: []const bool) ![]us
 fn matchAodToSlm(
     allocator: std.mem.Allocator,
     g: *const Graph,
-    aod_order: []const usize,
-    aod_set: []const bool,
+    aod: Aod,
     t: i32,
 ) ![]?usize {
-    if (aod_order.len == 0) return try allocator.alloc(?usize, 0);
+    if (aod.nodes.items.len == 0) return try allocator.alloc(?usize, 0);
 
-    const match = try allocator.alloc(?usize, aod_order.len);
+    const match = try allocator.alloc(?usize, aod.nodes.items.len);
     @memset(match, null);
     errdefer allocator.free(match);
 
-    for (aod_order, 0..) |x, i| {
+    for (aod.nodes.items, 0..) |x, i| {
         var e = g.edges[x];
         while (e) |edge| : (e = edge.next) {
-            if (edge.color == t and !aod_set[edge.y]) {
+            if (edge.color == t and !aod.set[edge.y]) {
                 match[i] = edge.y;
                 break; // There can only be 1 SLM-AOD match per timestep.
             }
@@ -689,78 +528,88 @@ fn matchAodToSlm(
 fn logicalSchedule(
     allocator: std.mem.Allocator,
     g: *Graph,
-    aod_order: []const usize,
+    aod: Aod,
     slm_slots: []const ?usize,
-    aod_set: []const bool,
 ) !Schedule {
     var slm_pos = std.AutoHashMap(usize, usize).init(allocator);
     defer slm_pos.deinit();
-    for (slm_slots, 0..) |v, i| {
-        if (v != null) try slm_pos.put(v.?, i);
+    for (slm_slots, 0..) |v, t| {
+        if (v) |id| try slm_pos.put(id, t);
     }
 
     const max_c = try g.maxColor();
     const n_slot = @as(usize, @intCast(max_c)) + 1;
-    var aod_slots_per_color = try allocator.alloc([]?usize, n_slot);
 
-    // Track each AOD's last known slot position to enforce left-to-right movement.
-    var last_pos = try allocator.alloc(usize, aod_order.len);
+    var aod_slots_per_color = try allocator.alloc([]?usize, n_slot);
+    var filled: usize = 0;
+    errdefer {
+        for (aod_slots_per_color[0..filled]) |slot| allocator.free(slot);
+        allocator.free(aod_slots_per_color);
+    }
+
+    // Track last known column of each AOD.
+    var last_pos = try allocator.alloc(usize, aod.nodes.items.len);
     defer allocator.free(last_pos);
     @memset(last_pos, 0);
 
-    var t: usize = 0;
-    while (t < max_c + 1) : (t += 1) {
-        const match = try matchAodToSlm(allocator, g, aod_order, aod_set, @intCast(t));
-        defer allocator.free(match);
-
+    for (0..n_slot) |t| {
         const aod_slot = try allocator.alloc(?usize, slm_slots.len);
         @memset(aod_slot, null);
 
-        // First pass: place matched AODs.
-        for (match, 0..) |slm, i| {
-            if (slm == null) continue;
-            const idx = slm_pos.get(slm.?).?;
-            aod_slot[idx] = aod_order[i];
-            last_pos[i] = idx;
-        }
+        // TODO: Is this correct?
+        //defer allocator.free(aod_slot);
 
-        // Second pass: place unmatched AODs into resting positions.
-        for (aod_order, 0..) |aod, i| {
+        // Phase 1: Place active AODs with their SLM partners.
+        const match = try matchAodToSlm(allocator, g, aod, @intCast(t));
+        defer allocator.free(match);
+        for (match, 0..) |slm, i| {
+            if (slm) |id| {
+                if (slm_pos.get(id)) |c| {
+                    aod_slot[c] = aod.nodes.items[i];
+                    last_pos[i] = c;
+                }
+            }
+        }
+        // Phase 2: place resting AODs.
+        // nodes[0]=rightmost; nodes[i] must land strictly LEFT of nodes[i-1].
+        for (aod.nodes.items, 0..) |v, i| {
             if (match[i] != null) continue;
 
-            // Must be right of own last position AND right of the AOD to our left
-            // in the current timestep (preserves global left-to-right order).
-            var min_pos = last_pos[i];
+            // Upper bound: must be strictly left of our right-neighbour's slot.
+            var max_pos: usize = aod_slot.len; // i==0 has no right neighbour
             if (i > 0) {
-                // Find where the left neighbour landed this timestep.
-                for (0..aod_slot.len) |s| {
-                    if (aod_slot[s]) |id| {
-                        if (id == aod_order[i - 1]) {
-                            min_pos = @max(min_pos, s + 1);
-                            break;
-                        }
+                const right_aod = aod.nodes.items[i - 1];
+                for (aod_slot, 0..) |placed, c| {
+                    if (placed == right_aod) {
+                        max_pos = c; // must land in [0, max_pos)
+                        break;
                     }
                 }
             }
 
-            var gap_ptr: usize = min_pos;
+            // Scan right-to-left: pick rightmost free null slot before max_pos.
             var placed = false;
-            while (gap_ptr < aod_slot.len) : (gap_ptr += 1) {
-                if (slm_slots[gap_ptr] == null and aod_slot[gap_ptr] == null) {
-                    aod_slot[gap_ptr] = aod;
-                    last_pos[i] = gap_ptr;
-                    placed = true;
-                    gap_ptr += 1;
-                    break;
+            if (max_pos > 0) {
+                var gap_ptr: usize = max_pos - 1;
+                while (true) {
+                    if (slm_slots[gap_ptr] == null and aod_slot[gap_ptr] == null) {
+                        aod_slot[gap_ptr] = v;
+                        placed = true;
+                        break;
+                    }
+                    if (gap_ptr == 0) break;
+                    gap_ptr -= 1;
                 }
             }
-            if (!placed) return error.NoRestingSlotAvailable;
+
+            if (!placed) {
+                std.debug.print("Failed to place resting AOD {d} at time step {d}\n", .{ v, t });
+                return error.NoRestingSlotAvailable;
+            }
         }
 
-        // After placing, update last_pos for matched AODs too
-        // (already done in first pass above).
-
         aod_slots_per_color[t] = aod_slot;
+        filled += 1; // ← only incremented after successful assignment
     }
 
     return Schedule{
@@ -768,95 +617,6 @@ fn logicalSchedule(
         .aod_slots_per_color = aod_slots_per_color,
         .max_color = max_c,
     };
-}
-
-fn placeSlmQubits(
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    aod_order: []const usize,
-    slm_order: []const usize,
-    aod_set: []const bool,
-) ![]?usize {
-    if (aod_order.len == 0) return error.NoAodNodes;
-
-    const max_c = try g.maxColor();
-    const n_slm = slm_order.len;
-
-    // slm_rank[slm_id] = index in slm_order (left-to-right rank).
-    var slm_rank = std.AutoHashMap(usize, usize).init(allocator);
-    defer slm_rank.deinit();
-    for (slm_order, 0..) |s, i| try slm_rank.put(s, i);
-
-    // aod_rank[aod_id] = index in aod_order.
-    var aod_rank = std.AutoHashMap(usize, usize).init(allocator);
-    defer aod_rank.deinit();
-    for (aod_order, 0..) |a, i| try aod_rank.put(a, i);
-
-    // gap_needs[g] = max AODs that need to rest in gap g across all timesteps.
-    // Gap g is the space before SLM at slm_order[g] (gap 0 = before first SLM,
-    // gap n_slm = after last SLM, gaps 1..n_slm-1 = between consecutive SLMs).
-    const n_gaps = n_slm + 1;
-    const gap_needs = try allocator.alloc(usize, n_gaps);
-    defer allocator.free(gap_needs);
-    @memset(gap_needs, 0);
-
-    var t: i32 = 0;
-    while (t <= max_c) : (t += 1) {
-        const match = try matchAodToSlm(allocator, g, aod_order, aod_set, t);
-        defer allocator.free(match);
-
-        // For each gap, count how many AODs rest there this timestep.
-        const gap_count = try allocator.alloc(usize, n_gaps);
-        defer allocator.free(gap_count);
-        @memset(gap_count, 0);
-
-        // Build active SLM rank set for matched AODs.
-        // An unmatched AOD at aod_order index i rests in the gap between
-        // the SLM rank of the matched AOD to its left and the one to its right.
-        var left_rank: usize = 0; // 0 = before all SLMs
-        for (aod_order, 0..) |_, i| {
-            if (match[i]) |slm_id| {
-                left_rank = slm_rank.get(slm_id).? + 1;
-            } else {
-                // This AOD rests in the gap just after left_rank - 1,
-                // i.e. gap index = left_rank.
-                gap_count[left_rank] += 1;
-            }
-        }
-
-        for (0..n_gaps) |gi| {
-            gap_needs[gi] = @max(gap_needs[gi], gap_count[gi]);
-        }
-    }
-
-    std.debug.print("gap_needs: {any}\n", .{gap_needs});
-
-    // Build slm_slots by inserting gap slots between SLMs.
-    // Total slots = n_slm + sum(gap_needs) + leading AOD slots.
-    var total_gaps: usize = 0;
-    for (gap_needs) |gn| total_gaps += gn;
-
-    // Leading slots: AODs that rest before the first SLM need space too,
-    // but we also need n_aod - 1 slots at the front as the initial AOD region.
-    // Actually total = n_slm + total_gaps covers everything since gap_needs[0]
-    // counts AODs resting before the first SLM.
-    const total = n_slm + total_gaps;
-    const slm_slot = try allocator.alloc(?usize, total);
-    @memset(slm_slot, null);
-
-    // Fill slots: for each gap then SLM in order.
-    var pos: usize = 0;
-    for (0..n_slm) |si| {
-        // Insert gap_needs[si] empty slots before SLM si.
-        pos += gap_needs[si];
-        slm_slot[pos] = slm_order[si];
-        pos += 1;
-    }
-    // Trailing gap after last SLM.
-    // (already accounted for in total; slots remain null)
-
-    std.debug.print("SLM Slots: {any}\n", .{slm_slot});
-    return slm_slot;
 }
 
 fn writeToJson(allocator: std.mem.Allocator, io: std.Io, schedule: *const Schedule, filename: []const u8) !void {
@@ -1009,30 +769,212 @@ pub fn debugPrintPositions(
     std.debug.print("────────────────────────────────────\nTotal slots used: {d}\n====================================\n\n", .{max_slot + 1});
 }
 
-fn compile(allocator: std.mem.Allocator, g: *Graph) !Schedule {
-    const aod_set = try aodSet(allocator, g.*);
-    defer allocator.free(aod_set);
+pub fn compile(allocator: std.mem.Allocator, g: *Graph) !Schedule {
+    // 1. AOD set.
+    var aod = try maxIndependentSet(allocator, g.*);
+    defer aod.deinit(allocator);
 
-    try dsatur(allocator, g, aod_set);
+    // 2. Color edges.
+    try colorEdges(allocator, g, aod);
     debugEdgeColors(g.*);
 
-    var dep_graph = try slmGraph(allocator, g, aod_set);
+    // 3. SLM order.
+    var dep_graph = try slmGraph(allocator, g, aod.set);
     defer dep_graph.deinit();
     dep_graph.print("slm-dep");
 
-    const slm_order = try topoSort(allocator, dep_graph, aod_set);
+    const slm_order = try topoSort(allocator, dep_graph, aod.set);
     defer allocator.free(slm_order);
     std.debug.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
 
+    const resting_xs = try computeRestingPositions(allocator, g, aod, slm_order);
+    defer allocator.free(resting_xs);
+    std.debug.print("resting_xs: {any}\n", .{resting_xs});
+
+    const slm_slots = try placeSlmWithResting(allocator, slm_order, resting_xs, aod.nodes.items.len);
+    errdefer allocator.free(slm_slots);
+
+    return logicalSchedule(allocator, g, aod, slm_slots);
+}
+
+fn placeSlmWithResting(
+    allocator: std.mem.Allocator,
+    slm_order: []const usize,
+    resting_xs: []const usize,
+    n_aod: usize,
+) ![]?usize {
+    const boundary = if (n_aod > 0) n_aod - 1 else 0;
+    const total = boundary + slm_order.len + resting_xs.len + boundary;
+    const slots = try allocator.alloc(?usize, total);
+    @memset(slots, null);
+
+    var pos: usize = boundary; // skip leading buffer
+    var r_idx: usize = 0;
+    for (slm_order, 0..) |slm_id, i| {
+        while (r_idx < resting_xs.len and resting_xs[r_idx] <= i) {
+            pos += 1; // interior gap
+            r_idx += 1;
+        }
+        slots[pos] = slm_id;
+        pos += 1;
+    }
+    // trailing nulls already null from memset
+
+    std.debug.print("SLM Slots: {any}\n", .{slots});
+    return slots;
+}
+
+const Rest = struct {
+    left: usize,
+    right: usize,
+};
+
+fn computeRestingPositions(allocator: std.mem.Allocator, g: *Graph, aod: Aod, slm_order: []const usize) ![]usize {
     const max_c = try g.maxColor();
-    const aod_order = try topoSortAods(allocator, g, aod_set, slm_order, max_c) orelse return error.AodOrderingCycle;
-    defer allocator.free(aod_order);
-    std.debug.print(">> AOD Order\n{any}\n", .{aod_order});
 
-    const slm_slots = try placeSlmQubits(allocator, g, aod_order, slm_order, aod_set);
-    // slm_slots ownership transfers into Schedule; caller must free via schedule.deinit()
+    var resting = std.AutoHashMap(Rest, usize).init(allocator);
+    defer resting.deinit();
 
-    return logicalSchedule(allocator, g, aod_order, slm_slots, aod_set);
+    for (0..@as(usize, @intCast(max_c + 1))) |t_usize| {
+        const t: i32 = @intCast(t_usize);
+
+        // Find ACTIVE AOD positions this timestep.
+        var active = std.AutoHashMap(usize, usize).init(allocator);
+        defer active.deinit();
+
+        for (aod.nodes.items) |v| {
+            var e = g.edges[v];
+            while (e) |edge| : (e = edge.next) {
+                if (edge.color == t) {
+                    // Find SLM index.
+                    for (slm_order, 0..) |slm, x| {
+                        if (slm == edge.y) {
+                            try active.put(v, x);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        std.debug.print("ACTIVE AODs: t({})\n", .{t});
+        var it = active.iterator();
+        while (it.next()) |entry| {
+            std.debug.print("  {} => {}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+        }
+
+        var t_resting = std.AutoHashMap(Rest, usize).init(allocator);
+        defer t_resting.deinit();
+
+        for (aod.nodes.items, 0..) |v, i| {
+            // Go to the next AOD, if this one is not resting.
+            if (active.contains(v)) continue;
+
+            // Find nearest left and right active neighbours.
+            var l: ?usize = null;
+            var r: ?usize = null;
+            for (aod.nodes.items, 0..) |u, j| {
+                // Next, if this one is resting.
+                if (!active.contains(u)) continue;
+
+                if (j < i) {
+                    if (r == null or j > r.?) r = j;
+                } else if (j > i) {
+                    if (l == null or j > l.?) l = j;
+                }
+            }
+
+            if (l != null and r != null) {
+                const l_aod = active.get(aod.nodes.items[l.?]).?;
+                const r_aod = active.get(aod.nodes.items[r.?]).?;
+                const key = Rest{ .left = l_aod, .right = r_aod };
+                const cnt = if (t_resting.get(key)) |c| c + 1 else 1;
+                try t_resting.put(key, cnt);
+                std.debug.print("t:{}, left:{any} resting_aod:{} right:{any} count:{}\n", .{ t, l_aod, v, r_aod, cnt });
+            }
+        }
+
+        // Merging
+        var new_resting = std.AutoHashMap(Rest, usize).init(allocator);
+        errdefer new_resting.deinit();
+
+        var old_it = resting.iterator();
+        while (old_it.next()) |entry| {
+            const old_pair = entry.key_ptr.*;
+            const cnt = entry.value_ptr.*;
+
+            for (0..cnt) |_| {
+                // Find overlapping new intervals.
+                var overlaps: std.ArrayList(Rest) = .empty;
+                defer overlaps.deinit(allocator);
+
+                var t_it = t_resting.iterator();
+                while (t_it.next()) |t_entry| {
+                    const tp = t_entry.key_ptr.*;
+                    if (tp.left < old_pair.right and old_pair.left < tp.right) {
+                        try overlaps.append(allocator, tp);
+                    }
+                }
+
+                if (overlaps.items.len == 0) {
+                    // No overlap. Keep old.
+                    const c = if (new_resting.get(old_pair)) |c| c + 1 else 1;
+                    try new_resting.put(old_pair, c);
+                } else {
+                    // Pick narrowest overlapping interval.
+                    var best = overlaps.items[0];
+                    for (overlaps.items[1..]) |o| {
+                        if (o.right - o.left < best.right - best.left) best = o;
+                    }
+
+                    // Consume one from t_resting.
+                    const old_cnt = t_resting.get(best).?;
+                    if (old_cnt == 1) {
+                        _ = t_resting.remove(best);
+                    } else {
+                        try t_resting.put(best, old_cnt - 1);
+                    }
+
+                    // Create merged interval.
+                    const merged = Rest{
+                        .left = @max(old_pair.left, best.left),
+                        .right = @max(old_pair.right, best.right),
+                    };
+                    const c = if (new_resting.get(merged)) |c| c + 1 else 1;
+                    try new_resting.put(merged, c);
+                }
+            }
+        }
+
+        // Add remaining new requirements.
+        std.debug.print(">> t_resting:\n", .{});
+        var t_it = t_resting.iterator();
+        while (t_it.next()) |entry| {
+            const p = entry.key_ptr.*;
+            const c = entry.value_ptr.*;
+            std.debug.print("  {}:{}\n", .{ p, c });
+            const nc = if (new_resting.get(p)) |v| v + c else c;
+            try new_resting.put(p, nc);
+        }
+
+        resting.deinit();
+        resting = new_resting;
+        new_resting = undefined; // ownership moved.
+    }
+
+    var positions: std.ArrayList(usize) = .empty;
+    var it = resting.iterator();
+    while (it.next()) |entry| {
+        for (0..entry.value_ptr.*) |_| {
+            try positions.append(allocator, entry.key_ptr.*.right);
+        }
+    }
+
+    std.debug.print(">> POSITIONS: {any}\n", .{positions});
+
+    std.mem.sort(usize, positions.items, {}, std.sort.asc(usize));
+
+    return positions.toOwnedSlice(allocator);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -1040,32 +982,92 @@ pub fn main(init: std.process.Init) !void {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
+    // FIXME
+    //    var g = try Graph.init(alloc, 9, false);
+    //    defer g.deinit();
+    //    try g.addEdge(0, 1);
+    //    try g.addEdge(1, 2);
+    //    try g.addEdge(3, 4);
+    //    try g.addEdge(4, 5);
+    //    try g.addEdge(6, 7);
+    //    try g.addEdge(7, 8);
+    //    try g.addEdge(0, 3);
+    //    try g.addEdge(3, 6);
+    //    try g.addEdge(1, 4);
+    //    try g.addEdge(4, 7);
+    //    try g.addEdge(2, 5);
+    //    try g.addEdge(5, 8);
+
     var g = try Graph.init(alloc, 8, false);
     defer g.deinit();
-    try g.addEdge(0, 4);
-    try g.addEdge(0, 2);
-    try g.addEdge(4, 6);
-    try g.addEdge(0, 1);
-    try g.addEdge(2, 3);
-    try g.addEdge(4, 5);
-    try g.addEdge(6, 7);
 
     var schedule = try compile(alloc, &g);
     defer schedule.deinit(alloc);
     schedule.print();
 
     const io = init.io;
-    try writeToJson(alloc, io, &schedule, "/tmp/schedule.json");
+    try writeToJson(alloc, io, &schedule, "testdata/test.json");
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }
 
-// TODO: Update unit tests to check for AOD crossings.
-test "7-node graph: aod set, coloring, schedule shape" {
-    const alloc = std.testing.allocator;
+test "snapshot: mvp - aod set, coloring, schedule shape" {
+    try @import("snapshot.zig").snapshotTest(
+        std.testing.allocator,
+        std.testing.io,
+        buildMvpGraph,
+        "testdata/mvp.json",
+    );
+}
 
-    var g = try Graph.init(alloc, 7, false);
-    defer g.deinit();
+test "snapshot: cycle" {
+    try @import("snapshot.zig").snapshotTest(
+        std.testing.allocator,
+        std.testing.io,
+        buildCycleGraph,
+        "testdata/cycle.json",
+    );
+}
+
+test "snapshot: ladder — parallel AOD lanes" {
+    try @import("snapshot.zig").snapshotTest(
+        std.testing.allocator,
+        std.testing.io,
+        buildLadderGraph,
+        "testdata/ladder.json",
+    );
+}
+
+// TODO
+test "snapshot: 3x3 grid — complex MIS and gap pressure" {
+    try @import("snapshot.zig").snapshotTest(
+        std.testing.allocator,
+        std.testing.io,
+        buildGridGraph,
+        "testdata/grid.json",
+    );
+}
+
+test "snapshot: ghz - binary tree" {
+    try @import("snapshot.zig").snapshotTest(
+        std.testing.allocator,
+        std.testing.io,
+        buildGhzGraph,
+        "testdata/ghz.json",
+    );
+}
+
+test "snapshot: qft" {
+    try @import("snapshot.zig").snapshotTest(
+        std.testing.allocator,
+        std.testing.io,
+        buildQftGraph,
+        "testdata/qft.json",
+    );
+}
+
+pub fn buildMvpGraph(allocator: std.mem.Allocator) !Graph {
+    var g = try Graph.init(allocator, 7, false);
     try g.addEdge(0, 1);
     try g.addEdge(0, 5);
     try g.addEdge(1, 6);
@@ -1075,22 +1077,72 @@ test "7-node graph: aod set, coloring, schedule shape" {
     try g.addEdge(3, 4);
     try g.addEdge(3, 2);
     try g.addEdge(4, 2);
-
-    var schedule = try compile(alloc, &g);
-    defer schedule.deinit(alloc);
-
-    try std.testing.expect(schedule.max_color >= 3);
-    try std.testing.expectEqual(
-        @as(usize, @intCast(schedule.max_color + 1)),
-        schedule.aod_slots_per_color.len,
-    );
+    return g;
 }
 
-test "8-node GHZ binary tree: 3 time steps, no crossings" {
-    const alloc = std.testing.allocator;
+pub fn buildCycleGraph(allocator: std.mem.Allocator) !Graph {
+    var g = try Graph.init(allocator, 6, false);
+    try g.addEdge(0, 1);
+    try g.addEdge(1, 2);
+    try g.addEdge(2, 3);
+    try g.addEdge(3, 4);
+    try g.addEdge(4, 5);
+    try g.addEdge(5, 0);
+    return g;
+}
 
-    var g = try Graph.init(alloc, 8, false);
-    defer g.deinit();
+// Two rows of AODs interleaved with SLMs, with vertical rungs
+// creating cross-row ordering constraints. Tests whether the
+// SLM topo-sort correctly handles constraints coming from
+// two independent "lanes" of AODs simultaneously.
+//
+// 0-1-2-3
+// | | | |
+// 4-5-6-7
+pub fn buildLadderGraph(allocator: std.mem.Allocator) !Graph {
+    var g = try Graph.init(allocator, 8, false);
+    try g.addEdge(0, 1);
+    try g.addEdge(1, 2);
+    try g.addEdge(2, 3);
+    try g.addEdge(4, 5);
+    try g.addEdge(5, 6);
+    try g.addEdge(6, 7);
+    try g.addEdge(0, 4);
+    try g.addEdge(1, 5);
+    try g.addEdge(2, 6);
+    try g.addEdge(3, 7);
+    return g;
+}
+
+// Checkerboard MIS gives 5 AODs and 4 SLMs.
+// Many unmatched AODs at each timestep means
+// maximum pressure on placeSlmQubits gap
+// counting and the left-scan resting logic.
+//
+// 0-1-2
+// | | |
+// 3-4-5
+// | | |
+// 6-7-8
+pub fn buildGridGraph(allocator: std.mem.Allocator) !Graph {
+    var g = try Graph.init(allocator, 9, false);
+    try g.addEdge(0, 1);
+    try g.addEdge(1, 2);
+    try g.addEdge(3, 4);
+    try g.addEdge(4, 5);
+    try g.addEdge(6, 7);
+    try g.addEdge(7, 8);
+    try g.addEdge(0, 3);
+    try g.addEdge(3, 6);
+    try g.addEdge(1, 4);
+    try g.addEdge(4, 7);
+    try g.addEdge(2, 5);
+    try g.addEdge(5, 8);
+    return g;
+}
+
+pub fn buildGhzGraph(allocator: std.mem.Allocator) !Graph {
+    var g = try Graph.init(allocator, 8, false);
     try g.addEdge(0, 4);
     try g.addEdge(0, 2);
     try g.addEdge(4, 6);
@@ -1098,48 +1150,20 @@ test "8-node GHZ binary tree: 3 time steps, no crossings" {
     try g.addEdge(2, 3);
     try g.addEdge(4, 5);
     try g.addEdge(6, 7);
-
-    var schedule = try compile(alloc, &g);
-    defer schedule.deinit(alloc);
-
-    try std.testing.expectEqual(@as(i32, 2), schedule.max_color);
-    try std.testing.expectEqual(@as(usize, 3), schedule.aod_slots_per_color.len);
-
-    for (schedule.aod_slots_per_color) |aod_slot| {
-        var seen = std.AutoHashMap(usize, void).init(alloc);
-        defer seen.deinit();
-        for (aod_slot) |entry| {
-            if (entry) |aod_id| {
-                const result = try seen.getOrPut(aod_id);
-                try std.testing.expect(!result.found_existing);
-            }
-        }
-    }
+    return g;
 }
 
-test "10-node bipartite circuit: no crossings, no conflicts" {
-    const alloc = std.testing.allocator;
-
-    var g = try Graph.init(alloc, 10, false);
-    defer g.deinit();
-    try g.addEdge(0, 6);
+pub fn buildQftGraph(allocator: std.mem.Allocator) !Graph {
+    var g = try Graph.init(allocator, 5, false);
+    try g.addEdge(0, 1);
     try g.addEdge(0, 2);
-    try g.addEdge(1, 7);
+    try g.addEdge(0, 3);
+    try g.addEdge(0, 4);
     try g.addEdge(1, 2);
-    try g.addEdge(3, 9);
-    try g.addEdge(3, 6);
-    try g.addEdge(4, 9);
-    try g.addEdge(4, 8);
-    try g.addEdge(5, 8);
-    try g.addEdge(5, 7);
-
-    var schedule = try compile(alloc, &g);
-    defer schedule.deinit(alloc);
-
-    // Bipartite graph with max degree 2 → at most 2 colors.
-    try std.testing.expect(schedule.max_color <= 2);
-    try std.testing.expectEqual(
-        @as(usize, @intCast(schedule.max_color + 1)),
-        schedule.aod_slots_per_color.len,
-    );
+    try g.addEdge(1, 3);
+    try g.addEdge(1, 4);
+    try g.addEdge(2, 3);
+    try g.addEdge(2, 4);
+    try g.addEdge(3, 4);
+    return g;
 }
