@@ -1,9 +1,9 @@
 {
-  "slm_slots": [null, null, 0, null, 5, 2, 7, null, null, null],
+  "slm_slots": [null, null, null, 0, 5, 2, 7, null, null, null],
   "aod_slots_per_color": [
-    [3, 4, 1, null, 6, null, null, null, null, null],
-    [null, 3, 4, null, 1, 6, null, null, null, null],
-    [null, null, null, 3, 4, 1, 6, null, null, null],
+    [null, 3, 4, 1, 6, null, null, null, null, null],
+    [null, null, 3, 4, 1, 6, null, null, null, null],
+    [null, null, 3, null, 4, 1, 6, null, null, null],
     [null, null, null, null, null, 3, null, 4, 1, 6],
     [null, null, null, null, null, null, 3, 4, 1, 6]
   ],

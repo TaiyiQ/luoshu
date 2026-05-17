@@ -570,32 +570,35 @@ fn logicalSchedule(
                 }
             }
         }
-
-        // Phase 2: Place resting AODs into pre-allocated gaps.
+        // Phase 2: place resting AODs.
+        // nodes[0]=rightmost; nodes[i] must land strictly LEFT of nodes[i-1].
         for (aod.nodes.items, 0..) |v, i| {
             if (match[i] != null) continue;
 
-            // Must stay right of the AOD immedsiately to our left (global order).
-            var min_col = last_pos[i];
+            // Upper bound: must be strictly left of our right-neighbour's slot.
+            var max_pos: usize = aod_slot.len; // i==0 has no right neighbour
             if (i > 0) {
-                const left_aod = aod.nodes.items[i - 1];
+                const right_aod = aod.nodes.items[i - 1];
                 for (aod_slot, 0..) |placed, c| {
-                    if (placed == left_aod) {
-                        min_col = @max(min_col, c + 1);
+                    if (placed == right_aod) {
+                        max_pos = c; // must land in [0, max_pos)
                         break;
                     }
                 }
             }
 
-            // Find first available resting slot.
+            // Scan right-to-left: pick rightmost free null slot before max_pos.
             var placed = false;
-            for (min_col..slm_slots.len) |c| {
-                // null in SLM slot and still unoccupied.
-                if (slm_slots[c] == null and aod_slot[c] == null) {
-                    aod_slot[c] = v;
-                    last_pos[i] = c;
-                    placed = true;
-                    break;
+            if (max_pos > 0) {
+                var gap_ptr: usize = max_pos - 1;
+                while (true) {
+                    if (slm_slots[gap_ptr] == null and aod_slot[gap_ptr] == null) {
+                        aod_slot[gap_ptr] = v;
+                        placed = true;
+                        break;
+                    }
+                    if (gap_ptr == 0) break;
+                    gap_ptr -= 1;
                 }
             }
 
@@ -614,90 +617,6 @@ fn logicalSchedule(
         .aod_slots_per_color = aod_slots_per_color,
         .max_color = max_c,
     };
-}
-
-fn placeSlmQubits(
-    allocator: std.mem.Allocator,
-    g: *const Graph,
-    aod: Aod,
-    slm_order: []const usize,
-) ![]?usize {
-    if (aod.nodes.items.len == 0) return error.NoAodNodes;
-
-    const max_c = try g.maxColor();
-    const n_slm = slm_order.len;
-
-    // slm_rank[slm_id] = index in slm_order (left-to-right rank).
-    var slm_rank = std.AutoHashMap(usize, usize).init(allocator);
-    defer slm_rank.deinit();
-    for (slm_order, 0..) |s, i| try slm_rank.put(s, i);
-
-    // aod_rank[aod_id] = index in aod_order.
-    var aod_rank = std.AutoHashMap(usize, usize).init(allocator);
-    defer aod_rank.deinit();
-    for (aod.nodes.items, 0..) |a, i| try aod_rank.put(a, i);
-
-    // gap_needs[g] = max AODs that need to rest in gap g across all timesteps.
-    // Gap g is the space before SLM at slm_order[g] (gap 0 = before first SLM,
-    // gap n_slm = after last SLM, gaps 1..n_slm-1 = between consecutive SLMs).
-    const n_gaps = n_slm + 1;
-    const gap_needs = try allocator.alloc(usize, n_gaps);
-    defer allocator.free(gap_needs);
-    @memset(gap_needs, 0);
-
-    var t: i32 = 0;
-    while (t <= max_c) : (t += 1) {
-        const match = try matchAodToSlm(allocator, g, aod, t);
-        defer allocator.free(match);
-
-        const gap_count = try allocator.alloc(usize, n_gaps);
-        defer allocator.free(gap_count);
-        @memset(gap_count, 0);
-
-        // aod.nodes[0] is rightmost. Track the nearest matched SLM to the right.
-        // gap[k] = slots before SLM at rank k; gap[n_slm] = slots after last SLM.
-        var right_rank: usize = n_slm; // "after all SLMs" until we see a match
-        for (aod.nodes.items, 0..) |_, i| {
-            if (match[i]) |slm_id| {
-                right_rank = slm_rank.get(slm_id).?;
-            } else {
-                gap_count[right_rank] += 1;
-            }
-        }
-
-        for (0..n_gaps) |gi| {
-            gap_needs[gi] = @max(gap_needs[gi], gap_count[gi]);
-        }
-    }
-
-    std.debug.print("gap_needs: {any}\n", .{gap_needs});
-
-    // Build slm_slots by inserting gap slots between SLMs.
-    // Total slots = n_slm + sum(gap_needs) + leading AOD slots.
-    var total_gaps: usize = 0;
-    for (gap_needs) |gn| total_gaps += gn;
-
-    // Leading slots: AODs that rest before the first SLM need space too,
-    // but we also need n_aod - 1 slots at the front as the initial AOD region.
-    // Actually total = n_slm + total_gaps covers everything since gap_needs[0]
-    // counts AODs resting before the first SLM.
-    const total = n_slm + total_gaps;
-    const slm_slot = try allocator.alloc(?usize, total);
-    @memset(slm_slot, null);
-
-    // Fill slots: for each gap then SLM in order.
-    var pos: usize = 0;
-    for (0..n_slm) |si| {
-        // Insert gap_needs[si] empty slots before SLM si.
-        pos += gap_needs[si];
-        slm_slot[pos] = slm_order[si];
-        pos += 1;
-    }
-    // Trailing gap after last SLM.
-    // (already accounted for in total; slots remain null)
-
-    std.debug.print("SLM Slots: {any}\n", .{slm_slot});
-    return slm_slot;
 }
 
 fn writeToJson(allocator: std.mem.Allocator, io: std.Io, schedule: *const Schedule, filename: []const u8) !void {
@@ -872,32 +791,36 @@ pub fn compile(allocator: std.mem.Allocator, g: *Graph) !Schedule {
     defer allocator.free(resting_xs);
     std.debug.print("resting_xs: {any}\n", .{resting_xs});
 
-    const slm_slots = try placeSlmWithResting(allocator, slm_order, resting_xs);
+    const slm_slots = try placeSlmWithResting(allocator, slm_order, resting_xs, aod.nodes.items.len);
     errdefer allocator.free(slm_slots);
 
     return logicalSchedule(allocator, g, aod, slm_slots);
 }
 
-fn placeSlmWithResting(allocator: std.mem.Allocator, slm_order: []const usize, resting_xs: []const usize) ![]?usize {
-    const total = slm_order.len + resting_xs.len;
+fn placeSlmWithResting(
+    allocator: std.mem.Allocator,
+    slm_order: []const usize,
+    resting_xs: []const usize,
+    n_aod: usize,
+) ![]?usize {
+    const boundary = if (n_aod > 0) n_aod - 1 else 0;
+    const total = boundary + slm_order.len + resting_xs.len + boundary;
     const slots = try allocator.alloc(?usize, total);
     @memset(slots, null);
 
-    var pos: usize = 0;
+    var pos: usize = boundary; // skip leading buffer
     var r_idx: usize = 0;
     for (slm_order, 0..) |slm_id, i| {
-        // Insert all resting positions that belong before this SLM.
         while (r_idx < resting_xs.len and resting_xs[r_idx] <= i) {
-            pos += 1;
+            pos += 1; // interior gap
             r_idx += 1;
         }
         slots[pos] = slm_id;
         pos += 1;
     }
+    // trailing nulls already null from memset
 
     std.debug.print("SLM Slots: {any}\n", .{slots});
-
-    // Any trailing resting positions are allocated as null.
     return slots;
 }
 
@@ -1043,7 +966,7 @@ fn computeRestingPositions(allocator: std.mem.Allocator, g: *Graph, aod: Aod, sl
     var it = resting.iterator();
     while (it.next()) |entry| {
         for (0..entry.value_ptr.*) |_| {
-            try positions.append(allocator, entry.key_ptr.*.left);
+            try positions.append(allocator, entry.key_ptr.*.right);
         }
     }
 
@@ -1059,19 +982,7 @@ pub fn main(init: std.process.Init) !void {
     defer _ = gpa.deinit();
     const alloc = gpa.allocator();
 
-    //    // AODs: {0,1,2}, SLMs: {3,4,5}, 9 edges, expect 3 colors
-    //    var g = try Graph.init(alloc, 6, false);
-    //    defer g.deinit();
-    //    try g.addEdge(0, 3);
-    //    try g.addEdge(0, 4);
-    //    try g.addEdge(0, 5);
-    //    try g.addEdge(1, 3);
-    //    try g.addEdge(1, 4);
-    //    try g.addEdge(1, 5);
-    //    try g.addEdge(2, 3);
-    //    try g.addEdge(2, 4);
-    //    try g.addEdge(2, 5);
-
+    // FIXME
     //    var g = try Graph.init(alloc, 9, false);
     //    defer g.deinit();
     //    try g.addEdge(0, 1);
@@ -1087,55 +998,18 @@ pub fn main(init: std.process.Init) !void {
     //    try g.addEdge(2, 5);
     //    try g.addEdge(5, 8);
 
-    // MVP
-    var g = try Graph.init(alloc, 7, false);
+    var g = try Graph.init(alloc, 8, false);
     defer g.deinit();
-    try g.addEdge(0, 1);
-    try g.addEdge(0, 5);
-    try g.addEdge(1, 6);
-    try g.addEdge(5, 6);
-    try g.addEdge(6, 3);
-    try g.addEdge(6, 4);
-    try g.addEdge(3, 4);
-    try g.addEdge(3, 2);
-    try g.addEdge(4, 2);
 
     var schedule = try compile(alloc, &g);
     defer schedule.deinit(alloc);
     schedule.print();
 
     const io = init.io;
-    try writeToJson(alloc, io, &schedule, "testdata/grid.json");
+    try writeToJson(alloc, io, &schedule, "testdata/test.json");
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }
-
-//test "10-node bipartite circuit: no crossings, no conflicts" {
-//    const alloc = std.testing.allocator;
-//
-//    var g = try Graph.init(alloc, 10, false);
-//    defer g.deinit();
-//    try g.addEdge(0, 6);
-//    try g.addEdge(0, 2);
-//    try g.addEdge(1, 7);
-//    try g.addEdge(1, 2);
-//    try g.addEdge(3, 9);
-//    try g.addEdge(3, 6);
-//    try g.addEdge(4, 9);
-//    try g.addEdge(4, 8);
-//    try g.addEdge(5, 8);
-//    try g.addEdge(5, 7);
-//
-//    var schedule = try compile(alloc, &g);
-//    defer schedule.deinit(alloc);
-//
-//    // Bipartite graph with max degree 2 → at most 2 colors.
-//    try std.testing.expect(schedule.max_color <= 2);
-//    try std.testing.expectEqual(
-//        @as(usize, @intCast(schedule.max_color + 1)),
-//        schedule.aod_slots_per_color.len,
-//    );
-//}
 
 test "snapshot: mvp - aod set, coloring, schedule shape" {
     try @import("snapshot.zig").snapshotTest(
@@ -1164,6 +1038,7 @@ test "snapshot: ladder — parallel AOD lanes" {
     );
 }
 
+// TODO
 test "snapshot: 3x3 grid — complex MIS and gap pressure" {
     try @import("snapshot.zig").snapshotTest(
         std.testing.allocator,
