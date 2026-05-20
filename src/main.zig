@@ -1,7 +1,9 @@
 const std = @import("std");
 const toml = @import("toml");
-const arch = @import("arch.zig");
-const route = @import("route.zig");
+const arch = @import("arch");
+const route = @import("route");
+const core = @import("graph");
+const schedule = @import("schedule");
 
 pub fn main(init: std.process.Init) !void {
     var gpa = std.heap.DebugAllocator(.{}){};
@@ -15,13 +17,13 @@ pub fn main(init: std.process.Init) !void {
     var parser = toml.Parser(arch.RawArchConfig).init(arenaAlloc);
     defer parser.deinit();
 
-    var raw = try parser.parseFile(init.io, "./arch.toml");
+    var raw = try parser.parseFile(init.io, "../example/arch.toml");
     defer raw.deinit();
 
     const cfg = try arch.convertConfig(raw.value, arenaAlloc);
     cfg.print();
 
-    var g = try route.Graph.init(alloc, 7, false);
+    var g = try core.Graph.init(alloc, 7, false);
     defer g.deinit();
     try g.addEdge(0, 1);
     try g.addEdge(0, 5);
@@ -33,12 +35,12 @@ pub fn main(init: std.process.Init) !void {
     try g.addEdge(3, 2);
     try g.addEdge(4, 2);
 
-    var schedule = try route.compile(alloc, &g);
-    defer schedule.deinit(alloc);
-    schedule.print();
+    var s = try route.compile(alloc, &g);
+    defer s.deinit(alloc);
+    s.print();
 
     const io = init.io;
-    try route.writeToJson(alloc, io, &schedule, "testdata/test.json");
+    try schedule.writeToFile(alloc, io, &s, "../testdata/test.json");
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }
