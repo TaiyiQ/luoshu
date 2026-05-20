@@ -1,4 +1,8 @@
 const std = @import("std");
+const core = @import("graph");
+const schedule = @import("schedule");
+
+const dbg = @import("debug");
 
 const INF = std.math.maxInt(usize);
 const MIN = -1; // -1 to help k in leastAdmissible start at 0.
@@ -62,158 +66,7 @@ const AodConstraints = struct {
     }
 };
 
-pub const Schedule = struct {
-    slm_slots: []const ?usize,
-    aod_slots_per_color: [][]?usize,
-    max_color: i32,
-
-    pub fn deinit(self: *Schedule, allocator: std.mem.Allocator) void {
-        allocator.free(self.slm_slots);
-        for (self.aod_slots_per_color) |slot| {
-            allocator.free(slot);
-        }
-        allocator.free(self.aod_slots_per_color);
-    }
-
-    fn print(self: Schedule) void {
-        const n_slots = self.slm_slots.len;
-
-        std.debug.print("\n", .{});
-
-        // Divider
-        std.debug.print("     +", .{});
-        for (0..n_slots) |_| std.debug.print("-----+", .{});
-        std.debug.print("\n", .{});
-
-        // SLM row
-        std.debug.print(" SLM |", .{});
-        for (self.slm_slots) |v| {
-            if (v) |id| std.debug.print("{d:^5}|", .{id}) else std.debug.print("  ·  |", .{});
-        }
-        std.debug.print("\n", .{});
-
-        // Divider
-        std.debug.print("     +", .{});
-        for (0..n_slots) |_| std.debug.print("-----+", .{});
-        std.debug.print("\n", .{});
-
-        // AOD rows
-        for (self.aod_slots_per_color, 0..) |aod_slot, t| {
-            std.debug.print("  t{d} |", .{t});
-            for (aod_slot, 0..) |v, s| {
-                const has_slm = self.slm_slots[s] != null;
-                if (v) |id| {
-                    if (has_slm) std.debug.print(" {d:^3} |", .{id}) // conflict: 5 chars total
-                    else std.debug.print("{d:^5}|", .{id});
-                } else {
-                    std.debug.print("  ·  |", .{});
-                }
-            }
-            std.debug.print("\n", .{});
-        }
-
-        // Footer
-        std.debug.print("     +", .{});
-        for (0..n_slots) |_| std.debug.print("-----+", .{});
-        std.debug.print("\n", .{});
-        std.debug.print("\n", .{});
-    }
-};
-
-const EdgeNode = struct {
-    y: usize,
-    color: ?i32,
-    next: ?*EdgeNode,
-};
-
-pub const Graph = struct {
-    allocator: std.mem.Allocator,
-    edges: []?*EdgeNode,
-    degree: []usize,
-    n: usize,
-    m: usize,
-    directed: bool, // Used for topological sorting of SLMs.
-
-    pub fn init(allocator: std.mem.Allocator, n: usize, directed: bool) !Graph {
-        const edges = try allocator.alloc(?*EdgeNode, n);
-        @memset(edges, null);
-
-        const degree = try allocator.alloc(usize, n);
-        @memset(degree, 0);
-
-        return Graph{
-            .allocator = allocator,
-            .edges = edges,
-            .degree = degree,
-            .n = n,
-            .m = 0,
-            .directed = directed,
-        };
-    }
-
-    pub fn deinit(self: *Graph) void {
-        for (self.edges) |v| {
-            var node = v;
-            while (node) |n| {
-                const next = n.next;
-                self.allocator.destroy(n);
-                node = next;
-            }
-        }
-        self.allocator.free(self.edges);
-        self.allocator.free(self.degree);
-    }
-
-    pub fn addEdge(s: *Graph, x: usize, y: usize) !void {
-        // Ignore self-loops.
-        if (x == y) return;
-
-        // Ignore duplicate edges.
-        var e = s.edges[x];
-        while (e) |edge| : (e = edge.next) {
-            if (edge.y == y) return;
-        }
-
-        try s.addNode(x, y);
-        if (!s.directed) try s.addNode(y, x);
-        s.m += 1;
-    }
-
-    fn addNode(s: *Graph, x: usize, y: usize) !void {
-        const n = try s.allocator.create(EdgeNode);
-        n.* = .{ .y = y, .color = null, .next = s.edges[x] };
-        s.edges[x] = n;
-        s.degree[x] += 1;
-    }
-
-    fn maxColor(g: *const Graph) !i32 {
-        var max_c: i32 = MIN;
-        for (0..g.n) |x| {
-            var e = g.edges[x];
-            while (e) |edge| : (e = edge.next) {
-                if (edge.color) |c| {
-                    max_c = @max(max_c, c);
-                }
-            }
-        }
-        if (max_c == MIN) return error.NoColors;
-        return max_c;
-    }
-
-    fn print(self: *const Graph, name: []const u8) void {
-        std.debug.print(">> Graph(name={s}, n={d}, m={d}, directed={}) \n", .{ name, self.n, self.m, self.directed });
-        for (0..self.n) |u| {
-            std.debug.print("  {d} -> ", .{u});
-            var e = self.edges[u];
-            while (e) |edge| : (e = edge.next) {
-                std.debug.print("{d} ", .{edge.y});
-            }
-            std.debug.print("\n", .{});
-        }
-    }
-};
-
-fn maxIndependentSet(allocator: std.mem.Allocator, g: Graph) !Aod {
+fn maxIndependentSet(allocator: std.mem.Allocator, g: core.Graph) !Aod {
     var set = try allocator.alloc(bool, g.n);
     @memset(set, false);
 
@@ -223,7 +76,7 @@ fn maxIndependentSet(allocator: std.mem.Allocator, g: Graph) !Aod {
 
     for (0..g.n) |i| order.appendAssumeCapacity(i);
     std.sort.heap(usize, order.items, g, struct {
-        fn less(graph: Graph, a: usize, b: usize) bool {
+        fn less(graph: core.Graph, a: usize, b: usize) bool {
             //return graph.degree[a] > graph.degree[b];
             if (graph.degree[a] != graph.degree[b]) {
                 return graph.degree[a] > graph.degree[b];
@@ -257,7 +110,7 @@ fn maxIndependentSet(allocator: std.mem.Allocator, g: Graph) !Aod {
 }
 
 // Use a modified DSatur algorithm to color edges instead of nodes.
-fn colorEdges(allocator: std.mem.Allocator, g: *Graph, aod: Aod) !void {
+fn colorEdges(allocator: std.mem.Allocator, g: *core.Graph, aod: Aod) !void {
     // Map node_id -> index in aod_nodes (stable across the whole coloring).
     var aod_idx = std.AutoHashMap(usize, usize).init(allocator);
     defer aod_idx.deinit();
@@ -275,7 +128,7 @@ fn colorEdges(allocator: std.mem.Allocator, g: *Graph, aod: Aod) !void {
         var e = g.edges[v];
         while (e) |edge| : (e = edge.next) try adj.append(allocator, edge.y);
 
-        const Ctx = struct { g: *Graph, v: usize };
+        const Ctx = struct { g: *core.Graph, v: usize };
         std.sort.heap(usize, adj.items, Ctx{ .g = g, .v = v }, struct {
             fn less(ctx: Ctx, a: usize, b: usize) bool {
                 const sat_a = countSaturation(ctx.g, ctx.v, a);
@@ -302,7 +155,7 @@ fn colorEdges(allocator: std.mem.Allocator, g: *Graph, aod: Aod) !void {
 }
 
 fn leastAdmissible(
-    g: *Graph,
+    g: *core.Graph,
     v: usize,
     y: usize,
     aod_idx: *const std.AutoHashMap(usize, usize),
@@ -380,7 +233,7 @@ fn leastAdmissible(
     }
 }
 
-fn countSaturation(g: *Graph, u: usize, v: usize) usize {
+fn countSaturation(g: *core.Graph, u: usize, v: usize) usize {
     var seen = std.AutoHashMap(i32, void).init(g.allocator);
     defer seen.deinit();
 
@@ -409,8 +262,8 @@ fn countSaturation(g: *Graph, u: usize, v: usize) usize {
     return seen.count();
 }
 
-fn slmGraph(allocator: std.mem.Allocator, g: *Graph, aod_set: []const bool) !Graph {
-    var dep = try Graph.init(allocator, g.n, true);
+fn slmGraph(allocator: std.mem.Allocator, g: *core.Graph, aod_set: []const bool) !core.Graph {
+    var dep = try core.Graph.init(allocator, g.n, true);
 
     // For each AOD v...
     for (0..g.n) |v| {
@@ -451,7 +304,7 @@ fn slmGraph(allocator: std.mem.Allocator, g: *Graph, aod_set: []const bool) !Gra
     return dep;
 }
 
-fn topoSort(allocator: std.mem.Allocator, g: Graph, aod_set: []const bool) ![]usize {
+fn topoSort(allocator: std.mem.Allocator, g: core.Graph, aod_set: []const bool) ![]usize {
     // Only SLM qubits
     var n_slm: usize = 0;
     for (0..g.n) |i| {
@@ -502,7 +355,7 @@ fn topoSort(allocator: std.mem.Allocator, g: Graph, aod_set: []const bool) ![]us
 
 fn matchAodToSlm(
     allocator: std.mem.Allocator,
-    g: *const Graph,
+    g: *const core.Graph,
     aod: Aod,
     t: i32,
 ) ![]?usize {
@@ -527,10 +380,10 @@ fn matchAodToSlm(
 
 fn logicalSchedule(
     allocator: std.mem.Allocator,
-    g: *Graph,
+    g: *core.Graph,
     aod: Aod,
     slm_slots: []const ?usize,
-) !Schedule {
+) !schedule.Schedule {
     var slm_pos = std.AutoHashMap(usize, usize).init(allocator);
     defer slm_pos.deinit();
     for (slm_slots, 0..) |v, t| {
@@ -612,14 +465,14 @@ fn logicalSchedule(
         filled += 1; // ← only incremented after successful assignment
     }
 
-    return Schedule{
+    return schedule.Schedule{
         .slm_slots = slm_slots,
         .aod_slots_per_color = aod_slots_per_color,
         .max_color = max_c,
     };
 }
 
-fn writeToJson(allocator: std.mem.Allocator, io: std.Io, schedule: *const Schedule, filename: []const u8) !void {
+fn writeToJson(allocator: std.mem.Allocator, io: std.Io, sch: *const schedule.Schedule, filename: []const u8) !void {
     var buf: std.Io.Writer.Allocating = .init(allocator);
     defer buf.deinit();
     const w = &buf.writer;
@@ -628,7 +481,7 @@ fn writeToJson(allocator: std.mem.Allocator, io: std.Io, schedule: *const Schedu
 
     // slm_slots
     try w.writeAll("  \"slm_slots\": [");
-    for (schedule.slm_slots, 0..) |v, i| {
+    for (sch.slm_slots, 0..) |v, i| {
         if (i > 0) try w.writeAll(", ");
         if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
     }
@@ -636,19 +489,19 @@ fn writeToJson(allocator: std.mem.Allocator, io: std.Io, schedule: *const Schedu
 
     // aod_slots_per_color
     try w.writeAll("  \"aod_slots_per_color\": [\n");
-    for (schedule.aod_slots_per_color, 0..) |row, ci| {
+    for (sch.aod_slots_per_color, 0..) |row, ci| {
         try w.writeAll("    [");
         for (row, 0..) |v, i| {
             if (i > 0) try w.writeAll(", ");
             if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
         }
-        const last = ci == schedule.aod_slots_per_color.len - 1;
+        const last = ci == sch.aod_slots_per_color.len - 1;
         try w.writeAll(if (last) "]\n" else "],\n");
     }
     try w.writeAll("  ],\n");
 
     // max_color
-    try w.print("  \"max_color\": {d}\n", .{schedule.max_color});
+    try w.print("  \"max_color\": {d}\n", .{sch.max_color});
     try w.writeAll("}");
 
     const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
@@ -656,127 +509,14 @@ fn writeToJson(allocator: std.mem.Allocator, io: std.Io, schedule: *const Schedu
     try file.writePositionalAll(io, buf.written(), 0);
 }
 
-fn debugEdgeColors(g: Graph) void {
-    std.debug.print(">> Edge Colors\n", .{});
-
-    for (0..g.n) |x| {
-        var has_any = false;
-
-        var e = g.edges[x];
-        while (e) |edge| : (e = edge.next) {
-            const y = edge.y;
-            if (x < y) {
-                if (edge.color) |c| {
-                    if (!has_any) {
-                        std.debug.print("  {d} -> ", .{x});
-                        has_any = true;
-                    }
-                    std.debug.print("{d}:{d} ", .{ y, c });
-                }
-            }
-        }
-
-        if (has_any) std.debug.print("\n", .{});
-    }
-}
-
-fn debugAodTargets(g: *Graph, aod_order: []const usize, aod_targets: [][]usize) void {
-    std.debug.print(">> AOD Target Positions\n", .{});
-
-    for (1..aod_targets.len) |c| {
-        const targets = aod_targets[c];
-        std.debug.print("Color {d} (parallel CZ layer):\n", .{c});
-
-        var shift: usize = 0;
-        var current_col: usize = 0;
-
-        for (aod_order, 0..) |aod_id, i| {
-            var partner: ?usize = null;
-
-            var e = g.edges[aod_id];
-            while (e) |edge| : (e = edge.next) {
-                if (edge.color == c) {
-                    partner = edge.y;
-                    break;
-                }
-            }
-
-            const target = targets[i];
-            if (partner) |p| {
-                // ACTIVE
-                std.debug.print("  AOD {d} (qubit {d}) -> ACTIVE partner {d} | column {d} (shift={d})\n", .{ i, aod_id, p, target, shift });
-                current_col = target + 1;
-            } else {
-                // RESTING
-                std.debug.print("  AOD {d} (qubit {d}) -> RESTING          | column {d} (shift={d} -> {d})\n", .{ i, aod_id, target, shift, shift + 1 });
-                current_col = target + 1;
-                shift += 1;
-            }
-        }
-    }
-}
-
-pub fn debugPrintPositions(
-    time_step: usize,
-    aod_order: []const usize,
-    slm_order: []const usize,
-    match: []const ?usize,
-    fixed_slm_slots: []const usize,
-    aod_slot: []const usize,
-) void {
-    std.debug.print("\n=== Resting Positions Debug — Time Step t = {} (SLMs FIXED) ===\n", .{time_step});
-    std.debug.print("AOD order : ", .{});
-    for (aod_order) |id| std.debug.print("AOD{d} ", .{id});
-    std.debug.print("\nMatching  : ", .{});
-    for (match) |m| {
-        if (m) |v| std.debug.print("SLM{d} ", .{v}) else std.debug.print("null ", .{});
-    }
-    std.debug.print("\n\nFIXED SLM layout (never changes):\n", .{});
-    for (slm_order, 0..) |slm_id, i| {
-        std.debug.print("  SLM {d:2} → slot {d}\n", .{ slm_id, fixed_slm_slots[i] });
-    }
-    var max_slot: usize = 0;
-    for (fixed_slm_slots) |s| max_slot = @max(max_slot, s);
-    for (aod_slot) |s| max_slot = @max(max_slot, s);
-    std.debug.print("\nTrap layout this step:\n", .{});
-    std.debug.print("────────────────────────────────────\n", .{});
-    for (0..max_slot + 1) |slot| {
-        std.debug.print("Slot {d:2} → ", .{slot});
-        var printed = false;
-        for (slm_order, 0..) |slm_id, i| {
-            if (fixed_slm_slots[i] == slot) {
-                std.debug.print("SLM{d} (FIXED)", .{slm_id});
-                printed = true;
-                break;
-            }
-        }
-        if (!printed) {
-            for (aod_order, 0..) |aod_id, i| {
-                if (aod_slot[i] == slot) {
-                    if (match[i]) |slm_id| {
-                        std.debug.print("AOD{d} ↔ SLM{d}", .{ aod_id, slm_id });
-                    } else {
-                        std.debug.print("AOD{d} (RESTING GAP)", .{aod_id});
-                    }
-                    printed = true;
-                    break;
-                }
-            }
-        }
-        if (!printed) std.debug.print("(empty)", .{});
-        std.debug.print("\n", .{});
-    }
-    std.debug.print("────────────────────────────────────\nTotal slots used: {d}\n====================================\n\n", .{max_slot + 1});
-}
-
-pub fn compile(allocator: std.mem.Allocator, g: *Graph) !Schedule {
+pub fn compile(allocator: std.mem.Allocator, g: *core.Graph) !schedule.Schedule {
     // 1. AOD set.
     var aod = try maxIndependentSet(allocator, g.*);
     defer aod.deinit(allocator);
 
     // 2. Color edges.
     try colorEdges(allocator, g, aod);
-    debugEdgeColors(g.*);
+    dbg.edgeColors(g.*);
 
     // 3. SLM order.
     var dep_graph = try slmGraph(allocator, g, aod.set);
@@ -829,7 +569,7 @@ const Rest = struct {
     right: usize,
 };
 
-fn computeRestingPositions(allocator: std.mem.Allocator, g: *Graph, aod: Aod, slm_order: []const usize) ![]usize {
+fn computeRestingPositions(allocator: std.mem.Allocator, g: *core.Graph, aod: Aod, slm_order: []const usize) ![]usize {
     const max_c = try g.maxColor();
 
     var resting = std.AutoHashMap(Rest, usize).init(allocator);
@@ -977,40 +717,6 @@ fn computeRestingPositions(allocator: std.mem.Allocator, g: *Graph, aod: Aod, sl
     return positions.toOwnedSlice(allocator);
 }
 
-pub fn main(init: std.process.Init) !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
-
-    // FIXME
-    //    var g = try Graph.init(alloc, 9, false);
-    //    defer g.deinit();
-    //    try g.addEdge(0, 1);
-    //    try g.addEdge(1, 2);
-    //    try g.addEdge(3, 4);
-    //    try g.addEdge(4, 5);
-    //    try g.addEdge(6, 7);
-    //    try g.addEdge(7, 8);
-    //    try g.addEdge(0, 3);
-    //    try g.addEdge(3, 6);
-    //    try g.addEdge(1, 4);
-    //    try g.addEdge(4, 7);
-    //    try g.addEdge(2, 5);
-    //    try g.addEdge(5, 8);
-
-    var g = try Graph.init(alloc, 8, false);
-    defer g.deinit();
-
-    var schedule = try compile(alloc, &g);
-    defer schedule.deinit(alloc);
-    schedule.print();
-
-    const io = init.io;
-    try writeToJson(alloc, io, &schedule, "testdata/test.json");
-
-    std.debug.print(">> Gate compilation completed\n", .{});
-}
-
 test "snapshot: mvp - aod set, coloring, schedule shape" {
     try @import("snapshot.zig").snapshotTest(
         std.testing.allocator,
@@ -1066,8 +772,8 @@ test "snapshot: qft" {
     );
 }
 
-pub fn buildMvpGraph(allocator: std.mem.Allocator) !Graph {
-    var g = try Graph.init(allocator, 7, false);
+pub fn buildMvpGraph(allocator: std.mem.Allocator) !core.Graph {
+    var g = try core.Graph.init(allocator, 7, false);
     try g.addEdge(0, 1);
     try g.addEdge(0, 5);
     try g.addEdge(1, 6);
@@ -1080,8 +786,8 @@ pub fn buildMvpGraph(allocator: std.mem.Allocator) !Graph {
     return g;
 }
 
-pub fn buildCycleGraph(allocator: std.mem.Allocator) !Graph {
-    var g = try Graph.init(allocator, 6, false);
+pub fn buildCycleGraph(allocator: std.mem.Allocator) !core.Graph {
+    var g = try core.Graph.init(allocator, 6, false);
     try g.addEdge(0, 1);
     try g.addEdge(1, 2);
     try g.addEdge(2, 3);
@@ -1099,8 +805,8 @@ pub fn buildCycleGraph(allocator: std.mem.Allocator) !Graph {
 // 0-1-2-3
 // | | | |
 // 4-5-6-7
-pub fn buildLadderGraph(allocator: std.mem.Allocator) !Graph {
-    var g = try Graph.init(allocator, 8, false);
+pub fn buildLadderGraph(allocator: std.mem.Allocator) !core.Graph {
+    var g = try core.Graph.init(allocator, 8, false);
     try g.addEdge(0, 1);
     try g.addEdge(1, 2);
     try g.addEdge(2, 3);
@@ -1124,8 +830,8 @@ pub fn buildLadderGraph(allocator: std.mem.Allocator) !Graph {
 // 3-4-5
 // | | |
 // 6-7-8
-pub fn buildGridGraph(allocator: std.mem.Allocator) !Graph {
-    var g = try Graph.init(allocator, 9, false);
+pub fn buildGridGraph(allocator: std.mem.Allocator) !core.Graph {
+    var g = try core.Graph.init(allocator, 9, false);
     try g.addEdge(0, 1);
     try g.addEdge(1, 2);
     try g.addEdge(3, 4);
@@ -1141,8 +847,8 @@ pub fn buildGridGraph(allocator: std.mem.Allocator) !Graph {
     return g;
 }
 
-pub fn buildGhzGraph(allocator: std.mem.Allocator) !Graph {
-    var g = try Graph.init(allocator, 8, false);
+pub fn buildGhzGraph(allocator: std.mem.Allocator) !core.Graph {
+    var g = try core.Graph.init(allocator, 8, false);
     try g.addEdge(0, 4);
     try g.addEdge(0, 2);
     try g.addEdge(4, 6);
@@ -1153,8 +859,8 @@ pub fn buildGhzGraph(allocator: std.mem.Allocator) !Graph {
     return g;
 }
 
-pub fn buildQftGraph(allocator: std.mem.Allocator) !Graph {
-    var g = try Graph.init(allocator, 5, false);
+pub fn buildQftGraph(allocator: std.mem.Allocator) !core.Graph {
+    var g = try core.Graph.init(allocator, 5, false);
     try g.addEdge(0, 1);
     try g.addEdge(0, 2);
     try g.addEdge(0, 3);

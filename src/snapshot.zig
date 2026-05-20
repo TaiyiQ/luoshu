@@ -1,5 +1,5 @@
 const std = @import("std");
-const route = @import("route.zig");
+const route = @import("route");
 
 const Graph = route.Graph;
 const Schedule = route.Schedule;
