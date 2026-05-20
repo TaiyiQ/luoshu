@@ -1,4 +1,6 @@
 const std = @import("std");
+const toml = @import("toml");
+const arch = @import("arch.zig");
 
 const INF = std.math.maxInt(usize);
 const MIN = -1; // -1 to help k in leastAdmissible start at 0.
@@ -975,40 +977,6 @@ fn computeRestingPositions(allocator: std.mem.Allocator, g: *Graph, aod: Aod, sl
     std.mem.sort(usize, positions.items, {}, std.sort.asc(usize));
 
     return positions.toOwnedSlice(allocator);
-}
-
-pub fn main(init: std.process.Init) !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
-
-    // FIXME
-    //    var g = try Graph.init(alloc, 9, false);
-    //    defer g.deinit();
-    //    try g.addEdge(0, 1);
-    //    try g.addEdge(1, 2);
-    //    try g.addEdge(3, 4);
-    //    try g.addEdge(4, 5);
-    //    try g.addEdge(6, 7);
-    //    try g.addEdge(7, 8);
-    //    try g.addEdge(0, 3);
-    //    try g.addEdge(3, 6);
-    //    try g.addEdge(1, 4);
-    //    try g.addEdge(4, 7);
-    //    try g.addEdge(2, 5);
-    //    try g.addEdge(5, 8);
-
-    var g = try Graph.init(alloc, 8, false);
-    defer g.deinit();
-
-    var schedule = try compile(alloc, &g);
-    defer schedule.deinit(alloc);
-    schedule.print();
-
-    const io = init.io;
-    try writeToJson(alloc, io, &schedule, "testdata/test.json");
-
-    std.debug.print(">> Gate compilation completed\n", .{});
 }
 
 test "snapshot: mvp - aod set, coloring, schedule shape" {
