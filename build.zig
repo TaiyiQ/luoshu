@@ -12,6 +12,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // --- Internal dependecies.
+
     const arch_mod = b.addModule("arch", .{
         .root_source_file = b.path("src/arch.zig"),
     });
@@ -33,6 +35,15 @@ pub fn build(b: *std.Build) void {
     route_mod.addImport("graph", graph_mod);
     route_mod.addImport("schedule", schedule_mod);
     exe.root_module.addImport("route", route_mod);
+
+    const debug_mod = b.addModule("debug", .{
+        .root_source_file = b.path("src/debug.zig"),
+    });
+    exe.root_module.addImport("debug", debug_mod);
+    debug_mod.addImport("graph", graph_mod);
+    route_mod.addImport("debug", debug_mod);
+
+    // --- External dependecies.
 
     const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
     exe.root_module.addImport("toml", toml_dep.module("toml"));

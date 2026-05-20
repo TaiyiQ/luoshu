@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     var parser = toml.Parser(arch.RawArchConfig).init(arenaAlloc);
     defer parser.deinit();
 
-    var raw = try parser.parseFile(init.io, "../example/arch.toml");
+    var raw = try parser.parseFile(init.io, "./example/arch.toml");
     defer raw.deinit();
 
     const cfg = try arch.convertConfig(raw.value, arenaAlloc);
@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
     s.print();
 
     const io = init.io;
-    try schedule.writeToFile(alloc, io, &s, "../testdata/test.json");
+    try schedule.writeToFile(alloc, io, &s, "./testdata/test.json");
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }

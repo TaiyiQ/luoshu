@@ -2,6 +2,8 @@ const std = @import("std");
 const core = @import("graph");
 const schedule = @import("schedule");
 
+const dbg = @import("debug");
+
 const INF = std.math.maxInt(usize);
 const MIN = -1; // -1 to help k in leastAdmissible start at 0.
 
@@ -507,119 +509,6 @@ fn writeToJson(allocator: std.mem.Allocator, io: std.Io, sch: *const schedule.Sc
     try file.writePositionalAll(io, buf.written(), 0);
 }
 
-fn debugEdgeColors(g: core.Graph) void {
-    std.debug.print(">> Edge Colors\n", .{});
-
-    for (0..g.n) |x| {
-        var has_any = false;
-
-        var e = g.edges[x];
-        while (e) |edge| : (e = edge.next) {
-            const y = edge.y;
-            if (x < y) {
-                if (edge.color) |c| {
-                    if (!has_any) {
-                        std.debug.print("  {d} -> ", .{x});
-                        has_any = true;
-                    }
-                    std.debug.print("{d}:{d} ", .{ y, c });
-                }
-            }
-        }
-
-        if (has_any) std.debug.print("\n", .{});
-    }
-}
-
-fn debugAodTargets(g: *core.Graph, aod_order: []const usize, aod_targets: [][]usize) void {
-    std.debug.print(">> AOD Target Positions\n", .{});
-
-    for (1..aod_targets.len) |c| {
-        const targets = aod_targets[c];
-        std.debug.print("Color {d} (parallel CZ layer):\n", .{c});
-
-        var shift: usize = 0;
-        var current_col: usize = 0;
-
-        for (aod_order, 0..) |aod_id, i| {
-            var partner: ?usize = null;
-
-            var e = g.edges[aod_id];
-            while (e) |edge| : (e = edge.next) {
-                if (edge.color == c) {
-                    partner = edge.y;
-                    break;
-                }
-            }
-
-            const target = targets[i];
-            if (partner) |p| {
-                // ACTIVE
-                std.debug.print("  AOD {d} (qubit {d}) -> ACTIVE partner {d} | column {d} (shift={d})\n", .{ i, aod_id, p, target, shift });
-                current_col = target + 1;
-            } else {
-                // RESTING
-                std.debug.print("  AOD {d} (qubit {d}) -> RESTING          | column {d} (shift={d} -> {d})\n", .{ i, aod_id, target, shift, shift + 1 });
-                current_col = target + 1;
-                shift += 1;
-            }
-        }
-    }
-}
-
-pub fn debugPrintPositions(
-    time_step: usize,
-    aod_order: []const usize,
-    slm_order: []const usize,
-    match: []const ?usize,
-    fixed_slm_slots: []const usize,
-    aod_slot: []const usize,
-) void {
-    std.debug.print("\n=== Resting Positions Debug — Time Step t = {} (SLMs FIXED) ===\n", .{time_step});
-    std.debug.print("AOD order : ", .{});
-    for (aod_order) |id| std.debug.print("AOD{d} ", .{id});
-    std.debug.print("\nMatching  : ", .{});
-    for (match) |m| {
-        if (m) |v| std.debug.print("SLM{d} ", .{v}) else std.debug.print("null ", .{});
-    }
-    std.debug.print("\n\nFIXED SLM layout (never changes):\n", .{});
-    for (slm_order, 0..) |slm_id, i| {
-        std.debug.print("  SLM {d:2} → slot {d}\n", .{ slm_id, fixed_slm_slots[i] });
-    }
-    var max_slot: usize = 0;
-    for (fixed_slm_slots) |s| max_slot = @max(max_slot, s);
-    for (aod_slot) |s| max_slot = @max(max_slot, s);
-    std.debug.print("\nTrap layout this step:\n", .{});
-    std.debug.print("────────────────────────────────────\n", .{});
-    for (0..max_slot + 1) |slot| {
-        std.debug.print("Slot {d:2} → ", .{slot});
-        var printed = false;
-        for (slm_order, 0..) |slm_id, i| {
-            if (fixed_slm_slots[i] == slot) {
-                std.debug.print("SLM{d} (FIXED)", .{slm_id});
-                printed = true;
-                break;
-            }
-        }
-        if (!printed) {
-            for (aod_order, 0..) |aod_id, i| {
-                if (aod_slot[i] == slot) {
-                    if (match[i]) |slm_id| {
-                        std.debug.print("AOD{d} ↔ SLM{d}", .{ aod_id, slm_id });
-                    } else {
-                        std.debug.print("AOD{d} (RESTING GAP)", .{aod_id});
-                    }
-                    printed = true;
-                    break;
-                }
-            }
-        }
-        if (!printed) std.debug.print("(empty)", .{});
-        std.debug.print("\n", .{});
-    }
-    std.debug.print("────────────────────────────────────\nTotal slots used: {d}\n====================================\n\n", .{max_slot + 1});
-}
-
 pub fn compile(allocator: std.mem.Allocator, g: *core.Graph) !schedule.Schedule {
     // 1. AOD set.
     var aod = try maxIndependentSet(allocator, g.*);
@@ -627,7 +516,7 @@ pub fn compile(allocator: std.mem.Allocator, g: *core.Graph) !schedule.Schedule 
 
     // 2. Color edges.
     try colorEdges(allocator, g, aod);
-    debugEdgeColors(g.*);
+    dbg.edgeColors(g.*);
 
     // 3. SLM order.
     var dep_graph = try slmGraph(allocator, g, aod.set);

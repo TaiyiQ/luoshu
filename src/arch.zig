@@ -118,17 +118,18 @@ pub const ArchConfig = struct {
     constraints: Constraints,
 
     pub fn print(s: ArchConfig) void {
-        std.debug.print("Platform:     {s} v{s}\n", .{
+        std.debug.print(">> ArchConfig\n", .{});
+        std.debug.print("  Platform:     {s} v{s}\n", .{
             s.platform.name,
             s.platform.version,
         });
-        std.debug.print("AOD:          id={d}  rows={d}  cols={d}  min_sep={d}nm\n", .{
+        std.debug.print("  AOD:          id={d}  rows={d}  cols={d}  min_sep={d}nm\n", .{
             s.aod.aod_id,
             s.aod.max_num_row,
             s.aod.max_num_col,
             s.aod.min_sep_nm,
         });
-        std.debug.print("Storage:      zone={d}  slm={d}  {d}x{d} traps  sep=({d},{d})nm\n", .{
+        std.debug.print("  Storage:      zone={d}  slm={d}  {d}x{d} traps  sep=({d},{d})nm\n", .{
             s.storage_zone.zone_id,
             s.storage_zone.slm.slm_id,
             s.storage_zone.slm.num_row,
@@ -136,28 +137,28 @@ pub const ArchConfig = struct {
             s.storage_zone.slm.sep_nm[0],
             s.storage_zone.slm.sep_nm[1],
         });
-        std.debug.print("Entanglement: zone={d}  dr={d}nm  dw={d}nm  slms={d}\n", .{
+        std.debug.print("  Entanglement: zone={d}  dr={d}nm  dw={d}nm  slms={d}\n", .{
             s.entanglement_zone.zone_id,
             s.entanglement_zone.dr_nm,
             s.entanglement_zone.dw_nm,
             s.entanglement_zone.slms.len,
         });
         for (s.entanglement_zone.slms) |slm| {
-            std.debug.print("  slm={d}  {d}x{d}  offset=({d},{d})nm\n", .{
+            std.debug.print("    slm={d}  {d}x{d}  offset=({d},{d})nm\n", .{
                 slm.slm_id,       slm.num_row,      slm.num_col,
                 slm.offset_nm[0], slm.offset_nm[1],
             });
         }
-        std.debug.print("Readout:      zone={d}  offset=({d},{d})nm\n", .{
+        std.debug.print("  Readout:      zone={d}  offset=({d},{d})nm\n", .{
             s.readout_zone.zone_id,
             s.readout_zone.offset_nm[0],
             s.readout_zone.offset_nm[1],
         });
-        std.debug.print("Constraints:  blockade={d}nm  zone_gap={d}nm\n", .{
+        std.debug.print("  Constraints:  blockade={d}nm  zone_gap={d}nm\n", .{
             s.constraints.db_nm,
             s.constraints.dz_nm,
         });
-        std.debug.print("Fidelities:   1Q={d:.3}  2Q={d:.3}  readout={d:.3}\n", .{
+        std.debug.print("  Fidelities:   1Q={d:.3}  2Q={d:.3}  readout={d:.3}\n", .{
             s.constraints.one_qubit_gate_fidelity,
             s.constraints.two_qubit_gate_fidelity,
             s.constraints.readout_fidelity,
