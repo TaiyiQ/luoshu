@@ -41,6 +41,8 @@ pub fn main(init: std.process.Init) !void {
 
     var physical = try schedule.physicalSchedule(init.arena.allocator(), cfg, logical);
     defer physical.deinit();
+    try physical.dumpSlideshow(alloc, init.io, "./zig-out/slideshow");
+    //    try physical.dumpSvg(alloc, init.io, "./zig-out/placement.svg");
 
     //    const io = init.io;
     //    try schedule.writeToFile(alloc, io, &s, "./testdata/test.json");
