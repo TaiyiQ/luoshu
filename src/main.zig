@@ -35,12 +35,15 @@ pub fn main(init: std.process.Init) !void {
     try g.addEdge(3, 2);
     try g.addEdge(4, 2);
 
-    var s = try route.compile(alloc, &g);
-    defer s.deinit(alloc);
-    s.print();
+    var logical = try route.compile(alloc, &g);
+    defer logical.deinit(alloc);
+    logical.print();
 
-    const io = init.io;
-    try schedule.writeToFile(alloc, io, &s, "./testdata/test.json");
+    var physical = try schedule.physicalSchedule(init.arena.allocator(), cfg, logical);
+    defer physical.deinit();
+
+    //    const io = init.io;
+    //    try schedule.writeToFile(alloc, io, &s, "./testdata/test.json");
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }

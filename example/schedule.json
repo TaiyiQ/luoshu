@@ -1,74 +1,67 @@
 {
-  "version": "1.0",
+  "version": "1.1",
   "platform": "taiyi-v1",
-  "init": [
-    { "q": 0, "slm": 0, "x": 0, "y": 0 },
-    { "q": 1, "slm": 0, "x": 2, "y": 0 }
-  ],
+  "num_qubits": 2,
   "ops": [
     {
       "op": "raman",
       "angle": 1.5708,
       "phase": 3.1416,
+      "t": 0,
       "targets": [
-        { "q": 0, "slm": 0, "x": 0, "y": 0 },
-        { "q": 1, "slm": 0, "x": 2, "y": 0 }
+        { "qubit": 0, "x": 0, "y": 0 },
+        { "qubit": 1, "x": 2, "y": 0 }
       ]
     },
+
     {
       "op": "move",
       "aod": 0,
       "translate": "y",
-      "from_zone": "storage_zone",
-      "to_zone": "entanglement_zone",
+      "from_zone": "storage",
+      "to_zone": "compute",
+      "t": 1,
       "atoms": [
         {
-          "q": 0,
-          "from": { "slm": 0, "x": 0, "y": 0 },
-          "to":   { "slm": 1, "x": 0, "y": 0 }
+          "qubit": 0,
+          "from": { "x": 0, "y": 0 },
+          "to":   { "x": 0, "y": 0 }
         },
         {
-          "q": 1,
-          "from": { "slm": 0, "x": 2, "y": 0 },
-          "to":   { "slm": 2, "x": 0, "y": 0 }
+          "qubit": 1,
+          "from": { "x": 2, "y": 0 },
+          "to":   { "x": 0, "y": 0 }
         }
       ]
     },
+
+    {
+      "op": "move",
+      "aod": 0,
+      "translate": "x",
+      "from_zone": "compute",
+      "to_zone": "compute",
+      "t": 1,
+      "atoms": [
+        {
+          "qubit": 0,
+          "from": { "x": 0, "y": 0 },
+          "to":   { "x": 3, "y": 0 }
+        }
+      ]
+    },
+
     {
       "op": "rydberg",
-      "zone": "entanglement_zone"
+      "zone": "compute",
+      "t": 1
     },
-    {
-      "op": "raman",
-      "angle": 1.5708,
-      "phase": 0.0,
-      "targets": [
-        { "q": 1, "slm": 2, "x": 0, "y": 0 }
-      ]
-    },
-    {
-      "op": "move",
-      "aod": 0,
-      "translate": "y",
-      "from_zone": "entanglement_zone",
-      "to_zone": "readout_zone",
-      "atoms": [
-        {
-          "q": 0,
-          "from": { "slm": 1, "x": 0, "y": 0 },
-          "to":   { "slm": null, "x": 0, "y": 0 }
-        },
-        {
-          "q": 1,
-          "from": { "slm": 2, "x": 0, "y": 0 },
-          "to":   { "slm": null, "x": 1, "y": 0 }
-        }
-      ]
-    },
+
     {
       "op": "measure",
       "zone": "readout_zone",
       "basis": "Z",
+      "t": 2,
       "qubits": [0, 1]
     }
   ]

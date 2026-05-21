@@ -4,7 +4,6 @@ const schedule = @import("schedule");
 
 const dbg = @import("debug");
 
-const INF = std.math.maxInt(usize);
 const MIN = -1; // -1 to help k in leastAdmissible start at 0.
 
 const Aod = struct {
@@ -154,13 +153,7 @@ fn colorEdges(allocator: std.mem.Allocator, g: *core.Graph, aod: Aod) !void {
     }
 }
 
-fn leastAdmissible(
-    g: *core.Graph,
-    v: usize,
-    y: usize,
-    aod_idx: *const std.AutoHashMap(usize, usize),
-    constraints: *AodConstraints,
-) !i32 {
+fn leastAdmissible(g: *core.Graph, v: usize, y: usize, aod_idx: *const std.AutoHashMap(usize, usize), constraints: *AodConstraints) !i32 {
     const v_idx = aod_idx.get(v).?;
 
     var forbidden = std.AutoHashMap(i32, void).init(g.allocator);
@@ -353,12 +346,7 @@ fn topoSort(allocator: std.mem.Allocator, g: core.Graph, aod_set: []const bool) 
     return order.toOwnedSlice(allocator);
 }
 
-fn matchAodToSlm(
-    allocator: std.mem.Allocator,
-    g: *const core.Graph,
-    aod: Aod,
-    t: i32,
-) ![]?usize {
+fn matchAodToSlm(allocator: std.mem.Allocator, g: *const core.Graph, aod: Aod, t: i32) ![]?usize {
     if (aod.nodes.items.len == 0) return try allocator.alloc(?usize, 0);
 
     const match = try allocator.alloc(?usize, aod.nodes.items.len);
@@ -378,12 +366,7 @@ fn matchAodToSlm(
     return match;
 }
 
-fn logicalSchedule(
-    allocator: std.mem.Allocator,
-    g: *core.Graph,
-    aod: Aod,
-    slm_slots: []const ?usize,
-) !schedule.Schedule {
+fn logicalSchedule(allocator: std.mem.Allocator, g: *core.Graph, aod: Aod, slm_slots: []const ?usize) !schedule.Schedule {
     var slm_pos = std.AutoHashMap(usize, usize).init(allocator);
     defer slm_pos.deinit();
     for (slm_slots, 0..) |v, t| {
@@ -470,71 +453,6 @@ fn logicalSchedule(
         .aod_slots_per_color = aod_slots_per_color,
         .max_color = max_c,
     };
-}
-
-fn writeToJson(allocator: std.mem.Allocator, io: std.Io, sch: *const schedule.Schedule, filename: []const u8) !void {
-    var buf: std.Io.Writer.Allocating = .init(allocator);
-    defer buf.deinit();
-    const w = &buf.writer;
-
-    try w.writeAll("{\n");
-
-    // slm_slots
-    try w.writeAll("  \"slm_slots\": [");
-    for (sch.slm_slots, 0..) |v, i| {
-        if (i > 0) try w.writeAll(", ");
-        if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
-    }
-    try w.writeAll("],\n");
-
-    // aod_slots_per_color
-    try w.writeAll("  \"aod_slots_per_color\": [\n");
-    for (sch.aod_slots_per_color, 0..) |row, ci| {
-        try w.writeAll("    [");
-        for (row, 0..) |v, i| {
-            if (i > 0) try w.writeAll(", ");
-            if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
-        }
-        const last = ci == sch.aod_slots_per_color.len - 1;
-        try w.writeAll(if (last) "]\n" else "],\n");
-    }
-    try w.writeAll("  ],\n");
-
-    // max_color
-    try w.print("  \"max_color\": {d}\n", .{sch.max_color});
-    try w.writeAll("}");
-
-    const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
-    defer file.close(io);
-    try file.writePositionalAll(io, buf.written(), 0);
-}
-
-pub fn compile(allocator: std.mem.Allocator, g: *core.Graph) !schedule.Schedule {
-    // 1. AOD set.
-    var aod = try maxIndependentSet(allocator, g.*);
-    defer aod.deinit(allocator);
-
-    // 2. Color edges.
-    try colorEdges(allocator, g, aod);
-    dbg.edgeColors(g.*);
-
-    // 3. SLM order.
-    var dep_graph = try slmGraph(allocator, g, aod.set);
-    defer dep_graph.deinit();
-    dep_graph.print("slm-dep");
-
-    const slm_order = try topoSort(allocator, dep_graph, aod.set);
-    defer allocator.free(slm_order);
-    std.debug.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
-
-    const resting_xs = try computeRestingPositions(allocator, g, aod, slm_order);
-    defer allocator.free(resting_xs);
-    std.debug.print("resting_xs: {any}\n", .{resting_xs});
-
-    const slm_slots = try placeSlmWithResting(allocator, slm_order, resting_xs, aod.nodes.items.len);
-    errdefer allocator.free(slm_slots);
-
-    return logicalSchedule(allocator, g, aod, slm_slots);
 }
 
 fn placeSlmWithResting(
@@ -715,6 +633,34 @@ fn computeRestingPositions(allocator: std.mem.Allocator, g: *core.Graph, aod: Ao
     std.mem.sort(usize, positions.items, {}, std.sort.asc(usize));
 
     return positions.toOwnedSlice(allocator);
+}
+
+pub fn compile(allocator: std.mem.Allocator, g: *core.Graph) !schedule.Schedule {
+    // 1. AOD set.
+    var aod = try maxIndependentSet(allocator, g.*);
+    defer aod.deinit(allocator);
+
+    // 2. Color edges.
+    try colorEdges(allocator, g, aod);
+    dbg.edgeColors(g.*);
+
+    // 3. SLM order.
+    var dep_graph = try slmGraph(allocator, g, aod.set);
+    defer dep_graph.deinit();
+    dep_graph.print("slm-dep");
+
+    const slm_order = try topoSort(allocator, dep_graph, aod.set);
+    defer allocator.free(slm_order);
+    std.debug.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
+
+    const resting_xs = try computeRestingPositions(allocator, g, aod, slm_order);
+    defer allocator.free(resting_xs);
+    std.debug.print("resting_xs: {any}\n", .{resting_xs});
+
+    const slm_slots = try placeSlmWithResting(allocator, slm_order, resting_xs, aod.nodes.items.len);
+    errdefer allocator.free(slm_slots);
+
+    return logicalSchedule(allocator, g, aod, slm_slots);
 }
 
 test "snapshot: mvp - aod set, coloring, schedule shape" {
