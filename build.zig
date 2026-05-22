@@ -41,6 +41,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/viz.zig"),
     });
     viz_mod.addImport("schedule", schedule_mod);
+    viz_mod.addImport("arch", arch_mod);
     exe.root_module.addImport("viz", viz_mod);
 
     const debug_mod = b.addModule("debug", .{

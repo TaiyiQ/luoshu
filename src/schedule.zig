@@ -1,7 +1,7 @@
 const std = @import("std");
 const arch = @import("arch");
 
-const Zone = enum { storage, compute, readout };
+pub const Zone = enum { storage, compute, readout };
 const Axis = enum { x, y };
 
 pub const Point = struct { x: i32, y: i32 };
@@ -109,91 +109,6 @@ pub const PhysicalSchedule = struct {
     pub fn deinit(s: *PhysicalSchedule) void {
         s.arena.deinit();
     }
-
-    pub fn dumpSvg(
-        self: *const PhysicalSchedule,
-        allocator: std.mem.Allocator,
-        io: std.Io,
-        filename: []const u8,
-    ) !void {
-        if (self.placement.len == 0) return;
-
-        // Bounding box of all qubit positions (nm).
-        var min_x = self.placement[0].x;
-        var max_x = min_x;
-        var min_y = self.placement[0].y;
-        var max_y = min_y;
-        for (self.placement[1..]) |p| {
-            if (p.x < min_x) min_x = p.x;
-            if (p.x > max_x) max_x = p.x;
-            if (p.y < min_y) min_y = p.y;
-            if (p.y > max_y) max_y = p.y;
-        }
-
-        // Fit-and-center transform from physical nm to SVG px.
-        const canvas_w: f64 = 680.0;
-        const canvas_h: f64 = 460.0;
-        const margin: f64 = 60.0;
-        const span_x: f64 = @floatFromInt(max_x - min_x);
-        const span_y: f64 = @floatFromInt(max_y - min_y);
-        const scale_x: f64 = if (span_x > 0) (canvas_w - 2 * margin) / span_x else 1.0;
-        const scale_y: f64 = if (span_y > 0) (canvas_h - 2 * margin) / span_y else 1.0;
-        const scale = @min(scale_x, scale_y);
-        const off_x = (canvas_w - span_x * scale) / 2.0;
-        const off_y = (canvas_h - span_y * scale) / 2.0;
-
-        // Trap radius: 35% of the closest-pair distance, clamped.
-        // O(n^2) but n is small for debug output.
-        var min_gap_sq: f64 = 0.0;
-        var found_gap = false;
-        for (self.placement, 0..) |a, i| {
-            for (self.placement[i + 1 ..]) |b| {
-                const adx: f64 = @floatFromInt(a.x - b.x);
-                const ady: f64 = @floatFromInt(a.y - b.y);
-                const d_sq = adx * adx + ady * ady;
-                if (d_sq > 0 and (!found_gap or d_sq < min_gap_sq)) {
-                    min_gap_sq = d_sq;
-                    found_gap = true;
-                }
-            }
-        }
-        const radius: f64 = if (found_gap) @sqrt(min_gap_sq) * scale * 0.35 else 20.0;
-
-        // Build SVG in a buffer.
-        var buf: std.Io.Writer.Allocating = .init(allocator);
-        defer buf.deinit();
-        const w = &buf.writer;
-
-        try w.writeAll(
-            \\<svg xmlns="http://www.w3.org/2000/svg" width="680" height="460" viewBox="0 0 680 460">
-            \\  <title>Storage zone placement</title>
-            \\  <defs><style>
-            \\    .qubit  { fill: #E1F5EE; stroke: #0F6E56; stroke-width: 0.5; }
-            \\    .qlabel { font: 500 14px system-ui, sans-serif; fill: #085041;
-            \\              text-anchor: middle; dominant-baseline: central; }
-            \\  </style></defs>
-            \\
-        );
-
-        for (self.placement, 0..) |p, id| {
-            const dx: f64 = @floatFromInt(p.x - min_x);
-            // Physical y points up; SVG y points down — flip so max_y is at the top.
-            const dy: f64 = @floatFromInt(max_y - p.y);
-            const sx = off_x + dx * scale;
-            const sy = off_y + dy * scale;
-            try w.print(
-                \\  <circle class="qubit" cx="{d:.1}" cy="{d:.1}" r="{d:.1}"/>
-                \\  <text class="qlabel" x="{d:.1}" y="{d:.1}">{d}</text>
-                \\
-            , .{ sx, sy, radius, sx, sy, id });
-        }
-
-        try w.writeAll("</svg>\n");
-
-        const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
-        defer file.close(io);
-        try file.writePositionalAll(io, buf.written(), 0);
-    }
 };
 
 pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: Schedule) !PhysicalSchedule {
@@ -210,6 +125,19 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
     // Enumerate every SLM trap site in the entanglement zone. These are drawn
     // as background indicators in the slideshow (grey ring = empty, green = occupied).
     var slots: std.ArrayListUnmanaged(Point) = .empty;
+    {
+        const slm = layout.storage_zone.slm;
+        const x0 = layout.storage_zone.offset_nm[0] + slm.offset_nm[0];
+        const y0 = layout.storage_zone.offset_nm[1] + slm.offset_nm[1];
+        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
+        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
+        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
+            try slots.append(a, .{
+                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
+                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
+            });
+        };
+    }
     for (layout.entanglement_zone.slms) |slm| {
         const x0 = layout.entanglement_zone.offset_nm[0] + slm.offset_nm[0];
         const y0 = layout.entanglement_zone.offset_nm[1] + slm.offset_nm[1];
@@ -281,7 +209,6 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
     const target = layout.entanglement_zone.slms[1];
     const x_aod_orig = ent.offset_nm[0] + target.offset_nm[0];
     const y_aod_orig = ent.offset_nm[1] + target.offset_nm[1];
-    std.debug.print("----- {}\n", .{target.offset_nm[1]});
     const x_aod_sep = target.sep_nm[0];
 
     for (logical.aod_slots_per_color, 0..) |aod_row, t| {
@@ -305,16 +232,32 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
             }
         }
 
-        op = Op{ .t = @as(u32, @intCast(t)) + 1, .kind = .{
-            .move = .{
-                .aod = 0,
-                .translate = Axis.y,
-                .src_zone = Zone.storage,
-                .dest_zone = Zone.compute,
-                .atoms = atomsAod.items,
-            },
-        } };
-        try ops.append(allocator, op);
+        // FIXME: Improve. The first move for AOD qubits will always take
+        // them from storage zone to compute zone. We do now want to show
+        // arrows when moving qubits in compute zone.
+        if (t == 0) {
+            op = Op{ .t = @as(u32, @intCast(t)) + 1, .kind = .{
+                .move = .{
+                    .aod = 0,
+                    .translate = Axis.y,
+                    .src_zone = Zone.storage,
+                    .dest_zone = Zone.compute,
+                    .atoms = atomsAod.items,
+                },
+            } };
+            try ops.append(allocator, op);
+        } else {
+            op = Op{ .t = @as(u32, @intCast(t)) + 1, .kind = .{
+                .move = .{
+                    .aod = 0,
+                    .translate = Axis.y,
+                    .src_zone = Zone.compute,
+                    .dest_zone = Zone.compute,
+                    .atoms = atomsAod.items,
+                },
+            } };
+            try ops.append(allocator, op);
+        }
     }
 
     return .{
