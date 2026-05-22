@@ -262,7 +262,7 @@ fn drawPanel(
             rl.drawRectangleRounded(rec, 0.3, 4, rl.Color{ .r = chip.color.r, .g = chip.color.g, .b = chip.color.b, .a = if (has) @as(u8, 35) else 12 });
             rl.drawRectangleRoundedLinesEx(rec, 0.3, 4, 1.0, rl.Color{ .r = chip.color.r, .g = chip.color.g, .b = chip.color.b, .a = if (has) @as(u8, 210) else 50 });
             var buf: [16]u8 = undefined;
-            const txt = std.fmt.bufPrintZ(&buf, "{s} ×{d}", .{ chip.label, chip.count }) catch "?";
+            const txt = std.fmt.bufPrintZ(&buf, "{s} x{d}", .{ chip.label, chip.count }) catch "?";
             const tw = rl.measureTextEx(font, txt, FS_CHIP, 0.8).x;
             rl.drawTextEx(font, txt, .{ .x = cx + (chip_w - tw) / 2, .y = chip_y + (CHIP_H - FS_CHIP) / 2 }, FS_CHIP, 0.8,
                 rl.Color{ .r = chip.color.r, .g = chip.color.g, .b = chip.color.b, .a = if (has) @as(u8, 255) else 90 });
@@ -279,6 +279,19 @@ fn drawPanel(
         const tw = rl.measureTextEx(font, name, FS_BADGE, 1.0).x;
         rl.drawTextEx(font, name, .{ .x = PAD + (cw - tw) / 2, .y = y + (BADGE_H - FS_BADGE) / 2 + 1 }, FS_BADGE, 1.0, accent);
         y += BADGE_H + PAD;
+    }
+
+    // ── Zone indicator ────────────────────────────────────────────
+    {
+        const zone_str: [:0]const u8 = switch (op.kind) {
+            .move    => |m| @tagName(m.dest_zone),
+            .rydberg => |r| @tagName(r.zone),
+            .measure => |m| @tagName(m.zone),
+            .raman   => "-",
+        };
+        rl.drawTextEx(font, "zone", .{ .x = PAD,   .y = y }, FS_KV, KV_SP, palette.text_sub);
+        rl.drawTextEx(font, zone_str, .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, accent);
+        y += KV_ROW_H;
     }
 
     // ── Progress bar ──────────────────────────────────────────────
@@ -367,7 +380,7 @@ fn drawPanel(
             var buf: [48]u8 = undefined;
             const line = if (q < positions.len) blk: {
                 const pos = positions[q];
-                break :blk std.fmt.bufPrintZ(&buf, "q{d}  ({d}, {d}) µm",
+                break :blk std.fmt.bufPrintZ(&buf, "q{d}  ({d}, {d}) um",
                     .{ q, @divTrunc(pos.x, 1000), @divTrunc(pos.y, 1000) }) catch "?";
             } else blk: {
                 break :blk std.fmt.bufPrintZ(&buf, "q{d}", .{q}) catch "?";
@@ -377,7 +390,7 @@ fn drawPanel(
             shown += 1;
         }
         if (!any_active) {
-            rl.drawTextEx(font, "—", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(font, "-", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
             y += KV_ROW_H;
         }
     }
@@ -409,9 +422,7 @@ fn drawPanel(
         y += @as(f32, @floatFromInt(num_rows)) * (QUBIT_SQ + QUBIT_GAP) + PAD;
     }
 
-    // ── Controls (flows naturally below qubits) ───────────────────
-    sep(y); y += SEP_ADV;
-    sectionLabel(font, "CONTROLS", y); y += LABEL_ADV;
+    // ── Controls (pinned to bottom) ───────────────────────────────
     const ctrl = [_][2][:0]const u8{
         .{ "j / k",  "step"         },
         .{ "space",  "play / pause" },
@@ -420,10 +431,14 @@ fn drawPanel(
         .{ "drag",   "pan"          },
         .{ "h",      "hide"         },
     };
+    const ctrl_block_h: f32 = SEP_ADV + LABEL_ADV + @as(f32, @floatFromInt(ctrl.len)) * CTRL_ROW_H;
+    var cy: f32 = screen_h - ctrl_block_h;
+    sep(cy); cy += SEP_ADV;
+    sectionLabel(font, "CONTROLS", cy); cy += LABEL_ADV;
     for (ctrl) |row| {
-        rl.drawTextEx(font, row[0], .{ .x = PAD,   .y = y }, FS_CTRL, 0.8, palette.text_sub);
-        rl.drawTextEx(font, row[1], .{ .x = KV_VX, .y = y }, FS_CTRL, 0.8, palette.text);
-        y += CTRL_ROW_H;
+        rl.drawTextEx(font, row[0], .{ .x = PAD,   .y = cy }, FS_CTRL, 0.8, palette.text_sub);
+        rl.drawTextEx(font, row[1], .{ .x = KV_VX, .y = cy }, FS_CTRL, 0.8, palette.text);
+        cy += CTRL_ROW_H;
     }
 }
 
