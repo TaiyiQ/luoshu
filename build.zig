@@ -37,6 +37,12 @@ pub fn build(b: *std.Build) void {
     route_mod.addImport("schedule", schedule_mod);
     exe.root_module.addImport("route", route_mod);
 
+    const viz_mod = b.addModule("viz", .{
+        .root_source_file = b.path("src/viz.zig"),
+    });
+    viz_mod.addImport("schedule", schedule_mod);
+    exe.root_module.addImport("viz", viz_mod);
+
     const debug_mod = b.addModule("debug", .{
         .root_source_file = b.path("src/debug.zig"),
     });
@@ -55,7 +61,7 @@ pub fn build(b: *std.Build) void {
         .linux_display_backend = .Wayland,
     });
     exe.root_module.linkLibrary(raylib_dep.artifact("raylib"));
-    schedule_mod.addImport("raylib", raylib_dep.module("raylib"));
+    viz_mod.addImport("raylib", raylib_dep.module("raylib"));
 
     b.installArtifact(exe); // enables `zig build`
 
