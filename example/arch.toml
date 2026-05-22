@@ -22,7 +22,7 @@ max_num_col = 20 # physical limit of your AOD column component
 [storage_zone]
 zone_id = 0
 offset_um = [0.0, 0.0]        # bottom-left corner (x, y)
-dimension_um = [30.0, 30.0] # width x height: num_col * sep_um
+dimension_um = [300.0, 300.0] # width x height: num_col * sep_um
 
 [storage_zone.slm]
 slm_id = 0
