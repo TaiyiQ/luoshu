@@ -22,7 +22,7 @@ max_num_col = 20 # physical limit of your AOD column component
 [storage_zone]
 zone_id = 0
 offset_um = [0.0, 0.0]        # bottom-left corner (x, y)
-dimension_um = [300.0, 300.0] # width x height: num_col * sep_um
+dimension_um = [30.0, 30.0] # width x height: num_col * sep_um
 
 [storage_zone.slm]
 slm_id = 0
@@ -58,7 +58,7 @@ slm_id = 2
 num_row = 7
 num_col = 20
 sep_um = [10.0, 12.0]
-offset_um = [37.0, 0.0]
+offset_um = [35.0, 5.0]
 
 # ── Readout zone ───────────────────────────────────────────────
 # Where atoms are imaged. No SLM traps needed for MVP —

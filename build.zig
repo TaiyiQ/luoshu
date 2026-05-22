@@ -49,6 +49,14 @@ pub fn build(b: *std.Build) void {
     const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
     exe.root_module.addImport("toml", toml_dep.module("toml"));
 
+    const raylib_dep = b.dependency("raylib_zig", .{
+        .target = target,
+        .optimize = optimize,
+        .linux_display_backend = .Wayland,
+    });
+    exe.root_module.linkLibrary(raylib_dep.artifact("raylib"));
+    schedule_mod.addImport("raylib", raylib_dep.module("raylib"));
+
     b.installArtifact(exe); // enables `zig build`
 
     const run_cmd = b.addRunArtifact(exe);
