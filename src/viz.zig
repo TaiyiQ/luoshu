@@ -171,6 +171,31 @@ fn drawArrivalRipple(cam: Camera, pos: Point, settle_t: f32, fill: rl.Color) voi
     rl.drawCircleLinesV(screen, r + 1.5, c);
 }
 
+fn drawEntanglementLines(cam: Camera, positions: []const Point, active: []const bool, time: f32, color: rl.Color) void {
+    const pulse = 0.5 + 0.5 * @sin(time * std.math.pi * 3.0);
+    const alpha: u8 = @intFromFloat(25.0 + pulse * 95.0);
+    const thickness: f32 = 0.5 + pulse * 1.5;
+    for (0..positions.len) |i| {
+        if (i >= active.len or !active[i]) continue;
+        const s1 = cam.worldToScreen(toVec(positions[i]));
+        for (i + 1..positions.len) |j| {
+            if (j >= active.len or !active[j]) continue;
+            rl.drawLineEx(s1, cam.worldToScreen(toVec(positions[j])), thickness,
+                rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = alpha });
+        }
+    }
+}
+
+fn drawGatePulse(cam: Camera, pos: Point, time: f32, color: rl.Color) void {
+    const screen = cam.worldToScreen(toVec(pos));
+    const base_r = 600.0 * cam.zoom;
+    const pulse = @sin(time * std.math.pi * 5.0);
+    const r = base_r * (1.7 + 0.35 * pulse);
+    const a1: u8 = @intFromFloat(80.0 + 100.0 * (0.5 + 0.5 * pulse));
+    rl.drawCircleLinesV(screen, r, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = a1 });
+    rl.drawCircleLinesV(screen, r + 2.0, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = a1 / 3 });
+}
+
 fn drawGhostQubit(cam: Camera, pos: Point, fill: rl.Color) void {
     const screen = cam.worldToScreen(toVec(pos));
     const screen_radius = 600.0 * cam.zoom;
@@ -928,7 +953,14 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
             .measure => |m| for (m.qubits) |q| {
                 active[q] = true;
             },
-            else => {},
+            .rydberg => {
+                for (frame_positions[frame], 0..) |pos, id| {
+                    if (id >= active.len) break;
+                    if (pos.x >= compute_rect.x0 and pos.x <= compute_rect.x1 and
+                        pos.y >= compute_rect.y0 and pos.y <= compute_rect.y1)
+                        active[id] = true;
+                }
+            },
         }
 
         // ── Draw ───────────────────────────────────────────────────
@@ -975,9 +1007,25 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
             }
         }
 
+        const now: f32 = @floatCast(rl.getTime());
+
+        if (op.kind == .rydberg) {
+            drawEntanglementLines(camera, draw_positions, active, now, opColors(op).fill);
+        }
+
         const colors = opColors(op);
         for (draw_positions, 0..) |pos, id| {
             drawQubit(camera, font, pos, id, active[id], colors.fill, colors.stroke);
+        }
+
+        switch (op.kind) {
+            .raman, .rydberg => {
+                for (draw_positions, 0..) |pos, id| {
+                    if (id < active.len and active[id])
+                        drawGatePulse(camera, pos, now, colors.stroke);
+                }
+            },
+            else => {},
         }
 
         if (panel_visible) {
