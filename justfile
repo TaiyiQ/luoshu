@@ -1,5 +1,5 @@
 run:
-	zig run src/route.zig
+	zig build run
 
 test:
 	zig test src/route.zig

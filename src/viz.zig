@@ -37,11 +37,21 @@ const BBox = struct {
     max_x: f32,
     max_y: f32,
 
-    fn dx(self: BBox) f32 { return self.max_x - self.min_x; }
-    fn dy(self: BBox) f32 { return self.max_y - self.min_y; }
-    fn cx(self: BBox) f32 { return (self.min_x + self.max_x) / 2; }
-    fn cy(self: BBox) f32 { return (self.min_y + self.max_y) / 2; }
-    fn pad(self: BBox) f32 { return 2 * @max(self.dx() * 0.1, self.dy() * 0.1); }
+    fn dx(self: BBox) f32 {
+        return self.max_x - self.min_x;
+    }
+    fn dy(self: BBox) f32 {
+        return self.max_y - self.min_y;
+    }
+    fn cx(self: BBox) f32 {
+        return (self.min_x + self.max_x) / 2;
+    }
+    fn cy(self: BBox) f32 {
+        return (self.min_y + self.max_y) / 2;
+    }
+    fn pad(self: BBox) f32 {
+        return 2 * @max(self.dx() * 0.1, self.dy() * 0.1);
+    }
 };
 
 // -----------------------------------------------------------------------
@@ -99,10 +109,22 @@ fn computeBoundingBox(slots: []const Point) BBox {
 // -----------------------------------------------------------------------
 fn opColors(op: Op) struct { fill: rl.Color, stroke: rl.Color } {
     return switch (op.kind) {
-        .move    => .{ .fill = palette.qact_fill,  .stroke = palette.qact_stroke  },
-        .raman   => .{ .fill = palette.qmeas_fill, .stroke = palette.qmeas_stroke },
-        .rydberg => .{ .fill = palette.qryd_fill,  .stroke = palette.qryd_stroke  },
-        .measure => .{ .fill = palette.qmeas_fill, .stroke = palette.qmeas_stroke },
+        .move => .{
+            .fill = palette.qact_fill,
+            .stroke = palette.qact_stroke,
+        },
+        .raman => .{
+            .fill = palette.qmeas_fill,
+            .stroke = palette.qmeas_stroke,
+        },
+        .rydberg => .{
+            .fill = palette.qryd_fill,
+            .stroke = palette.qryd_stroke,
+        },
+        .measure => .{
+            .fill = palette.qmeas_fill,
+            .stroke = palette.qmeas_stroke,
+        },
     };
 }
 
@@ -122,8 +144,14 @@ fn drawArrow(start: rl.Vector2, end: rl.Vector2, thickness: f32, color: rl.Color
     const ang = std.math.atan2(dy, dx);
     const a1 = ang + std.math.pi - wing_off;
     const a2 = ang + std.math.pi + wing_off;
-    rl.drawLineEx(end, .{ .x = end.x + std.math.cos(a1) * head_len, .y = end.y + std.math.sin(a1) * head_len }, thickness, color);
-    rl.drawLineEx(end, .{ .x = end.x + std.math.cos(a2) * head_len, .y = end.y + std.math.sin(a2) * head_len }, thickness, color);
+    rl.drawLineEx(end, .{
+        .x = end.x + std.math.cos(a1) * head_len,
+        .y = end.y + std.math.sin(a1) * head_len,
+    }, thickness, color);
+    rl.drawLineEx(end, .{
+        .x = end.x + std.math.cos(a2) * head_len,
+        .y = end.y + std.math.sin(a2) * head_len,
+    }, thickness, color);
 }
 
 const ZoneRect = struct { x0: i32, y0: i32, x1: i32, y1: i32 };
@@ -151,7 +179,10 @@ fn drawSlot(cam: Camera, slot: Point, positions: []const Point) void {
     const screen_radius = 600.0 * cam.zoom;
     var occupied = false;
     for (positions) |p| {
-        if (p.x == slot.x and p.y == slot.y) { occupied = true; break; }
+        if (p.x == slot.x and p.y == slot.y) {
+            occupied = true;
+            break;
+        }
     }
     if (occupied) {
         rl.drawCircleV(screen, screen_radius, palette.slot_on_fill);
@@ -241,14 +272,16 @@ fn drawPanel(
     var y: f32 = PAD;
 
     // ── Schedule summary (2×2 chip grid) ─────────────────────────
-    sep(y); y += SEP_ADV;
-    sectionLabel(font, "SCHEDULE", y); y += LABEL_ADV;
+    sep(y);
+    y += SEP_ADV;
+    sectionLabel(font, "SCHEDULE", y);
+    y += LABEL_ADV;
     {
         const ChipData = struct { label: [:0]const u8, count: u32, color: rl.Color };
         const chips = [4]ChipData{
-            .{ .label = "move",    .count = summary.move,    .color = palette.qact_fill    },
-            .{ .label = "raman",   .count = summary.raman,   .color = palette.qmeas_fill   },
-            .{ .label = "rydberg", .count = summary.rydberg, .color = palette.qryd_fill    },
+            .{ .label = "move", .count = summary.move, .color = palette.qact_fill },
+            .{ .label = "raman", .count = summary.raman, .color = palette.qmeas_fill },
+            .{ .label = "rydberg", .count = summary.rydberg, .color = palette.qryd_fill },
             .{ .label = "measure", .count = summary.measure, .color = palette.qmeas_stroke },
         };
         const chip_w: f32 = (cw - CHIP_GAP) / 2;
@@ -264,8 +297,7 @@ fn drawPanel(
             var buf: [16]u8 = undefined;
             const txt = std.fmt.bufPrintZ(&buf, "{s} x{d}", .{ chip.label, chip.count }) catch "?";
             const tw = rl.measureTextEx(font, txt, FS_CHIP, 0.8).x;
-            rl.drawTextEx(font, txt, .{ .x = cx + (chip_w - tw) / 2, .y = chip_y + (CHIP_H - FS_CHIP) / 2 }, FS_CHIP, 0.8,
-                rl.Color{ .r = chip.color.r, .g = chip.color.g, .b = chip.color.b, .a = if (has) @as(u8, 255) else 90 });
+            rl.drawTextEx(font, txt, .{ .x = cx + (chip_w - tw) / 2, .y = chip_y + (CHIP_H - FS_CHIP) / 2 }, FS_CHIP, 0.8, rl.Color{ .r = chip.color.r, .g = chip.color.g, .b = chip.color.b, .a = if (has) @as(u8, 255) else 90 });
         }
         y += 2 * CHIP_H + CHIP_GAP + PAD;
     }
@@ -284,12 +316,12 @@ fn drawPanel(
     // ── Zone indicator ────────────────────────────────────────────
     {
         const zone_str: [:0]const u8 = switch (op.kind) {
-            .move    => |m| @tagName(m.dest_zone),
+            .move => |m| @tagName(m.dest_zone),
             .rydberg => |r| @tagName(r.zone),
             .measure => |m| @tagName(m.zone),
-            .raman   => "-",
+            .raman => "-",
         };
-        rl.drawTextEx(font, "zone", .{ .x = PAD,   .y = y }, FS_KV, KV_SP, palette.text_sub);
+        rl.drawTextEx(font, "zone", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
         rl.drawTextEx(font, zone_str, .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, accent);
         y += KV_ROW_H;
     }
@@ -297,8 +329,7 @@ fn drawPanel(
     // ── Progress bar ──────────────────────────────────────────────
     {
         const frac = @as(f32, @floatFromInt(frame + 1)) / @as(f32, @floatFromInt(total));
-        rl.drawRectangleRounded(.{ .x = PAD, .y = y, .width = cw, .height = BAR_H }, 1.0, 4,
-            rl.Color{ .r = 65, .g = 69, .b = 89, .a = 180 });
+        rl.drawRectangleRounded(.{ .x = PAD, .y = y, .width = cw, .height = BAR_H }, 1.0, 4, rl.Color{ .r = 65, .g = 69, .b = 89, .a = 180 });
         rl.drawRectangleRounded(.{ .x = PAD, .y = y, .width = cw * frac, .height = BAR_H }, 1.0, 4, accent);
         y += BAR_H + 21;
         var buf: [16]u8 = undefined;
@@ -308,22 +339,24 @@ fn drawPanel(
     }
 
     // ── Operation ─────────────────────────────────────────────────
-    sep(y); y += SEP_ADV;
-    sectionLabel(font, "OPERATION", y); y += LABEL_ADV;
+    sep(y);
+    y += SEP_ADV;
+    sectionLabel(font, "OPERATION", y);
+    y += LABEL_ADV;
 
     switch (op.kind) {
         .move => |m| {
-            rl.drawTextEx(font, "aod",   .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(font, "aod", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
             var b0: [8]u8 = undefined;
             rl.drawTextEx(font, std.fmt.bufPrintZ(&b0, "{d}", .{m.aod}) catch "?", .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
             y += KV_ROW_H;
-            rl.drawTextEx(font, "axis",  .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(font, "axis", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
             rl.drawTextEx(font, @tagName(m.translate), .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
             y += KV_ROW_H;
-            rl.drawTextEx(font, "from",  .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
-            rl.drawTextEx(font, @tagName(m.src_zone),  .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
+            rl.drawTextEx(font, "from", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(font, @tagName(m.src_zone), .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
             y += KV_ROW_H;
-            rl.drawTextEx(font, "to",    .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(font, "to", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
             rl.drawTextEx(font, @tagName(m.dest_zone), .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
             y += KV_ROW_H;
             rl.drawTextEx(font, "atoms", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
@@ -332,11 +365,11 @@ fn drawPanel(
             y += KV_ROW_H;
         },
         .raman => |r| {
-            rl.drawTextEx(font, "angle",   .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(font, "angle", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
             var b0: [16]u8 = undefined;
             rl.drawTextEx(font, std.fmt.bufPrintZ(&b0, "{d:.4}", .{r.angle}) catch "?", .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
             y += KV_ROW_H;
-            rl.drawTextEx(font, "phase",   .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(font, "phase", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
             var b1: [16]u8 = undefined;
             rl.drawTextEx(font, std.fmt.bufPrintZ(&b1, "{d:.4}", .{r.phase}) catch "?", .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
             y += KV_ROW_H;
@@ -351,7 +384,7 @@ fn drawPanel(
             y += KV_ROW_H;
         },
         .measure => |m| {
-            rl.drawTextEx(font, "zone",   .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(font, "zone", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
             rl.drawTextEx(font, @tagName(m.zone), .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
             y += KV_ROW_H;
             rl.drawTextEx(font, "qubits", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
@@ -364,8 +397,10 @@ fn drawPanel(
 
     // ── Atom positions ────────────────────────────────────────────
     // Each atom: one line "q{id}  (x, y) µm" — integer µm keeps width bounded.
-    sep(y); y += SEP_ADV;
-    sectionLabel(font, "ATOMS", y); y += LABEL_ADV;
+    sep(y);
+    y += SEP_ADV;
+    sectionLabel(font, "ATOMS", y);
+    y += LABEL_ADV;
     {
         var shown: usize = 0;
         var any_active = false;
@@ -380,8 +415,7 @@ fn drawPanel(
             var buf: [48]u8 = undefined;
             const line = if (q < positions.len) blk: {
                 const pos = positions[q];
-                break :blk std.fmt.bufPrintZ(&buf, "q{d}  ({d}, {d}) um",
-                    .{ q, @divTrunc(pos.x, 1000), @divTrunc(pos.y, 1000) }) catch "?";
+                break :blk std.fmt.bufPrintZ(&buf, "q{d}  ({d}, {d}) um", .{ q, @divTrunc(pos.x, 1000), @divTrunc(pos.y, 1000) }) catch "?";
             } else blk: {
                 break :blk std.fmt.bufPrintZ(&buf, "q{d}", .{q}) catch "?";
             };
@@ -397,8 +431,10 @@ fn drawPanel(
     y += PAD;
 
     // ── Qubit roster ──────────────────────────────────────────────
-    sep(y); y += SEP_ADV;
-    sectionLabel(font, "QUBITS", y); y += LABEL_ADV;
+    sep(y);
+    y += SEP_ADV;
+    sectionLabel(font, "QUBITS", y);
+    y += LABEL_ADV;
     {
         const per_row: usize = @intFromFloat(cw / (QUBIT_SQ + QUBIT_GAP));
         for (0..num_qubits) |q| {
@@ -408,15 +444,13 @@ fn drawPanel(
             const qy = y + @as(f32, @floatFromInt(row_n)) * (QUBIT_SQ + QUBIT_GAP);
             const rec = rl.Rectangle{ .x = qx, .y = qy, .width = QUBIT_SQ, .height = QUBIT_SQ };
             const is_active = q < active.len and active[q];
-            const qfill = if (is_active) rl.Color{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 160 }
-                          else           rl.Color{ .r = 56, .g = 60, .b = 78, .a = 200 };
+            const qfill = if (is_active) rl.Color{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 160 } else rl.Color{ .r = 56, .g = 60, .b = 78, .a = 200 };
             rl.drawRectangleRounded(rec, 0.3, 4, qfill);
             rl.drawRectangleRoundedLinesEx(rec, 0.3, 4, 1.0, if (is_active) accent else palette.divider);
             var qb: [4]u8 = undefined;
             const ql = std.fmt.bufPrintZ(&qb, "{d}", .{q}) catch "?";
             const qtw = rl.measureTextEx(font, ql, FS_QUBIT, 0.5).x;
-            rl.drawTextEx(font, ql, .{ .x = qx + (QUBIT_SQ - qtw) / 2, .y = qy + (QUBIT_SQ - FS_QUBIT) / 2 }, FS_QUBIT, 0.5,
-                if (is_active) palette.bg else palette.text_sub);
+            rl.drawTextEx(font, ql, .{ .x = qx + (QUBIT_SQ - qtw) / 2, .y = qy + (QUBIT_SQ - FS_QUBIT) / 2 }, FS_QUBIT, 0.5, if (is_active) palette.bg else palette.text_sub);
         }
         const num_rows: usize = if (num_qubits == 0) 0 else (num_qubits - 1) / per_row + 1;
         y += @as(f32, @floatFromInt(num_rows)) * (QUBIT_SQ + QUBIT_GAP) + PAD;
@@ -424,19 +458,21 @@ fn drawPanel(
 
     // ── Controls (pinned to bottom) ───────────────────────────────
     const ctrl = [_][2][:0]const u8{
-        .{ "j / k",  "step"         },
-        .{ "space",  "play / pause" },
-        .{ "r",      "reset"        },
-        .{ "scroll", "zoom"         },
-        .{ "drag",   "pan"          },
-        .{ "h",      "hide"         },
+        .{ "j / k", "step" },
+        .{ "space", "play / pause" },
+        .{ "r", "reset" },
+        .{ "scroll", "zoom" },
+        .{ "drag", "pan" },
+        .{ "h", "hide" },
     };
     const ctrl_block_h: f32 = SEP_ADV + LABEL_ADV + @as(f32, @floatFromInt(ctrl.len)) * CTRL_ROW_H;
     var cy: f32 = screen_h - ctrl_block_h;
-    sep(cy); cy += SEP_ADV;
-    sectionLabel(font, "CONTROLS", cy); cy += LABEL_ADV;
+    sep(cy);
+    cy += SEP_ADV;
+    sectionLabel(font, "CONTROLS", cy);
+    cy += LABEL_ADV;
     for (ctrl) |row| {
-        rl.drawTextEx(font, row[0], .{ .x = PAD,   .y = cy }, FS_CTRL, 0.8, palette.text_sub);
+        rl.drawTextEx(font, row[0], .{ .x = PAD, .y = cy }, FS_CTRL, 0.8, palette.text_sub);
         rl.drawTextEx(font, row[1], .{ .x = KV_VX, .y = cy }, FS_CTRL, 0.8, palette.text);
         cy += CTRL_ROW_H;
     }
@@ -488,10 +524,27 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
     var summary = Summary{ .move = 0, .raman = 0, .rydberg = 0, .measure = 0 };
     for (s.ops) |op| {
         switch (op.kind) {
-            .move    => |m| { summary.move    += 1; for (m.atoms)   |a| { num_qubits = @max(num_qubits, a.qubit + 1); } },
-            .raman   => |r| { summary.raman   += 1; for (r.targets) |t| { num_qubits = @max(num_qubits, t.qubit + 1); } },
-            .rydberg =>      { summary.rydberg += 1; },
-            .measure => |m| { summary.measure += 1; for (m.qubits)  |q| { num_qubits = @max(num_qubits, q + 1); } },
+            .move => |m| {
+                summary.move += 1;
+                for (m.atoms) |a| {
+                    num_qubits = @max(num_qubits, a.qubit + 1);
+                }
+            },
+            .raman => |r| {
+                summary.raman += 1;
+                for (r.targets) |t| {
+                    num_qubits = @max(num_qubits, t.qubit + 1);
+                }
+            },
+            .rydberg => {
+                summary.rydberg += 1;
+            },
+            .measure => |m| {
+                summary.measure += 1;
+                for (m.qubits) |q| {
+                    num_qubits = @max(num_qubits, q + 1);
+                }
+            },
         }
     }
 
@@ -509,7 +562,12 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
         compute_rect.y1 = @max(compute_rect.y1, r.y1);
     }
 
-    rl.setConfigFlags(.{ .fullscreen_mode = true, .window_resizable = true, .msaa_4x_hint = true, .window_highdpi = true });
+    rl.setConfigFlags(.{
+        .fullscreen_mode = true,
+        .window_resizable = true,
+        .msaa_4x_hint = true,
+        .window_highdpi = true,
+    });
     rl.setTraceLogLevel(.err);
     rl.initWindow(0, 0, "Physical schedule");
     defer rl.closeWindow();
@@ -544,17 +602,31 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
 
     while (!rl.windowShouldClose()) {
         // ── Input ──────────────────────────────────────────────────
-        if (rl.isKeyPressed(.k)) { playing = false; frame = @min(frame + 1, frame_count - 1); }
-        if (rl.isKeyPressed(.j)) { playing = false; if (frame > 0) frame -= 1; }
-        if (rl.isKeyPressed(.space)) { playing = !playing; timer = 0; }
+        if (rl.isKeyPressed(.k)) {
+            playing = false;
+            frame = @min(frame + 1, frame_count - 1);
+        }
+        if (rl.isKeyPressed(.j)) {
+            playing = false;
+            if (frame > 0) frame -= 1;
+        }
+        if (rl.isKeyPressed(.space)) {
+            playing = !playing;
+            timer = 0;
+        }
         if (rl.isKeyPressed(.r)) {
             camera.fitToRect(bbox, @floatFromInt(screen_w), @floatFromInt(screen_h));
-            playing = false; timer = 0; frame = 0;
+            playing = false;
+            timer = 0;
+            frame = 0;
         }
         if (rl.isKeyPressed(.h)) panel_visible = !panel_visible;
 
         const mouse_pos = rl.getMousePosition();
-        if (rl.isMouseButtonPressed(.right)) { panning = true; last_mouse_pos = mouse_pos; }
+        if (rl.isMouseButtonPressed(.right)) {
+            panning = true;
+            last_mouse_pos = mouse_pos;
+        }
         if (rl.isMouseButtonReleased(.right)) panning = false;
         if (panning) {
             camera.offset.x -= (mouse_pos.x - last_mouse_pos.x) / camera.zoom;
@@ -583,9 +655,15 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
         // Determine active qubits.
         @memset(active, false);
         switch (op.kind) {
-            .move    => |m| for (m.atoms)   |a| { active[a.qubit] = true; },
-            .raman   => |r| for (r.targets) |t| { active[t.qubit] = true; },
-            .measure => |m| for (m.qubits)  |q| { active[q]       = true; },
+            .move => |m| for (m.atoms) |a| {
+                active[a.qubit] = true;
+            },
+            .raman => |r| for (r.targets) |t| {
+                active[t.qubit] = true;
+            },
+            .measure => |m| for (m.qubits) |q| {
+                active[q] = true;
+            },
             else => {},
         }
 
@@ -601,8 +679,14 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
 
         if (op.kind == .move) {
             for (op.kind.move.atoms) |a| {
-                const ss = camera.worldToScreen(.{ .x = @floatFromInt(a.src.x),  .y = @floatFromInt(a.src.y)  });
-                const es = camera.worldToScreen(.{ .x = @floatFromInt(a.dest.x), .y = @floatFromInt(a.dest.y) });
+                const ss = camera.worldToScreen(.{
+                    .x = @floatFromInt(a.src.x),
+                    .y = @floatFromInt(a.src.y),
+                });
+                const es = camera.worldToScreen(.{
+                    .x = @floatFromInt(a.dest.x),
+                    .y = @floatFromInt(a.dest.y),
+                });
                 drawArrow(ss, es, @max(2.0 * camera.zoom, 1.0), palette.arrow);
             }
         }
