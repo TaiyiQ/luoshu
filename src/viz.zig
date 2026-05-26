@@ -138,29 +138,31 @@ fn opAccent(op: Op) rl.Color {
 // -----------------------------------------------------------------------
 // World-space primitives
 // -----------------------------------------------------------------------
-fn drawArrow(start: rl.Vector2, end: rl.Vector2, thickness: f32, pad: f32, color: rl.Color) void {
-    const dx = end.x - start.x;
-    const dy = end.y - start.y;
-    const len = @sqrt(dx * dx + dy * dy);
-    if (len < 2 * pad + 1.0) return;
-    const nx = dx / len;
-    const ny = dy / len;
-    const ps = rl.Vector2{ .x = start.x + nx * pad, .y = start.y + ny * pad };
-    const pe = rl.Vector2{ .x = end.x - nx * pad, .y = end.y - ny * pad };
-    rl.drawLineEx(ps, pe, thickness, color);
-    const head_len: f32 = 15.0;
-    const wing_off: f32 = std.math.pi / 7.0;
-    const ang = std.math.atan2(dy, dx);
-    const a1 = ang + std.math.pi - wing_off;
-    const a2 = ang + std.math.pi + wing_off;
-    rl.drawLineEx(pe, .{
-        .x = pe.x + std.math.cos(a1) * head_len,
-        .y = pe.y + std.math.sin(a1) * head_len,
-    }, thickness, color);
-    rl.drawLineEx(pe, .{
-        .x = pe.x + std.math.cos(a2) * head_len,
-        .y = pe.y + std.math.sin(a2) * head_len,
-    }, thickness, color);
+fn drawMoveTail(cam: Camera, src: Point, dest: Point, tail_alpha: f32, fill: rl.Color) void {
+    if (tail_alpha <= 0) return;
+    const ss = cam.worldToScreen(toVec(src));
+    const se = cam.worldToScreen(toVec(dest));
+    const dx = se.x - ss.x;
+    const dy = se.y - ss.y;
+    if (@sqrt(dx * dx + dy * dy) < 1.0) return;
+    const n: usize = 14;
+    for (0..n) |i| {
+        // fi=0 near src (old, faint, small), fi=1 near dest (recent, bright, large)
+        const fi = @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(n));
+        const alpha: u8 = @intFromFloat(fi * fi * tail_alpha * 210.0);
+        rl.drawCircleV(
+            .{ .x = ss.x + dx * fi, .y = ss.y + dy * fi },
+            2.0 + 5.0 * fi,
+            rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = alpha },
+        );
+    }
+}
+
+fn drawGhostQubit(cam: Camera, pos: Point, fill: rl.Color) void {
+    const screen = cam.worldToScreen(toVec(pos));
+    const screen_radius = 600.0 * cam.zoom;
+    rl.drawCircleV(screen, screen_radius, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 35 });
+    rl.drawCircleLinesV(screen, screen_radius, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 90 });
 }
 
 const ZoneRect = struct { x0: i32, y0: i32, x1: i32, y1: i32 };
@@ -209,7 +211,10 @@ fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, active: bool, fi
         rl.drawCircleLinesV(screen, screen_radius * 1.5, stroke);
         var buf: [8]u8 = undefined;
         const label = std.fmt.bufPrintZ(&buf, "{d}", .{id}) catch "?";
-        rl.drawTextEx(font, label, .{ .x = screen.x + screen_radius + 4, .y = screen.y - 11 }, 22, 0.5, palette.text);
+        const lx = screen.x + screen_radius + 10;
+        const ly = screen.y - 12;
+        rl.drawTextEx(font, label, .{ .x = lx + 1, .y = ly }, 24, 0.5, palette.text);
+        rl.drawTextEx(font, label, .{ .x = lx, .y = ly }, 24, 0.5, palette.text);
     }
 }
 
@@ -837,7 +842,7 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
     var frame: usize = 0;
     var playing = false;
     var timer: f32 = 0.0;
-    const step_sec: f32 = 0.5;
+    const step_sec: f32 = 1.5;
     var panel_visible = false;
 
     var active = try allocator.alloc(bool, initial_pos.len);
@@ -921,10 +926,10 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
         for (s.slots) |slot| drawSlot(camera, slot, frame_positions[frame]);
 
         if (op.kind == .move) {
+            const tail_alpha = 1.0 - timer / step_sec;
             for (op.kind.move.atoms) |a| {
-                const ss = camera.worldToScreen(toVec(a.src));
-                const es = camera.worldToScreen(toVec(a.dest));
-                drawArrow(ss, es, @max(2.0 * camera.zoom, 1.0), 2500.0 * camera.zoom, palette.arrow);
+                drawGhostQubit(camera, a.src, opColors(op).fill);
+                drawMoveTail(camera, a.src, a.dest, tail_alpha, opColors(op).fill);
             }
         }
 
