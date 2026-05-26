@@ -848,6 +848,9 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
     var active = try allocator.alloc(bool, initial_pos.len);
     defer allocator.free(active);
 
+    var draw_positions = try allocator.alloc(Point, initial_pos.len);
+    defer allocator.free(draw_positions);
+
     while (!rl.windowShouldClose()) {
         // ── Input ──────────────────────────────────────────────────
         if (rl.isKeyPressed(.k)) {
@@ -923,18 +926,32 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
         drawZone(camera, storage_rect, palette.zone_storage);
         drawZone(camera, compute_rect, if (op.kind == .rydberg) palette.zone_compute_active else palette.zone_compute);
 
-        for (s.slots) |slot| drawSlot(camera, slot, frame_positions[frame]);
+        @memcpy(draw_positions, frame_positions[frame]);
 
         if (op.kind == .move) {
-            const tail_alpha = 1.0 - timer / step_sec;
+            const travel_frac: f32 = 0.7;
+            const t = if (playing) @min(timer / (step_sec * travel_frac), 1.0) else 1.0;
+            for (op.kind.move.atoms) |a| {
+                const sv = toVec(a.src);
+                const ev = toVec(a.dest);
+                draw_positions[a.qubit] = .{
+                    .x = @intFromFloat(sv.x + (ev.x - sv.x) * t),
+                    .y = @intFromFloat(sv.y + (ev.y - sv.y) * t),
+                };
+            }
+        }
+
+        for (s.slots) |slot| drawSlot(camera, slot, draw_positions);
+
+        if (op.kind == .move) {
             for (op.kind.move.atoms) |a| {
                 drawGhostQubit(camera, a.src, opColors(op).fill);
-                drawMoveTail(camera, a.src, a.dest, tail_alpha, opColors(op).fill);
+                drawMoveTail(camera, a.src, draw_positions[a.qubit], 1.0, opColors(op).fill);
             }
         }
 
         const colors = opColors(op);
-        for (frame_positions[frame], 0..) |pos, id| {
+        for (draw_positions, 0..) |pos, id| {
             drawQubit(camera, font, pos, id, active[id], colors.fill, colors.stroke);
         }
 
