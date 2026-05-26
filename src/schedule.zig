@@ -86,22 +86,19 @@ fn computeSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const 
 
 fn moveSlmQubits(
     allocator: std.mem.Allocator,
-    layout: arch.ArchConfig,
-    logical: Schedule,
+    cz: arch.EntanglementZone,
+    slm_qubits: []const ?usize,
     placement: *[]Point,
     ops: *std.ArrayList(Op),
 ) !void {
-    const ent = layout.entanglement_zone;
-    const control = ent.slms[0];
-    const x_slm_orig = ent.offset_nm[0] + control.offset_nm[0];
-    const y_slm_orig = ent.offset_nm[1] + control.offset_nm[1];
+    const control = cz.slms[0];
+    const x_slm_orig = cz.offset_nm[0] + control.offset_nm[0];
+    const y_slm_orig = cz.offset_nm[1] + control.offset_nm[1];
     const x_sep = control.sep_nm[0];
 
-    std.debug.print("{} {} {}\n", .{ x_slm_orig, y_slm_orig, x_sep });
+    var atoms: std.ArrayList(MoveAtom) = .empty;
 
-    var atomsSlm: std.ArrayList(MoveAtom) = .empty;
-
-    for (logical.slm_slots, 0..) |maybe_slm, i| {
+    for (slm_qubits, 0..) |maybe_slm, i| {
         const x = x_slm_orig + @as(i32, @intCast(i)) * @as(i32, @intCast(x_sep));
         const y = y_slm_orig + @as(i32, @intCast(control.sep_nm[1]));
 
@@ -109,12 +106,13 @@ fn moveSlmQubits(
             const src = placement.*[qubit_id];
             const dest = Point{ .x = x, .y = y };
 
-            try atomsSlm.append(allocator, MoveAtom{
+            try atoms.append(allocator, MoveAtom{
                 .qubit = @as(u32, @intCast(qubit_id)),
                 .src = src,
                 .dest = dest,
             });
 
+            // Update to qubit location.
             placement.*[qubit_id] = dest;
         }
     }
@@ -125,7 +123,7 @@ fn moveSlmQubits(
             .translate = Axis.y,
             .src_zone = Zone.storage,
             .dest_zone = Zone.compute,
-            .atoms = atomsSlm.items,
+            .atoms = atoms.items,
         },
     } };
 
@@ -134,26 +132,18 @@ fn moveSlmQubits(
 
 fn moveAodQubits(
     allocator: std.mem.Allocator,
-    layout: arch.ArchConfig,
-    logical: Schedule,
+    cz: arch.EntanglementZone,
+    aod_qubits: [][]?usize,
     placement: *[]Point,
     ops: *std.ArrayList(Op),
 ) !void {
-    // FIXME: Only move operations for now.
-    // One move per timestep (color).
-    //const n_timesteps = @as(usize, @intCast(logical.max_color));
-    const ent = layout.entanglement_zone;
-
-    // --------------------------------
-
-    // 2. Use second SLM in the compute zone for AOD qubits (targets).
-    const target = layout.entanglement_zone.slms[1];
-    const x_aod_orig = ent.offset_nm[0] + target.offset_nm[0];
-    const y_aod_orig = ent.offset_nm[1] + target.offset_nm[1];
+    const target = cz.slms[1];
+    const x_aod_orig = cz.offset_nm[0] + target.offset_nm[0];
+    const y_aod_orig = cz.offset_nm[1] + target.offset_nm[1];
     const x_aod_sep = target.sep_nm[0];
 
-    for (logical.aod_slots_per_color, 0..) |aod_row, t| {
-        var atomsAod: std.ArrayList(MoveAtom) = .empty;
+    for (aod_qubits, 0..) |aod_row, t| {
+        var atoms: std.ArrayList(MoveAtom) = .empty;
 
         for (aod_row, 0..) |maybe_aod, i| {
             const x = x_aod_orig + @as(i32, @intCast(i)) * @as(i32, @intCast(x_aod_sep));
@@ -163,68 +153,75 @@ fn moveAodQubits(
                 const src = placement.*[qubit_id];
                 const dest = Point{ .x = x, .y = y };
 
-                try atomsAod.append(allocator, MoveAtom{
+                try atoms.append(allocator, MoveAtom{
                     .qubit = @as(u32, @intCast(qubit_id)),
                     .src = src,
                     .dest = dest,
                 });
 
+                // Update new qubit location.
                 placement.*[qubit_id] = dest;
             }
         }
 
-        // FIXME: Improve. The first move for AOD qubits will always take
-        // them from storage zone to compute zone. We do now want to show
-        // arrows when moving qubits in compute zone.
-        if (t == 0) {
-            const op = Op{ .t = @as(u32, @intCast(t)) + 1, .kind = .{
-                .move = .{
-                    .aod = 0,
-                    .translate = Axis.y,
-                    .src_zone = Zone.storage,
-                    .dest_zone = Zone.compute,
-                    .atoms = atomsAod.items,
-                },
-            } };
-            try ops.append(allocator, op);
-        } else {
-            const op = Op{ .t = @as(u32, @intCast(t)) + 1, .kind = .{
-                .move = .{
-                    .aod = 0,
-                    .translate = Axis.y,
-                    .src_zone = Zone.compute,
-                    .dest_zone = Zone.compute,
-                    .atoms = atomsAod.items,
-                },
-            } };
-            try ops.append(allocator, op);
-        }
+        const op = Op{ .t = @as(u32, @intCast(t)) + 1, .kind = .{
+            .move = .{
+                .aod = 0,
+                .translate = Axis.y,
+                .src_zone = Zone.compute,
+                .dest_zone = Zone.compute,
+                .atoms = atoms.items,
+            },
+        } };
+
+        try ops.append(allocator, op);
     }
 }
 
-pub fn storagePlacement(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]Point {
+pub fn qubitPlacement(
+    allocator: std.mem.Allocator,
+    sz: arch.StorageZone,
+    slm_slots: []const ?usize,
+    aod_slots: [][]?usize,
+) ![]Point {
     // FIXME: Update the qubit count.
-    const max_qubit = layout.storage_zone.slm.num_col * layout.storage_zone.slm.num_row;
+    const max_qubit = sz.slm.num_col * sz.slm.num_row;
     var placement = try allocator.alloc(Point, max_qubit);
 
-    const zone = layout.storage_zone;
-    const slm = layout.storage_zone.slm;
-
     // Relative starting origin of grid (bottom-left).
-    const x_orig = zone.offset_nm[0] + slm.offset_nm[0];
-    const y_orig = zone.offset_nm[1] + slm.offset_nm[1];
+    const x_orig = sz.offset_nm[0] + sz.slm.offset_nm[0];
+    const y_orig = sz.offset_nm[1] + sz.slm.offset_nm[1];
 
     // Seperation spacing between grid items.
-    const x_sep = @as(i32, @intCast(slm.sep_nm[0]));
-    const y_sep = @as(i32, @intCast(slm.sep_nm[1]));
+    const x_sep = @as(i32, @intCast(sz.slm.sep_nm[0]));
+    const y_sep = @as(i32, @intCast(sz.slm.sep_nm[1]));
 
-    var qubit_id: u32 = 0;
+    var sites: std.ArrayList(Point) = .empty;
+    for (0..sz.slm.num_row) |row| {
+        // Start from the row closest to the compute zone.
+        const i = sz.slm.num_row - 1 - row;
+        for (0..sz.slm.num_col) |j| {
+            try sites.append(allocator, Point{
+                .x = x_orig + @as(i32, @intCast(j)) * x_sep,
+                .y = y_orig + @as(i32, @intCast(i)) * y_sep,
+            });
+        }
+    }
 
-    for (0..slm.num_row) |i| {
-        for (0..slm.num_col) |j| {
-            const x = x_orig + @as(i32, @intCast(j)) * x_sep;
-            const y = y_orig + @as(i32, @intCast(i)) * y_sep;
-            placement[qubit_id] = Point{ .x = x, .y = y };
+    var qubit_id: usize = 0;
+
+    // 1. First move the SLM qubits.
+    for (slm_slots) |maybe_qubit| {
+        if (maybe_qubit) |id| {
+            placement[id] = sites.items[qubit_id];
+            qubit_id += 1;
+        }
+    }
+
+    // 2. Second move the AOD qubits.
+    for (aod_slots[0]) |maybe_qubit| {
+        if (maybe_qubit) |id| {
+            placement[id] = sites.items[qubit_id];
             qubit_id += 1;
         }
     }
@@ -232,25 +229,43 @@ pub fn storagePlacement(allocator: std.mem.Allocator, layout: arch.ArchConfig) !
     return placement;
 }
 
+// NOTE: There is a relationship between the logical timesteps and the coloring steps.
+// For example, we need to place the SLMs first (t0).
 pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: Schedule) !PhysicalSchedule {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
-    const a = arena.allocator();
+    const alloc = arena.allocator();
 
-    var placement = try storagePlacement(a, layout);
-
-    // NOTE: There is a relationship between the logical timesteps and the coloring steps.
-    // For example, we need to place the SLMs first (t0).
+    var placement = try qubitPlacement(
+        alloc,
+        layout.storage_zone,
+        logical.slm_slots,
+        logical.aod_slots_per_color,
+    );
 
     var ops: std.ArrayList(Op) = .empty;
-    try moveSlmQubits(a, layout, logical, &placement, &ops);
-    try moveAodQubits(a, layout, logical, &placement, &ops);
+
+    try moveSlmQubits(
+        alloc,
+        layout.entanglement_zone,
+        logical.slm_slots,
+        &placement,
+        &ops,
+    );
+
+    try moveAodQubits(
+        alloc,
+        layout.entanglement_zone,
+        logical.aod_slots_per_color,
+        &placement,
+        &ops,
+    );
 
     return .{
         .arena = arena,
         .ops = ops.items,
         .placement = placement,
-        .slots = try computeSlots(a, layout),
+        .slots = try computeSlots(alloc, layout),
     };
 }
 
