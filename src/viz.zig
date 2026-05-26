@@ -138,22 +138,28 @@ fn opAccent(op: Op) rl.Color {
 // -----------------------------------------------------------------------
 // World-space primitives
 // -----------------------------------------------------------------------
-fn drawArrow(start: rl.Vector2, end: rl.Vector2, thickness: f32, color: rl.Color) void {
-    rl.drawLineEx(start, end, thickness, color);
+fn drawArrow(start: rl.Vector2, end: rl.Vector2, thickness: f32, pad: f32, color: rl.Color) void {
     const dx = end.x - start.x;
     const dy = end.y - start.y;
+    const len = @sqrt(dx * dx + dy * dy);
+    if (len < 2 * pad + 1.0) return;
+    const nx = dx / len;
+    const ny = dy / len;
+    const ps = rl.Vector2{ .x = start.x + nx * pad, .y = start.y + ny * pad };
+    const pe = rl.Vector2{ .x = end.x - nx * pad, .y = end.y - ny * pad };
+    rl.drawLineEx(ps, pe, thickness, color);
     const head_len: f32 = 15.0;
     const wing_off: f32 = std.math.pi / 7.0;
     const ang = std.math.atan2(dy, dx);
     const a1 = ang + std.math.pi - wing_off;
     const a2 = ang + std.math.pi + wing_off;
-    rl.drawLineEx(end, .{
-        .x = end.x + std.math.cos(a1) * head_len,
-        .y = end.y + std.math.sin(a1) * head_len,
+    rl.drawLineEx(pe, .{
+        .x = pe.x + std.math.cos(a1) * head_len,
+        .y = pe.y + std.math.sin(a1) * head_len,
     }, thickness, color);
-    rl.drawLineEx(end, .{
-        .x = end.x + std.math.cos(a2) * head_len,
-        .y = end.y + std.math.sin(a2) * head_len,
+    rl.drawLineEx(pe, .{
+        .x = pe.x + std.math.cos(a2) * head_len,
+        .y = pe.y + std.math.sin(a2) * head_len,
     }, thickness, color);
 }
 
@@ -918,7 +924,7 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
             for (op.kind.move.atoms) |a| {
                 const ss = camera.worldToScreen(toVec(a.src));
                 const es = camera.worldToScreen(toVec(a.dest));
-                drawArrow(ss, es, @max(2.0 * camera.zoom, 1.0), palette.arrow);
+                drawArrow(ss, es, @max(2.0 * camera.zoom, 1.0), 2500.0 * camera.zoom, palette.arrow);
             }
         }
 

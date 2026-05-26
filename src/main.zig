@@ -52,15 +52,39 @@ pub fn main(init: std.process.Init) !void {
     //    try g.addEdge(3, 4);
 
     // QHZ
+    //    var g = try core.Graph.init(alloc, 8, false);
+    //    defer g.deinit();
+    //    try g.addEdge(0, 4);
+    //    try g.addEdge(0, 2);
+    //    try g.addEdge(4, 6);
+    //    try g.addEdge(0, 1);
+    //    try g.addEdge(2, 3);
+    //    try g.addEdge(4, 5);
+    //    try g.addEdge(6, 7);
+
+    // Cycle
+    //    var g = try core.Graph.init(alloc, 6, false);
+    //    defer g.deinit();
+    //    try g.addEdge(0, 1);
+    //    try g.addEdge(1, 2);
+    //    try g.addEdge(2, 3);
+    //    try g.addEdge(3, 4);
+    //    try g.addEdge(4, 5);
+    //    try g.addEdge(5, 0);
+
+    // Ladder
     var g = try core.Graph.init(alloc, 8, false);
     defer g.deinit();
-    try g.addEdge(0, 4);
-    try g.addEdge(0, 2);
-    try g.addEdge(4, 6);
     try g.addEdge(0, 1);
+    try g.addEdge(1, 2);
     try g.addEdge(2, 3);
     try g.addEdge(4, 5);
+    try g.addEdge(5, 6);
     try g.addEdge(6, 7);
+    try g.addEdge(0, 4);
+    try g.addEdge(1, 5);
+    try g.addEdge(2, 6);
+    try g.addEdge(3, 7);
 
     var logical = try route.compile(alloc, &g);
     defer logical.deinit(alloc);
