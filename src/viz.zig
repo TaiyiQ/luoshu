@@ -158,6 +158,19 @@ fn drawMoveTail(cam: Camera, src: Point, dest: Point, tail_alpha: f32, fill: rl.
     }
 }
 
+fn drawArrivalRipple(cam: Camera, pos: Point, settle_t: f32, fill: rl.Color) void {
+    if (settle_t <= 0) return;
+    const screen = cam.worldToScreen(toVec(pos));
+    const base_r = 600.0 * cam.zoom;
+    const fade: f32 = 1.0 - settle_t;
+    const alpha: u8 = @intFromFloat(fade * 255.0);
+    const r = base_r * (1.0 + settle_t * 2.0);
+    const c = rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = alpha };
+    rl.drawCircleLinesV(screen, r - 1.5, c);
+    rl.drawCircleLinesV(screen, r, c);
+    rl.drawCircleLinesV(screen, r + 1.5, c);
+}
+
 fn drawGhostQubit(cam: Camera, pos: Point, fill: rl.Color) void {
     const screen = cam.worldToScreen(toVec(pos));
     const screen_radius = 600.0 * cam.zoom;
@@ -928,15 +941,26 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
 
         @memcpy(draw_positions, frame_positions[frame]);
 
+        const travel_frac: f32 = 0.55;
+        const move_t: f32 = blk: {
+            if (op.kind != .move or !playing) break :blk 1.0;
+            const t = @min(timer / (step_sec * travel_frac), 1.0);
+            break :blk t * t * (3.0 - 2.0 * t); // smoothstep
+        };
+        const settle_t: f32 = blk: {
+            if (op.kind != .move or !playing) break :blk 0.0;
+            const travel_end = step_sec * travel_frac;
+            if (timer <= travel_end) break :blk 0.0;
+            break :blk @min((timer - travel_end) / (step_sec - travel_end), 1.0);
+        };
+
         if (op.kind == .move) {
-            const travel_frac: f32 = 0.7;
-            const t = if (playing) @min(timer / (step_sec * travel_frac), 1.0) else 1.0;
             for (op.kind.move.atoms) |a| {
                 const sv = toVec(a.src);
                 const ev = toVec(a.dest);
                 draw_positions[a.qubit] = .{
-                    .x = @intFromFloat(sv.x + (ev.x - sv.x) * t),
-                    .y = @intFromFloat(sv.y + (ev.y - sv.y) * t),
+                    .x = @intFromFloat(sv.x + (ev.x - sv.x) * move_t),
+                    .y = @intFromFloat(sv.y + (ev.y - sv.y) * move_t),
                 };
             }
         }
@@ -947,6 +971,7 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
             for (op.kind.move.atoms) |a| {
                 drawGhostQubit(camera, a.src, opColors(op).fill);
                 drawMoveTail(camera, a.src, draw_positions[a.qubit], 1.0, opColors(op).fill);
+                drawArrivalRipple(camera, a.dest, settle_t, opColors(op).fill);
             }
         }
 
