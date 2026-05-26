@@ -749,10 +749,10 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
         const cur = try allocator.dupe(Point, initial_pos);
         defer allocator.free(cur);
         for (s.ops, 0..) |op, i| {
-            frame_positions[i] = try allocator.dupe(Point, cur);
             if (op.kind == .move) {
                 for (op.kind.move.atoms) |a| cur[a.qubit] = a.dest;
             }
+            frame_positions[i] = try allocator.dupe(Point, cur);
         }
     }
 
