@@ -295,12 +295,27 @@ fn drawPanel(
             const chip_y = y + row * (CHIP_H + CHIP_GAP);
             const rec = rl.Rectangle{ .x = cx, .y = chip_y, .width = chip_w, .height = CHIP_H };
             const has = chip.count > 0;
-            rl.drawRectangleRounded(rec, 0.3, 4, rl.Color{ .r = chip.color.r, .g = chip.color.g, .b = chip.color.b, .a = if (has) @as(u8, 35) else 12 });
-            rl.drawRectangleRoundedLinesEx(rec, 0.3, 4, 1.0, rl.Color{ .r = chip.color.r, .g = chip.color.g, .b = chip.color.b, .a = if (has) @as(u8, 210) else 50 });
+            rl.drawRectangleRounded(rec, 0.3, 4, rl.Color{
+                .r = chip.color.r,
+                .g = chip.color.g,
+                .b = chip.color.b,
+                .a = if (has) @as(u8, 35) else 12,
+            });
+            rl.drawRectangleRoundedLinesEx(rec, 0.3, 4, 1.0, rl.Color{
+                .r = chip.color.r,
+                .g = chip.color.g,
+                .b = chip.color.b,
+                .a = if (has) @as(u8, 210) else 50,
+            });
             var buf: [16]u8 = undefined;
             const txt = std.fmt.bufPrintZ(&buf, "{s} x{d}", .{ chip.label, chip.count }) catch "?";
             const tw = rl.measureTextEx(font, txt, FS_CHIP, 0.8).x;
-            rl.drawTextEx(font, txt, .{ .x = cx + (chip_w - tw) / 2, .y = chip_y + (CHIP_H - FS_CHIP) / 2 }, FS_CHIP, 0.8, rl.Color{ .r = chip.color.r, .g = chip.color.g, .b = chip.color.b, .a = if (has) @as(u8, 255) else 90 });
+            rl.drawTextEx(font, txt, .{ .x = cx + (chip_w - tw) / 2, .y = chip_y + (CHIP_H - FS_CHIP) / 2 }, FS_CHIP, 0.8, rl.Color{
+                .r = chip.color.r,
+                .g = chip.color.g,
+                .b = chip.color.b,
+                .a = if (has) @as(u8, 255) else 90,
+            });
         }
         y += 2 * CHIP_H + CHIP_GAP + PAD;
     }
@@ -308,11 +323,23 @@ fn drawPanel(
     // ── Op badge ──────────────────────────────────────────────────
     {
         const rec = rl.Rectangle{ .x = PAD, .y = y, .width = cw, .height = BADGE_H };
-        rl.drawRectangleRounded(rec, 0.3, 8, rl.Color{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 28 });
+        rl.drawRectangleRounded(rec, 0.3, 8, rl.Color{
+            .r = accent.r,
+            .g = accent.g,
+            .b = accent.b,
+            .a = 28,
+        });
         rl.drawRectangleRoundedLinesEx(rec, 0.3, 8, 1.5, accent);
         const name: [:0]const u8 = @tagName(op.kind);
         const tw = rl.measureTextEx(font, name, FS_BADGE, 1.0).x;
-        rl.drawTextEx(font, name, .{ .x = PAD + (cw - tw) / 2, .y = y + (BADGE_H - FS_BADGE) / 2 + 1 }, FS_BADGE, 1.0, accent);
+        rl.drawTextEx(
+            font,
+            name,
+            .{ .x = PAD + (cw - tw) / 2, .y = y + (BADGE_H - FS_BADGE) / 2 + 1 },
+            FS_BADGE,
+            1.0,
+            accent,
+        );
         y += BADGE_H + PAD;
     }
 
@@ -332,12 +359,29 @@ fn drawPanel(
     // ── Progress bar ──────────────────────────────────────────────
     {
         const frac = @as(f32, @floatFromInt(frame + 1)) / @as(f32, @floatFromInt(total));
-        rl.drawRectangleRounded(.{ .x = PAD, .y = y, .width = cw, .height = BAR_H }, 1.0, 4, rl.Color{ .r = 65, .g = 69, .b = 89, .a = 180 });
-        rl.drawRectangleRounded(.{ .x = PAD, .y = y, .width = cw * frac, .height = BAR_H }, 1.0, 4, accent);
+        rl.drawRectangleRounded(.{ .x = PAD, .y = y, .width = cw, .height = BAR_H }, 1.0, 4, rl.Color{
+            .r = 65,
+            .g = 69,
+            .b = 89,
+            .a = 180,
+        });
+        rl.drawRectangleRounded(
+            .{ .x = PAD, .y = y, .width = cw * frac, .height = BAR_H },
+            1.0,
+            4,
+            accent,
+        );
         y += BAR_H + 21;
         var buf: [16]u8 = undefined;
         const prog = std.fmt.bufPrintZ(&buf, "{d} / {d}", .{ frame + 1, total }) catch "?";
-        rl.drawTextEx(font, prog, .{ .x = PAD, .y = y }, FS_PROGRESS, 0.5, palette.text_sub);
+        rl.drawTextEx(
+            font,
+            prog,
+            .{ .x = PAD, .y = y },
+            FS_PROGRESS,
+            0.5,
+            palette.text_sub,
+        );
         y += FS_PROGRESS + PAD;
     }
 
@@ -351,48 +395,181 @@ fn drawPanel(
         .move => |m| {
             rl.drawTextEx(font, "aod", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
             var b0: [8]u8 = undefined;
-            rl.drawTextEx(font, std.fmt.bufPrintZ(&b0, "{d}", .{m.aod}) catch "?", .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
+            rl.drawTextEx(
+                font,
+                std.fmt.bufPrintZ(&b0, "{d}", .{m.aod}) catch "?",
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
             y += KV_ROW_H;
-            rl.drawTextEx(font, "axis", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
-            rl.drawTextEx(font, @tagName(m.translate), .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
+            rl.drawTextEx(
+                font,
+                "axis",
+                .{ .x = PAD, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text_sub,
+            );
+            rl.drawTextEx(
+                font,
+                @tagName(m.translate),
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
             y += KV_ROW_H;
             rl.drawTextEx(font, "from", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
-            rl.drawTextEx(font, @tagName(m.src_zone), .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
+            rl.drawTextEx(
+                font,
+                @tagName(m.src_zone),
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
             y += KV_ROW_H;
             rl.drawTextEx(font, "to", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
-            rl.drawTextEx(font, @tagName(m.dest_zone), .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
+            rl.drawTextEx(
+                font,
+                @tagName(m.dest_zone),
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
             y += KV_ROW_H;
-            rl.drawTextEx(font, "atoms", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(
+                font,
+                "atoms",
+                .{ .x = PAD, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text_sub,
+            );
             var b1: [8]u8 = undefined;
-            rl.drawTextEx(font, std.fmt.bufPrintZ(&b1, "{d}", .{m.atoms.len}) catch "?", .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
+            rl.drawTextEx(
+                font,
+                std.fmt.bufPrintZ(&b1, "{d}", .{m.atoms.len}) catch "?",
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
             y += KV_ROW_H;
         },
         .raman => |r| {
-            rl.drawTextEx(font, "angle", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(
+                font,
+                "angle",
+                .{ .x = PAD, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text_sub,
+            );
             var b0: [16]u8 = undefined;
-            rl.drawTextEx(font, std.fmt.bufPrintZ(&b0, "{d:.4}", .{r.angle}) catch "?", .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
+            rl.drawTextEx(
+                font,
+                std.fmt.bufPrintZ(&b0, "{d:.4}", .{r.angle}) catch "?",
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
             y += KV_ROW_H;
-            rl.drawTextEx(font, "phase", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(
+                font,
+                "phase",
+                .{ .x = PAD, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text_sub,
+            );
             var b1: [16]u8 = undefined;
-            rl.drawTextEx(font, std.fmt.bufPrintZ(&b1, "{d:.4}", .{r.phase}) catch "?", .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
+            rl.drawTextEx(
+                font,
+                std.fmt.bufPrintZ(&b1, "{d:.4}", .{r.phase}) catch "?",
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
             y += KV_ROW_H;
-            rl.drawTextEx(font, "targets", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(
+                font,
+                "targets",
+                .{ .x = PAD, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text_sub,
+            );
             var b2: [8]u8 = undefined;
-            rl.drawTextEx(font, std.fmt.bufPrintZ(&b2, "{d}", .{r.targets.len}) catch "?", .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
+            rl.drawTextEx(
+                font,
+                std.fmt.bufPrintZ(&b2, "{d}", .{r.targets.len}) catch "?",
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
             y += KV_ROW_H;
         },
         .rydberg => |r| {
-            rl.drawTextEx(font, "zone", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
-            rl.drawTextEx(font, @tagName(r.zone), .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
+            rl.drawTextEx(
+                font,
+                "zone",
+                .{ .x = PAD, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text_sub,
+            );
+            rl.drawTextEx(
+                font,
+                @tagName(r.zone),
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
             y += KV_ROW_H;
         },
         .measure => |m| {
-            rl.drawTextEx(font, "zone", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
-            rl.drawTextEx(font, @tagName(m.zone), .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
+            rl.drawTextEx(
+                font,
+                "zone",
+                .{ .x = PAD, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text_sub,
+            );
+            rl.drawTextEx(
+                font,
+                @tagName(m.zone),
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
             y += KV_ROW_H;
-            rl.drawTextEx(font, "qubits", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(
+                font,
+                "qubits",
+                .{ .x = PAD, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text_sub,
+            );
             var b0: [8]u8 = undefined;
-            rl.drawTextEx(font, std.fmt.bufPrintZ(&b0, "{d}", .{m.qubits.len}) catch "?", .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, palette.text);
+            rl.drawTextEx(
+                font,
+                std.fmt.bufPrintZ(&b0, "{d}", .{m.qubits.len}) catch "?",
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
             y += KV_ROW_H;
         },
     }
@@ -411,23 +588,48 @@ fn drawPanel(
             if (q >= active.len or !active[q]) continue;
             any_active = true;
             if (shown >= ATOM_MAX) {
-                rl.drawTextEx(font, "...", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+                rl.drawTextEx(
+                    font,
+                    "...",
+                    .{ .x = PAD, .y = y },
+                    FS_KV,
+                    KV_SP,
+                    palette.text_sub,
+                );
                 y += KV_ROW_H;
                 break;
             }
             var buf: [48]u8 = undefined;
             const line = if (q < positions.len) blk: {
                 const pos = positions[q];
-                break :blk std.fmt.bufPrintZ(&buf, "q{d}  ({d}, {d}) um", .{ q, @divTrunc(pos.x, 1000), @divTrunc(pos.y, 1000) }) catch "?";
+                break :blk std.fmt.bufPrintZ(
+                    &buf,
+                    "q{d}  ({d}, {d}) um",
+                    .{ q, @divTrunc(pos.x, 1000), @divTrunc(pos.y, 1000) },
+                ) catch "?";
             } else blk: {
                 break :blk std.fmt.bufPrintZ(&buf, "q{d}", .{q}) catch "?";
             };
-            rl.drawTextEx(font, line, .{ .x = PAD, .y = y }, FS_KV, KV_SP, accent);
+            rl.drawTextEx(
+                font,
+                line,
+                .{ .x = PAD, .y = y },
+                FS_KV,
+                KV_SP,
+                accent,
+            );
             y += KV_ROW_H;
             shown += 1;
         }
         if (!any_active) {
-            rl.drawTextEx(font, "-", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            rl.drawTextEx(
+                font,
+                "-",
+                .{ .x = PAD, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text_sub,
+            );
             y += KV_ROW_H;
         }
     }
@@ -447,13 +649,31 @@ fn drawPanel(
             const qy = y + @as(f32, @floatFromInt(row_n)) * (QUBIT_SQ + QUBIT_GAP);
             const rec = rl.Rectangle{ .x = qx, .y = qy, .width = QUBIT_SQ, .height = QUBIT_SQ };
             const is_active = q < active.len and active[q];
-            const qfill = if (is_active) rl.Color{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 160 } else rl.Color{ .r = 56, .g = 60, .b = 78, .a = 200 };
+            const qfill = if (is_active) rl.Color{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 160 } else rl.Color{
+                .r = 56,
+                .g = 60,
+                .b = 78,
+                .a = 200,
+            };
             rl.drawRectangleRounded(rec, 0.3, 4, qfill);
-            rl.drawRectangleRoundedLinesEx(rec, 0.3, 4, 1.0, if (is_active) accent else palette.divider);
+            rl.drawRectangleRoundedLinesEx(
+                rec,
+                0.3,
+                4,
+                1.0,
+                if (is_active) accent else palette.divider,
+            );
             var qb: [4]u8 = undefined;
             const ql = std.fmt.bufPrintZ(&qb, "{d}", .{q}) catch "?";
             const qtw = rl.measureTextEx(font, ql, FS_QUBIT, 0.5).x;
-            rl.drawTextEx(font, ql, .{ .x = qx + (QUBIT_SQ - qtw) / 2, .y = qy + (QUBIT_SQ - FS_QUBIT) / 2 }, FS_QUBIT, 0.5, if (is_active) palette.bg else palette.text_sub);
+            rl.drawTextEx(
+                font,
+                ql,
+                .{ .x = qx + (QUBIT_SQ - qtw) / 2, .y = qy + (QUBIT_SQ - FS_QUBIT) / 2 },
+                FS_QUBIT,
+                0.5,
+                if (is_active) palette.bg else palette.text_sub,
+            );
         }
         const num_rows: usize = if (num_qubits == 0) 0 else (num_qubits - 1) / per_row + 1;
         y += @as(f32, @floatFromInt(num_rows)) * (QUBIT_SQ + QUBIT_GAP) + PAD;
@@ -475,8 +695,22 @@ fn drawPanel(
     sectionLabel(font, "CONTROLS", cy);
     cy += LABEL_ADV;
     for (ctrl) |row| {
-        rl.drawTextEx(font, row[0], .{ .x = PAD, .y = cy }, FS_CTRL, 0.8, palette.text_sub);
-        rl.drawTextEx(font, row[1], .{ .x = KV_VX, .y = cy }, FS_CTRL, 0.8, palette.text);
+        rl.drawTextEx(
+            font,
+            row[0],
+            .{ .x = PAD, .y = cy },
+            FS_CTRL,
+            0.8,
+            palette.text_sub,
+        );
+        rl.drawTextEx(
+            font,
+            row[1],
+            .{ .x = KV_VX, .y = cy },
+            FS_CTRL,
+            0.8,
+            palette.text,
+        );
         cy += CTRL_ROW_H;
     }
 }
@@ -587,7 +821,7 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
     const screen_w = rl.getScreenWidth();
     const screen_h = rl.getScreenHeight();
 
-    const bbox = computeBoundingBox(s.compute_slots);
+    const bbox = computeBoundingBox(s.slots);
     var camera = Camera{};
     camera.fitToRect(bbox, @floatFromInt(screen_w), @floatFromInt(screen_h));
 
@@ -678,7 +912,7 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
         drawZone(camera, storage_rect, palette.zone_storage);
         drawZone(camera, compute_rect, if (op.kind == .rydberg) palette.zone_compute_active else palette.zone_compute);
 
-        for (s.compute_slots) |slot| drawSlot(camera, slot, frame_positions[frame]);
+        for (s.slots) |slot| drawSlot(camera, slot, frame_positions[frame]);
 
         if (op.kind == .move) {
             for (op.kind.move.atoms) |a| {

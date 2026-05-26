@@ -33,98 +33,27 @@ const OpKind = union(enum) {
     measure: Measure,
 };
 
-fn fmtNm(nm: i32) struct { val: f64, sign: u8 } {
-    return .{
-        .val = @abs(@as(f64, @floatFromInt(nm))) / 1000.0,
-        .sign = if (nm < 0) '-' else ' ',
-    };
-}
-
 pub const Op = struct {
     t: u32,
     kind: OpKind,
-
-    pub fn print(self: Op) void {
-        std.debug.print("t={d:0>3}  ", .{self.t});
-        switch (self.kind) {
-            .move => |m| {
-                std.debug.print("move   aod={d}  axis={s}  {s} → {s}\n", .{
-                    m.aod,
-                    @tagName(m.translate),
-                    @tagName(m.src_zone),
-                    @tagName(m.dest_zone),
-                });
-                for (m.atoms) |atom| {
-                    const sx = fmtNm(atom.src.x);
-                    const sy = fmtNm(atom.src.y);
-                    const dx = fmtNm(atom.dest.x);
-                    const dy = fmtNm(atom.dest.y);
-                    std.debug.print(
-                        "         q{d:<2} ({c}{d:>5.1}, {c}{d:>5.1}) → ({c}{d:>5.1}, {c}{d:>5.1})\n",
-                        .{
-                            atom.qubit,
-                            sx.sign,
-                            sx.val,
-                            sy.sign,
-                            sy.val,
-                            dx.sign,
-                            dx.val,
-                            dy.sign,
-                            dy.val,
-                        },
-                    );
-                }
-            },
-            .raman => |r| {
-                std.debug.print("raman  angle={d:.4}  phase={d:.4}\n", .{ r.angle, r.phase });
-                for (r.targets) |tgt| {
-                    const px = fmtNm(tgt.pos.x);
-                    const py = fmtNm(tgt.pos.y);
-                    std.debug.print("         q{d:<2} ({c}{d:>5.1}, {c}{d:>5.1})\n", .{
-                        tgt.qubit, px.sign, px.val, py.sign, py.val,
-                    });
-                }
-            },
-            .rydberg => |r| {
-                std.debug.print("rydberg zone={s}\n", .{@tagName(r.zone)});
-            },
-            .measure => |m| {
-                std.debug.print("measure zone={s}  qubits=[", .{@tagName(m.zone)});
-                for (m.qubits, 0..) |q, i| {
-                    if (i > 0) std.debug.print(", ", .{});
-                    std.debug.print("{d}", .{q});
-                }
-                std.debug.print("]\n", .{});
-            },
-        }
-    }
 };
 
 pub const PhysicalSchedule = struct {
     arena: std.heap.ArenaAllocator,
     ops: []const Op,
     placement: []Point, // Index corresponds to qubit id.
-    compute_slots: []const Point, // SLM trap sites in the entanglement zone.
+    slots: []const Point, // SLM trap sites in the entanglement zone.
 
     pub fn deinit(s: *PhysicalSchedule) void {
         s.arena.deinit();
     }
 };
 
-pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: Schedule) !PhysicalSchedule {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    errdefer arena.deinit();
-    const a = arena.allocator();
+// Enumerate every SLM trap site in the entanglement zone. These are drawn
+// as background indicators in the slideshow (grey ring = empty, green = occupied).
+fn computeSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const Point {
+    var slots: std.ArrayList(Point) = .empty;
 
-    // FIXME: Update the qubit count.
-    const max_qubit = layout.storage_zone.slm.num_col * layout.storage_zone.slm.num_row;
-    const placement = try a.alloc(Point, max_qubit);
-
-    try storagePlacement(layout, placement);
-
-    // Enumerate every SLM trap site in the entanglement zone. These are drawn
-    // as background indicators in the slideshow (grey ring = empty, green = occupied).
-    var slots: std.ArrayListUnmanaged(Point) = .empty;
     {
         const slm = layout.storage_zone.slm;
         const x0 = layout.storage_zone.offset_nm[0] + slm.offset_nm[0];
@@ -132,51 +61,52 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
         const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
         const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
         for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try slots.append(a, .{
+            try slots.append(allocator, .{
                 .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
                 .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
             });
         };
     }
+
     for (layout.entanglement_zone.slms) |slm| {
         const x0 = layout.entanglement_zone.offset_nm[0] + slm.offset_nm[0];
         const y0 = layout.entanglement_zone.offset_nm[1] + slm.offset_nm[1];
         const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
         const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
         for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try slots.append(a, .{
+            try slots.append(allocator, .{
                 .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
                 .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
             });
         };
     }
-    const compute_slots = try slots.toOwnedSlice(a);
 
-    // FIXME: Only move operations for now.
-    // One move per timestep (color).
-    //const n_timesteps = @as(usize, @intCast(logical.max_color));
+    return slots.items;
+}
 
+fn moveSlmQubits(
+    allocator: std.mem.Allocator,
+    layout: arch.ArchConfig,
+    logical: Schedule,
+    placement: *[]Point,
+    ops: *std.ArrayList(Op),
+) !void {
     const ent = layout.entanglement_zone;
-
-    const control = layout.entanglement_zone.slms[0];
+    const control = ent.slms[0];
     const x_slm_orig = ent.offset_nm[0] + control.offset_nm[0];
     const y_slm_orig = ent.offset_nm[1] + control.offset_nm[1];
     const x_sep = control.sep_nm[0];
 
     std.debug.print("{} {} {}\n", .{ x_slm_orig, y_slm_orig, x_sep });
 
-    // NOTE: There is a relationship between the logical timesteps and the coloring steps.
-    // For example, we need to place the SLMs first (t0).
-
-    var ops: std.ArrayList(Op) = .empty;
-
     var atomsSlm: std.ArrayList(MoveAtom) = .empty;
+
     for (logical.slm_slots, 0..) |maybe_slm, i| {
         const x = x_slm_orig + @as(i32, @intCast(i)) * @as(i32, @intCast(x_sep));
         const y = y_slm_orig + @as(i32, @intCast(control.sep_nm[1]));
 
         if (maybe_slm) |qubit_id| {
-            const src = placement[qubit_id];
+            const src = placement.*[qubit_id];
             const dest = Point{ .x = x, .y = y };
 
             try atomsSlm.append(allocator, MoveAtom{
@@ -185,11 +115,11 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
                 .dest = dest,
             });
 
-            placement[qubit_id] = dest;
+            placement.*[qubit_id] = dest;
         }
     }
 
-    var op = Op{ .t = 0, .kind = .{
+    const op = Op{ .t = 0, .kind = .{
         .move = .{
             .aod = 0,
             .translate = Axis.y,
@@ -198,10 +128,21 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
             .atoms = atomsSlm.items,
         },
     } };
-    try ops.append(allocator, op);
 
-    std.debug.print(">> SLM Operations\n", .{});
-    op.print();
+    try ops.append(allocator, op);
+}
+
+fn moveAodQubits(
+    allocator: std.mem.Allocator,
+    layout: arch.ArchConfig,
+    logical: Schedule,
+    placement: *[]Point,
+    ops: *std.ArrayList(Op),
+) !void {
+    // FIXME: Only move operations for now.
+    // One move per timestep (color).
+    //const n_timesteps = @as(usize, @intCast(logical.max_color));
+    const ent = layout.entanglement_zone;
 
     // --------------------------------
 
@@ -219,7 +160,7 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
             const y = y_aod_orig + @as(i32, @intCast(target.sep_nm[1]));
 
             if (maybe_aod) |qubit_id| {
-                const src = placement[qubit_id];
+                const src = placement.*[qubit_id];
                 const dest = Point{ .x = x, .y = y };
 
                 try atomsAod.append(allocator, MoveAtom{
@@ -228,7 +169,7 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
                     .dest = dest,
                 });
 
-                placement[qubit_id] = dest;
+                placement.*[qubit_id] = dest;
             }
         }
 
@@ -236,7 +177,7 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
         // them from storage zone to compute zone. We do now want to show
         // arrows when moving qubits in compute zone.
         if (t == 0) {
-            op = Op{ .t = @as(u32, @intCast(t)) + 1, .kind = .{
+            const op = Op{ .t = @as(u32, @intCast(t)) + 1, .kind = .{
                 .move = .{
                     .aod = 0,
                     .translate = Axis.y,
@@ -247,7 +188,7 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
             } };
             try ops.append(allocator, op);
         } else {
-            op = Op{ .t = @as(u32, @intCast(t)) + 1, .kind = .{
+            const op = Op{ .t = @as(u32, @intCast(t)) + 1, .kind = .{
                 .move = .{
                     .aod = 0,
                     .translate = Axis.y,
@@ -259,16 +200,13 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
             try ops.append(allocator, op);
         }
     }
-
-    return .{
-        .arena = arena,
-        .ops = ops.items,
-        .placement = placement,
-        .compute_slots = compute_slots,
-    };
 }
 
-pub fn storagePlacement(layout: arch.ArchConfig, placement: []Point) !void {
+pub fn storagePlacement(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]Point {
+    // FIXME: Update the qubit count.
+    const max_qubit = layout.storage_zone.slm.num_col * layout.storage_zone.slm.num_row;
+    var placement = try allocator.alloc(Point, max_qubit);
+
     const zone = layout.storage_zone;
     const slm = layout.storage_zone.slm;
 
@@ -290,6 +228,30 @@ pub fn storagePlacement(layout: arch.ArchConfig, placement: []Point) !void {
             qubit_id += 1;
         }
     }
+
+    return placement;
+}
+
+pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: Schedule) !PhysicalSchedule {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+
+    var placement = try storagePlacement(a, layout);
+
+    // NOTE: There is a relationship between the logical timesteps and the coloring steps.
+    // For example, we need to place the SLMs first (t0).
+
+    var ops: std.ArrayList(Op) = .empty;
+    try moveSlmQubits(a, layout, logical, &placement, &ops);
+    try moveAodQubits(a, layout, logical, &placement, &ops);
+
+    return .{
+        .arena = arena,
+        .ops = ops.items,
+        .placement = placement,
+        .slots = try computeSlots(a, layout),
+    };
 }
 
 pub const Schedule = struct {
