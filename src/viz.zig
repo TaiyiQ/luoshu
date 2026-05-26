@@ -28,6 +28,10 @@ const palette = struct {
     pub const zone_border = rl.Color{ .r = 115, .g = 121, .b = 148, .a = 100 };
 };
 
+fn toVec(p: Point) rl.Vector2 {
+    return .{ .x = @floatFromInt(p.x), .y = @floatFromInt(p.y) };
+}
+
 // -----------------------------------------------------------------------
 // Bounding box
 // -----------------------------------------------------------------------
@@ -94,12 +98,11 @@ fn computeBoundingBox(slots: []const Point) BBox {
     var max_x = std.math.floatMin(f32);
     var max_y = std.math.floatMin(f32);
     for (slots) |s| {
-        const x: f32 = @floatFromInt(s.x);
-        const y: f32 = @floatFromInt(s.y);
-        min_x = @min(min_x, x);
-        min_y = @min(min_y, y);
-        max_x = @max(max_x, x);
-        max_y = @max(max_y, y);
+        const v = toVec(s);
+        min_x = @min(min_x, v.x);
+        min_y = @min(min_y, v.y);
+        max_x = @max(max_x, v.x);
+        max_y = @max(max_y, v.y);
     }
     return .{ .min_x = min_x, .min_y = min_y, .max_x = max_x, .max_y = max_y };
 }
@@ -175,7 +178,7 @@ fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
 }
 
 fn drawSlot(cam: Camera, slot: Point, positions: []const Point) void {
-    const screen = cam.worldToScreen(.{ .x = @floatFromInt(slot.x), .y = @floatFromInt(slot.y) });
+    const screen = cam.worldToScreen(toVec(slot));
     const screen_radius = 600.0 * cam.zoom;
     var occupied = false;
     for (positions) |p| {
@@ -192,7 +195,7 @@ fn drawSlot(cam: Camera, slot: Point, positions: []const Point) void {
 }
 
 fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, active: bool, fill: rl.Color, stroke: rl.Color) void {
-    const screen = cam.worldToScreen(.{ .x = @floatFromInt(pos.x), .y = @floatFromInt(pos.y) });
+    const screen = cam.worldToScreen(toVec(pos));
     const screen_radius = 600.0 * cam.zoom;
     rl.drawCircleV(screen, screen_radius, palette.qdot);
     if (active) {
@@ -679,14 +682,8 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
 
         if (op.kind == .move) {
             for (op.kind.move.atoms) |a| {
-                const ss = camera.worldToScreen(.{
-                    .x = @floatFromInt(a.src.x),
-                    .y = @floatFromInt(a.src.y),
-                });
-                const es = camera.worldToScreen(.{
-                    .x = @floatFromInt(a.dest.x),
-                    .y = @floatFromInt(a.dest.y),
-                });
+                const ss = camera.worldToScreen(toVec(a.src));
+                const es = camera.worldToScreen(toVec(a.dest));
                 drawArrow(ss, es, @max(2.0 * camera.zoom, 1.0), palette.arrow);
             }
         }
