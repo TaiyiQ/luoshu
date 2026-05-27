@@ -404,13 +404,12 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: 
 }
 
 pub const Logical = struct {
+    arena: std.heap.ArenaAllocator,
     slm_slots: []const ?usize,
     aod_slots_per_color: [][]?usize,
 
-    pub fn deinit(self: *Logical, allocator: std.mem.Allocator) void {
-        allocator.free(self.slm_slots);
-        for (self.aod_slots_per_color) |slot| allocator.free(slot);
-        allocator.free(self.aod_slots_per_color);
+    pub fn deinit(self: *Logical) void {
+        self.arena.deinit();
     }
 
     pub fn print(self: Logical) void {

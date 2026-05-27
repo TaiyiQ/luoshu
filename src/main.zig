@@ -25,17 +25,17 @@ pub fn main(init: std.process.Init) !void {
     cfg.print();
 
     // MVP
-    //    var g = try core.Graph.init(alloc, 7, false);
-    //    defer g.deinit();
-    //    try g.addEdge(0, 1);
-    //    try g.addEdge(0, 5);
-    //    try g.addEdge(1, 6);
-    //    try g.addEdge(5, 6);
-    //    try g.addEdge(6, 3);
-    //    try g.addEdge(6, 4);
-    //    try g.addEdge(3, 4);
-    //    try g.addEdge(3, 2);
-    //    try g.addEdge(4, 2);
+    var g = try core.Graph.init(alloc, 7, false);
+    defer g.deinit();
+    try g.addEdge(0, 1);
+    try g.addEdge(0, 5);
+    try g.addEdge(1, 6);
+    try g.addEdge(5, 6);
+    try g.addEdge(6, 3);
+    try g.addEdge(6, 4);
+    try g.addEdge(3, 4);
+    try g.addEdge(3, 2);
+    try g.addEdge(4, 2);
 
     // QFT
     //    var g = try core.Graph.init(alloc, 5, false);
@@ -73,26 +73,28 @@ pub fn main(init: std.process.Init) !void {
     //    try g.addEdge(5, 0);
 
     // Ladder
-    var g = try core.Graph.init(alloc, 8, false);
-    defer g.deinit();
-    try g.addEdge(0, 1);
-    try g.addEdge(1, 2);
-    try g.addEdge(2, 3);
-    try g.addEdge(4, 5);
-    try g.addEdge(5, 6);
-    try g.addEdge(6, 7);
-    try g.addEdge(0, 4);
-    try g.addEdge(1, 5);
-    try g.addEdge(2, 6);
-    try g.addEdge(3, 7);
+    //    var g = try core.Graph.init(alloc, 8, false);
+    //    defer g.deinit();
+    //    try g.addEdge(0, 1);
+    //    try g.addEdge(1, 2);
+    //    try g.addEdge(2, 3);
+    //    try g.addEdge(4, 5);
+    //    try g.addEdge(5, 6);
+    //    try g.addEdge(6, 7);
+    //    try g.addEdge(0, 4);
+    //    try g.addEdge(1, 5);
+    //    try g.addEdge(2, 6);
+    //    try g.addEdge(3, 7);
 
     var logical = try route.compile(alloc, &g);
-    defer logical.deinit(alloc);
+    defer logical.deinit();
+    //try logical.writeToFile(alloc, init.io, "./zig-out/logical.json");
     logical.print();
 
     var physical = try schedule.physical(init.arena.allocator(), cfg, logical);
     defer physical.deinit();
-    //try physical.writeToFile(alloc, init.io, "./zig-out/schedule.json");
+    //try physical.writeToFile(alloc, init.io, "./zig-out/physical.json");
+
     try viz.simulate(alloc, cfg, physical);
 
     std.debug.print(">> Gate compilation completed\n", .{});

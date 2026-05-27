@@ -382,7 +382,7 @@ fn logicalSchedule(
     g: *core.Graph,
     aod: Aod,
     slm_slots: []const ?usize,
-) !schedule.Logical {
+) ![][]?usize {
     var slm_pos = std.AutoHashMap(usize, usize).init(allocator);
     defer slm_pos.deinit();
     for (slm_slots, 0..) |v, t| {
@@ -393,11 +393,6 @@ fn logicalSchedule(
     const n_slot = @as(usize, @intCast(max_c)) + 1;
 
     var aod_slots_per_color = try allocator.alloc([]?usize, n_slot);
-    var filled: usize = 0;
-    errdefer {
-        for (aod_slots_per_color[0..filled]) |slot| allocator.free(slot);
-        allocator.free(aod_slots_per_color);
-    }
 
     // Track last known column of each AOD.
     var last_pos = try allocator.alloc(usize, aod.nodes.items.len);
@@ -462,13 +457,9 @@ fn logicalSchedule(
         }
 
         aod_slots_per_color[t] = aod_slot;
-        filled += 1; // ← only incremented after successful assignment
     }
 
-    return schedule.Logical{
-        .slm_slots = slm_slots,
-        .aod_slots_per_color = aod_slots_per_color,
-    };
+    return aod_slots_per_color;
 }
 
 fn placeSlmWithResting(
@@ -657,6 +648,10 @@ fn computeRestingPositions(
 }
 
 pub fn compile(allocator: std.mem.Allocator, g: *core.Graph) !schedule.Logical {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const arena_alloc = arena.allocator();
+
     // 1. AOD set.
     var aod = try maxIndependentSet(allocator, g.*);
     defer aod.deinit(allocator);
@@ -678,10 +673,14 @@ pub fn compile(allocator: std.mem.Allocator, g: *core.Graph) !schedule.Logical {
     defer allocator.free(resting_xs);
     std.debug.print("resting_xs: {any}\n", .{resting_xs});
 
-    const slm_slots = try placeSlmWithResting(allocator, slm_order, resting_xs, aod.nodes.items.len);
-    errdefer allocator.free(slm_slots);
+    const slm_slots = try placeSlmWithResting(arena_alloc, slm_order, resting_xs, aod.nodes.items.len);
+    const aod_slots_per_color = try logicalSchedule(arena_alloc, g, aod, slm_slots);
 
-    return logicalSchedule(allocator, g, aod, slm_slots);
+    return schedule.Logical{
+        .arena = arena,
+        .slm_slots = slm_slots,
+        .aod_slots_per_color = aod_slots_per_color,
+    };
 }
 
 test "snapshot: mvp - aod set, coloring, schedule shape" {
