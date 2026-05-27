@@ -19,6 +19,11 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("arch", arch_mod);
 
+    const circuit_mod = b.addModule("circuit", .{
+        .root_source_file = b.path("src/circuit.zig"),
+    });
+    exe.root_module.addImport("circuit", circuit_mod);
+
     const graph_mod = b.addModule("graph", .{
         .root_source_file = b.path("src/graph.zig"),
     });
