@@ -135,16 +135,16 @@ fn opAccent(op: Op) rl.Color {
     return opColors(op).fill;
 }
 
-// -----------------------------------------------------------------------
-// World-space primitives
-// -----------------------------------------------------------------------
 fn drawMoveTail(cam: Camera, src: Point, dest: Point, tail_alpha: f32, fill: rl.Color) void {
     if (tail_alpha <= 0) return;
+
     const ss = cam.worldToScreen(toVec(src));
     const se = cam.worldToScreen(toVec(dest));
     const dx = se.x - ss.x;
     const dy = se.y - ss.y;
+
     if (@sqrt(dx * dx + dy * dy) < 1.0) return;
+
     const n: usize = 14;
     for (0..n) |i| {
         // fi=0 near src (old, faint, small), fi=1 near dest (recent, bright, large)
@@ -160,12 +160,14 @@ fn drawMoveTail(cam: Camera, src: Point, dest: Point, tail_alpha: f32, fill: rl.
 
 fn drawArrivalRipple(cam: Camera, pos: Point, settle_t: f32, fill: rl.Color) void {
     if (settle_t <= 0) return;
+
     const screen = cam.worldToScreen(toVec(pos));
     const base_r = 600.0 * cam.zoom;
     const fade: f32 = 1.0 - settle_t;
     const alpha: u8 = @intFromFloat(fade * 255.0);
     const r = base_r * (1.0 + settle_t * 2.0);
     const c = rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = alpha };
+
     rl.drawCircleLinesV(screen, r - 1.5, c);
     rl.drawCircleLinesV(screen, r, c);
     rl.drawCircleLinesV(screen, r + 1.5, c);
@@ -181,6 +183,7 @@ fn drawPairHalo(cam: Camera, a: Point, b: Point, color: rl.Color) void {
     const dy = sb.y - sa.y;
     const r = @sqrt(dx * dx + dy * dy) / 2.0 + base_r * 1.8;
     const center = rl.Vector2{ .x = cx, .y = cy };
+
     rl.drawCircleV(center, r, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 12 });
     rl.drawCircleLinesV(center, r, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 90 });
     rl.drawCircleLinesV(center, r + 2.0, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 40 });
@@ -193,6 +196,7 @@ fn drawGatePulse(cam: Camera, pos: Point, time: f32, color: rl.Color) void {
     const pulse = @sin(time * std.math.pi * 5.0);
     const r = base_r * (1.7 + 0.35 * pulse);
     const a1: u8 = @intFromFloat(80.0 + 100.0 * (0.5 + 0.5 * pulse));
+
     rl.drawCircleLinesV(screen, r, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = a1 });
     rl.drawCircleLinesV(screen, r + 2.0, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = a1 / 3 });
 }
@@ -200,6 +204,7 @@ fn drawGatePulse(cam: Camera, pos: Point, time: f32, color: rl.Color) void {
 fn drawGhostQubit(cam: Camera, pos: Point, fill: rl.Color) void {
     const screen = cam.worldToScreen(toVec(pos));
     const screen_radius = 600.0 * cam.zoom;
+
     rl.drawCircleV(screen, screen_radius, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 35 });
     rl.drawCircleLinesV(screen, screen_radius, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 90 });
 }
@@ -220,6 +225,7 @@ fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
     const tl = cam.worldToScreen(.{ .x = @floatFromInt(r.x0), .y = @floatFromInt(r.y0) });
     const br = cam.worldToScreen(.{ .x = @floatFromInt(r.x1), .y = @floatFromInt(r.y1) });
     const rec = rl.Rectangle{ .x = tl.x, .y = tl.y, .width = br.x - tl.x, .height = br.y - tl.y };
+
     rl.drawRectangleRounded(rec, 0.06, 8, fill);
     rl.drawRectangleRoundedLinesEx(rec, 0.06, 8, 1.0, palette.zone_border);
 }
@@ -227,6 +233,7 @@ fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
 fn drawSlot(cam: Camera, slot: Point, positions: []const Point) void {
     const screen = cam.worldToScreen(toVec(slot));
     const screen_radius = 600.0 * cam.zoom;
+
     var occupied = false;
     for (positions) |p| {
         if (p.x == slot.x and p.y == slot.y) {
@@ -234,6 +241,7 @@ fn drawSlot(cam: Camera, slot: Point, positions: []const Point) void {
             break;
         }
     }
+
     if (occupied) {
         rl.drawCircleV(screen, screen_radius, palette.slot_on_fill);
     } else {
@@ -244,7 +252,9 @@ fn drawSlot(cam: Camera, slot: Point, positions: []const Point) void {
 fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, active: bool, fill: rl.Color, stroke: rl.Color) void {
     const screen = cam.worldToScreen(toVec(pos));
     const screen_radius = 600.0 * cam.zoom;
+
     rl.drawCircleV(screen, screen_radius, palette.qdot);
+
     if (active) {
         rl.drawCircleV(screen, screen_radius, fill);
         rl.drawCircleLinesV(screen, screen_radius * 1.5, stroke);
@@ -303,7 +313,12 @@ fn sectionLabel(font: rl.Font, label: [:0]const u8, y: f32) void {
     rl.drawTextEx(font, label, .{ .x = PAD, .y = y }, FS_SECTION, 2.0, palette.text_sub);
 }
 
-const Summary = struct { move: u32, raman: u32, rydberg: u32, measure: u32 };
+const Summary = struct {
+    move: u32,
+    raman: u32,
+    rydberg: u32,
+    measure: u32,
+};
 
 fn drawPanel(
     font: rl.Font,
@@ -328,6 +343,7 @@ fn drawPanel(
         .{ "drag", "pan" },
         .{ "h", "hide" },
     };
+
     const ctrl_block_h: f32 = SEP_ADV + LABEL_ADV + @as(f32, @floatFromInt(ctrl.len)) * CTRL_ROW_H;
     const avail_h: f32 = screen_h - ctrl_block_h;
 
@@ -723,12 +739,24 @@ fn drawPanel(
                 const qx = PAD + @as(f32, @floatFromInt(col)) * (QUBIT_SQ + QUBIT_GAP);
                 const qy = y + @as(f32, @floatFromInt(row_n)) * (QUBIT_SQ + QUBIT_GAP) - scroll;
                 const rec = rl.Rectangle{ .x = qx, .y = qy, .width = QUBIT_SQ, .height = QUBIT_SQ };
-                rl.drawRectangleRounded(rec, 0.3, 4, rl.Color{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 160 });
+                rl.drawRectangleRounded(rec, 0.3, 4, rl.Color{
+                    .r = accent.r,
+                    .g = accent.g,
+                    .b = accent.b,
+                    .a = 160,
+                });
                 rl.drawRectangleRoundedLinesEx(rec, 0.3, 4, 1.0, accent);
                 var qb: [4]u8 = undefined;
                 const ql = std.fmt.bufPrintZ(&qb, "{d}", .{q}) catch "?";
                 const qtw = rl.measureTextEx(font, ql, FS_QUBIT, 0.5).x;
-                rl.drawTextEx(font, ql, .{ .x = qx + (QUBIT_SQ - qtw) / 2, .y = qy + (QUBIT_SQ - FS_QUBIT) / 2 }, FS_QUBIT, 0.5, palette.bg);
+                rl.drawTextEx(
+                    font,
+                    ql,
+                    .{ .x = qx + (QUBIT_SQ - qtw) / 2, .y = qy + (QUBIT_SQ - FS_QUBIT) / 2 },
+                    FS_QUBIT,
+                    0.5,
+                    palette.bg,
+                );
                 slot += 1;
             }
             rl.endScissorMode();
@@ -738,8 +766,18 @@ fn drawPanel(
                 const sb_x: f32 = PANEL_W - sb_w - 3;
                 const thumb_h: f32 = @max(24, qubit_box_h * qubit_box_h / qubit_content_h);
                 const thumb_y: f32 = y + (scroll / (qubit_content_h - qubit_box_h)) * (qubit_box_h - thumb_h);
-                rl.drawRectangleRounded(.{ .x = sb_x, .y = y, .width = sb_w, .height = qubit_box_h }, 1.0, 4, rl.Color{ .r = 65, .g = 69, .b = 89, .a = 100 });
-                rl.drawRectangleRounded(.{ .x = sb_x, .y = thumb_y, .width = sb_w, .height = thumb_h }, 1.0, 4, rl.Color{ .r = 115, .g = 121, .b = 148, .a = 210 });
+                rl.drawRectangleRounded(.{ .x = sb_x, .y = y, .width = sb_w, .height = qubit_box_h }, 1.0, 4, rl.Color{
+                    .r = 65,
+                    .g = 69,
+                    .b = 89,
+                    .a = 100,
+                });
+                rl.drawRectangleRounded(.{ .x = sb_x, .y = thumb_y, .width = sb_w, .height = thumb_h }, 1.0, 4, rl.Color{
+                    .r = 115,
+                    .g = 121,
+                    .b = 148,
+                    .a = 210,
+                });
             }
 
             max_qubit_scroll = @max(0, qubit_content_h - qubit_box_h);
@@ -778,7 +816,7 @@ fn initialPositions(allocator: std.mem.Allocator, final: []const Point, ops: []c
 // -----------------------------------------------------------------------
 // Main interactive slideshow
 // -----------------------------------------------------------------------
-pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.PhysicalSchedule) !void {
+pub fn simulate(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.PhysicalSchedule) !void {
     if (s.placement.len == 0 or s.ops.len == 0) return;
 
     const initial_pos = try initialPositions(allocator, s.placement, s.ops);
@@ -856,7 +894,7 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
     rl.setTargetFPS(60);
 
     const font = rl.loadFontEx(
-        "/home/ruben/.local/share/fonts/JetBrainsMonoNerdFont-Regular.ttf",
+        "./asset/JetBrainsMonoNerdFont-Regular.ttf",
         64,
         null,
     ) catch try rl.getFontDefault();
@@ -1051,7 +1089,17 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
         }
 
         if (panel_visible) {
-            panel_content_h = drawPanel(font, op, frame, frame_count, active, num_qubits, frame_positions[frame], summary, panel_scroll);
+            panel_content_h = drawPanel(
+                font,
+                op,
+                frame,
+                frame_count,
+                active,
+                num_qubits,
+                frame_positions[frame],
+                summary,
+                panel_scroll,
+            );
         } else {
             rl.drawTextEx(font, "h  show panel", .{ .x = 16, .y = 16 }, 13, 0.8, palette.text_sub);
         }
