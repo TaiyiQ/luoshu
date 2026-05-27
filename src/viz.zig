@@ -259,7 +259,7 @@ fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, active: bool, fi
         rl.drawCircleV(screen, screen_radius, fill);
         rl.drawCircleLinesV(screen, screen_radius * 1.5, stroke);
         var buf: [8]u8 = undefined;
-        const label = std.fmt.bufPrintZ(&buf, "{d}", .{id}) catch "?";
+        const label = std.fmt.bufPrintSentinel(&buf, "{d}", .{id}, 0) catch "?";
         const lx = screen.x + screen_radius + 10;
         const ly = screen.y - 12;
         rl.drawTextEx(font, label, .{ .x = lx + 1, .y = ly }, 24, 0.5, palette.text);
@@ -386,7 +386,7 @@ fn drawPanel(
                 .a = if (has) @as(u8, 210) else 50,
             });
             var buf: [16]u8 = undefined;
-            const txt = std.fmt.bufPrintZ(&buf, "{s} x{d}", .{ chip.label, chip.count }) catch "?";
+            const txt = std.fmt.bufPrintSentinel(&buf, "{s} x{d}", .{ chip.label, chip.count }, 0) catch "?";
             const tw = rl.measureTextEx(font, txt, FS_CHIP, 0.8).x;
             rl.drawTextEx(font, txt, .{ .x = cx + (chip_w - tw) / 2, .y = chip_y + (CHIP_H - FS_CHIP) / 2 }, FS_CHIP, 0.8, rl.Color{
                 .r = chip.color.r,
@@ -451,7 +451,7 @@ fn drawPanel(
         );
         y += BAR_H + 21;
         var buf: [16]u8 = undefined;
-        const prog = std.fmt.bufPrintZ(&buf, "{d} / {d}", .{ frame + 1, total }) catch "?";
+        const prog = std.fmt.bufPrintSentinel(&buf, "{d} / {d}", .{ frame + 1, total }, 0) catch "?";
         rl.drawTextEx(
             font,
             prog,
@@ -475,7 +475,7 @@ fn drawPanel(
             var b0: [8]u8 = undefined;
             rl.drawTextEx(
                 font,
-                std.fmt.bufPrintZ(&b0, "{d}", .{m.aod}) catch "?",
+                std.fmt.bufPrintSentinel(&b0, "{d}", .{m.aod}, 0) catch "?",
                 .{ .x = KV_VX, .y = y },
                 FS_KV,
                 KV_SP,
@@ -530,7 +530,7 @@ fn drawPanel(
             var b1: [8]u8 = undefined;
             rl.drawTextEx(
                 font,
-                std.fmt.bufPrintZ(&b1, "{d}", .{m.atoms.len}) catch "?",
+                std.fmt.bufPrintSentinel(&b1, "{d}", .{m.atoms.len}, 0) catch "?",
                 .{ .x = KV_VX, .y = y },
                 FS_KV,
                 KV_SP,
@@ -550,7 +550,7 @@ fn drawPanel(
             var b0: [16]u8 = undefined;
             rl.drawTextEx(
                 font,
-                std.fmt.bufPrintZ(&b0, "{d:.4}", .{r.angle}) catch "?",
+                std.fmt.bufPrintSentinel(&b0, "{d:.4}", .{r.angle}, 0) catch "?",
                 .{ .x = KV_VX, .y = y },
                 FS_KV,
                 KV_SP,
@@ -568,7 +568,7 @@ fn drawPanel(
             var b1: [16]u8 = undefined;
             rl.drawTextEx(
                 font,
-                std.fmt.bufPrintZ(&b1, "{d:.4}", .{r.phase}) catch "?",
+                std.fmt.bufPrintSentinel(&b1, "{d:.4}", .{r.phase}, 0) catch "?",
                 .{ .x = KV_VX, .y = y },
                 FS_KV,
                 KV_SP,
@@ -586,7 +586,7 @@ fn drawPanel(
             var b2: [8]u8 = undefined;
             rl.drawTextEx(
                 font,
-                std.fmt.bufPrintZ(&b2, "{d}", .{r.targets.len}) catch "?",
+                std.fmt.bufPrintSentinel(&b2, "{d}", .{r.targets.len}, 0) catch "?",
                 .{ .x = KV_VX, .y = y },
                 FS_KV,
                 KV_SP,
@@ -642,7 +642,7 @@ fn drawPanel(
             var b0: [8]u8 = undefined;
             rl.drawTextEx(
                 font,
-                std.fmt.bufPrintZ(&b0, "{d}", .{m.qubits.len}) catch "?",
+                std.fmt.bufPrintSentinel(&b0, "{d}", .{m.qubits.len}, 0) catch "?",
                 .{ .x = KV_VX, .y = y },
                 FS_KV,
                 KV_SP,
@@ -680,13 +680,14 @@ fn drawPanel(
             var buf: [48]u8 = undefined;
             const line = if (q < positions.len) blk: {
                 const pos = positions[q];
-                break :blk std.fmt.bufPrintZ(
+                break :blk std.fmt.bufPrintSentinel(
                     &buf,
                     "q{d}  ({d}, {d}) um",
                     .{ q, @divTrunc(pos.x, 1000), @divTrunc(pos.y, 1000) },
+                    0,
                 ) catch "?";
             } else blk: {
-                break :blk std.fmt.bufPrintZ(&buf, "q{d}", .{q}) catch "?";
+                break :blk std.fmt.bufPrintSentinel(&buf, "q{d}", .{q}, 0) catch "?";
             };
             rl.drawTextEx(
                 font,
@@ -747,7 +748,7 @@ fn drawPanel(
                 });
                 rl.drawRectangleRoundedLinesEx(rec, 0.3, 4, 1.0, accent);
                 var qb: [4]u8 = undefined;
-                const ql = std.fmt.bufPrintZ(&qb, "{d}", .{q}) catch "?";
+                const ql = std.fmt.bufPrintSentinel(&qb, "{d}", .{q}, 0) catch "?";
                 const qtw = rl.measureTextEx(font, ql, FS_QUBIT, 0.5).x;
                 rl.drawTextEx(
                     font,
