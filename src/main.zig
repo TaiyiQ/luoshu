@@ -90,7 +90,7 @@ pub fn main(init: std.process.Init) !void {
     defer logical.deinit(alloc);
     logical.print();
 
-    var physical = try schedule.physicalSchedule(init.arena.allocator(), cfg, logical);
+    var physical = try schedule.physical(init.arena.allocator(), cfg, logical);
     defer physical.deinit();
     //try physical.writeToFile(alloc, init.io, "./zig-out/schedule.json");
     try viz.simulate(alloc, cfg, physical);

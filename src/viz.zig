@@ -802,26 +802,11 @@ fn drawPanel(
 // -----------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------
-fn initialPositions(allocator: std.mem.Allocator, final: []const Point, ops: []const Op) ![]Point {
-    var positions = try allocator.dupe(Point, final);
-    var i = ops.len;
-    while (i > 0) {
-        i -= 1;
-        if (ops[i].kind == .move) {
-            for (ops[i].kind.move.atoms) |a| positions[a.qubit] = a.src;
-        }
-    }
-    return positions;
-}
-
 // -----------------------------------------------------------------------
 // Main interactive slideshow
 // -----------------------------------------------------------------------
 pub fn simulate(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Physical) !void {
     if (s.placement.len == 0 or s.ops.len == 0) return;
-
-    const initial_pos = try initialPositions(allocator, s.placement, s.ops);
-    defer allocator.free(initial_pos);
 
     const frame_count = s.ops.len;
     var frame_positions = try allocator.alloc([]Point, frame_count);
@@ -830,7 +815,7 @@ pub fn simulate(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         allocator.free(frame_positions);
     }
     {
-        const cur = try allocator.dupe(Point, initial_pos);
+        const cur = try allocator.dupe(Point, s.placement);
         defer allocator.free(cur);
         for (s.ops, 0..) |op, i| {
             if (op.kind == .move) {
@@ -920,10 +905,10 @@ pub fn simulate(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     var panel_scroll: f32 = 0;
     var panel_content_h: f32 = 0;
 
-    var active = try allocator.alloc(bool, initial_pos.len);
+    var active = try allocator.alloc(bool, s.placement.len);
     defer allocator.free(active);
 
-    var draw_positions = try allocator.alloc(Point, initial_pos.len);
+    var draw_positions = try allocator.alloc(Point, s.placement.len);
     defer allocator.free(draw_positions);
 
     while (!rl.windowShouldClose()) {

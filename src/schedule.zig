@@ -41,7 +41,7 @@ pub const Op = struct {
 pub const Physical = struct {
     arena: std.heap.ArenaAllocator,
     ops: []const Op,
-    placement: []Point, // Index corresponds to qubit id.
+    placement: []Point, // Initial storage-zone position of each qubit (index = qubit id).
     slots: []const Point, // SLM trap sites in the compute zone.
 
     pub fn deinit(s: *Physical) void {
@@ -352,7 +352,7 @@ pub fn qubitPlacement(
 
 // NOTE: There is a relationship between the logical timesteps and the coloring steps.
 // For example, we need to place the SLMs first (t0).
-pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: Logical) !Physical {
+pub fn physical(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: Logical) !Physical {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const alloc = arena.allocator();
@@ -363,6 +363,8 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
         logical.slm_slots,
         logical.aod_slots_per_color,
     );
+
+    const initial_placement = try alloc.dupe(Point, placement);
 
     var ops: std.ArrayList(Op) = .empty;
 
@@ -388,7 +390,7 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
     return .{
         .arena = arena,
         .ops = ops.items,
-        .placement = placement,
+        .placement = initial_placement,
         .slots = try computeSlots(alloc, layout),
     };
 }

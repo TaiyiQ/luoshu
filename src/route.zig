@@ -153,7 +153,13 @@ fn colorEdges(allocator: std.mem.Allocator, g: *core.Graph, aod: Aod) !void {
     }
 }
 
-fn leastAdmissible(g: *core.Graph, v: usize, y: usize, aod_idx: *const std.AutoHashMap(usize, usize), constraints: *AodConstraints) !i32 {
+fn leastAdmissible(
+    g: *core.Graph,
+    v: usize,
+    y: usize,
+    aod_idx: *const std.AutoHashMap(usize, usize),
+    constraints: *AodConstraints,
+) !i32 {
     const v_idx = aod_idx.get(v).?;
 
     var forbidden = std.AutoHashMap(i32, void).init(g.allocator);
@@ -498,7 +504,12 @@ const Rest = struct {
     right: usize,
 };
 
-fn computeRestingPositions(allocator: std.mem.Allocator, g: *core.Graph, aod: Aod, slm_order: []const usize) ![]usize {
+fn computeRestingPositions(
+    allocator: std.mem.Allocator,
+    g: *core.Graph,
+    aod: Aod,
+    slm_order: []const usize,
+) ![]usize {
     const max_c = try g.maxColor();
 
     var resting = std.AutoHashMap(Rest, usize).init(allocator);
