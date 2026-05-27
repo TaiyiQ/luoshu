@@ -180,6 +180,7 @@ fn moveSlmQubits(
     slm_qubits: []const ?usize,
     placement: *[]Point,
     ops: *std.ArrayList(Op),
+    t: u32,
 ) !void {
     const control = cz.slms[0];
     const x_slm_orig = cz.offset_nm[0] + control.offset_nm[0];
@@ -207,7 +208,7 @@ fn moveSlmQubits(
         }
     }
 
-    const op = Op{ .t = 0, .kind = .{
+    const op = Op{ .t = t, .kind = .{
         .move = .{
             .aod = 0,
             .translate = Axis.y,
@@ -247,6 +248,7 @@ fn moveAodQubits(
     aod_qubits: [][]?usize,
     placement: *[]Point,
     ops: *std.ArrayList(Op),
+    t_base: u32,
 ) !void {
     const target = cz.slms[1];
     const x_aod_orig = cz.offset_nm[0] + target.offset_nm[0];
@@ -275,7 +277,8 @@ fn moveAodQubits(
             }
         }
 
-        const op = Op{ .t = @as(u32, @intCast(t)) + 1, .kind = .{
+        const op_t = t_base + @as(u32, @intCast(t));
+        const op = Op{ .t = op_t, .kind = .{
             .move = .{
                 .aod = 0,
                 .translate = Axis.y,
@@ -287,7 +290,7 @@ fn moveAodQubits(
 
         try ops.append(allocator, op);
         try ops.append(allocator, Op{
-            .t = @as(u32, @intCast(t)) + 1,
+            .t = op_t,
             .kind = .{ .rydberg = .{ .zone = Zone.compute } },
         });
 
@@ -295,7 +298,7 @@ fn moveAodQubits(
         //        const pi = std.math.pi;
         //        const angle: f32 = if (t % 2 == 0) pi else pi / 2.0;
         //        const phase: f32 = if (t % 2 == 0) 0.0 else pi / 4.0;
-        //        try addRamanOp(allocator, placement.*, angle, phase, @as(u32, @intCast(t)) + 1, ops);
+        //        try addRamanOp(allocator, placement.*, angle, phase, op_t, ops);
     }
 }
 
@@ -350,9 +353,12 @@ pub fn qubitPlacement(
     return placement;
 }
 
-// NOTE: There is a relationship between the logical timesteps and the coloring steps.
-// For example, we need to place the SLMs first (t0).
 pub fn physical(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: Logical) !Physical {
+    // t = 0: SLM bulk move (storage → compute).
+    // t ≥ 1: one AOD move + Rydberg pulse per logical color, in order.
+    const t_slm: u32 = 0;
+    const t_aod_base: u32 = t_slm + 1;
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const alloc = arena.allocator();
@@ -374,10 +380,11 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: 
         logical.slm_slots,
         &placement,
         &ops,
+        t_slm,
     );
 
     // Initial single-qubit preparation layer (X rotation on all qubits).
-    //try addRamanOp(alloc, placement, std.math.pi, 0.0, 0, &ops);
+    //try addRamanOp(alloc, placement, std.math.pi, 0.0, t_slm, &ops);
 
     try moveAodQubits(
         alloc,
@@ -385,6 +392,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: 
         logical.aod_slots_per_color,
         &placement,
         &ops,
+        t_aod_base,
     );
 
     return .{
