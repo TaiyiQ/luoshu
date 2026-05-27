@@ -398,7 +398,6 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: 
 pub const Logical = struct {
     slm_slots: []const ?usize,
     aod_slots_per_color: [][]?usize,
-    max_color: i32,
 
     pub fn deinit(self: *Logical, allocator: std.mem.Allocator) void {
         allocator.free(self.slm_slots);
@@ -471,7 +470,7 @@ pub fn toJson(allocator: std.mem.Allocator, schedule: *const Logical) ![]u8 {
     }
     try w.writeAll("  ],\n");
 
-    try w.print("  \"max_color\": {d}\n", .{schedule.max_color});
+    try w.print("  \"max_color\": {d}\n", .{@as(i32, @intCast(schedule.aod_slots_per_color.len)) - 1});
     try w.writeAll("}");
 
     return allocator.dupe(u8, buf.written());

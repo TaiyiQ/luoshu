@@ -468,7 +468,6 @@ fn logicalSchedule(
     return schedule.Logical{
         .slm_slots = slm_slots,
         .aod_slots_per_color = aod_slots_per_color,
-        .max_color = max_c,
     };
 }
 
