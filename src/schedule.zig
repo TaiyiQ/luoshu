@@ -38,17 +38,17 @@ pub const Op = struct {
     kind: OpKind,
 };
 
-pub const PhysicalSchedule = struct {
+pub const Physical = struct {
     arena: std.heap.ArenaAllocator,
     ops: []const Op,
     placement: []Point, // Index corresponds to qubit id.
-    slots: []const Point, // SLM trap sites in the entanglement zone.
+    slots: []const Point, // SLM trap sites in the compute zone.
 
-    pub fn deinit(s: *PhysicalSchedule) void {
+    pub fn deinit(s: *Physical) void {
         s.arena.deinit();
     }
 
-    pub fn writeToFile(self: *const PhysicalSchedule, allocator: std.mem.Allocator, io: std.Io, filename: []const u8) !void {
+    pub fn writeToFile(self: *const Physical, allocator: std.mem.Allocator, io: std.Io, filename: []const u8) !void {
         const json = try self.toJson(allocator);
         defer allocator.free(json);
 
@@ -57,7 +57,7 @@ pub const PhysicalSchedule = struct {
         try file.writePositionalAll(io, json, 0);
     }
 
-    pub fn toJson(self: *const PhysicalSchedule, allocator: std.mem.Allocator) ![]u8 {
+    pub fn toJson(self: *const Physical, allocator: std.mem.Allocator) ![]u8 {
         var buf: std.Io.Writer.Allocating = .init(allocator);
         defer buf.deinit();
         const w = &buf.writer;
@@ -139,7 +139,7 @@ fn zoneName(z: Zone) []const u8 {
     };
 }
 
-// Enumerate every SLM trap site in the entanglement zone. These are drawn
+// Enumerate every SLM trap site in the compute zone. These are drawn
 // as background indicators in the slideshow (grey ring = empty, green = occupied).
 fn computeSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const Point {
     var slots: std.ArrayList(Point) = .empty;
@@ -158,9 +158,9 @@ fn computeSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const 
         };
     }
 
-    for (layout.entanglement_zone.slms) |slm| {
-        const x0 = layout.entanglement_zone.offset_nm[0] + slm.offset_nm[0];
-        const y0 = layout.entanglement_zone.offset_nm[1] + slm.offset_nm[1];
+    for (layout.compute_zone.slms) |slm| {
+        const x0 = layout.compute_zone.offset_nm[0] + slm.offset_nm[0];
+        const y0 = layout.compute_zone.offset_nm[1] + slm.offset_nm[1];
         const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
         const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
         for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
@@ -176,7 +176,7 @@ fn computeSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const 
 
 fn moveSlmQubits(
     allocator: std.mem.Allocator,
-    cz: arch.EntanglementZone,
+    cz: arch.ComputeZone,
     slm_qubits: []const ?usize,
     placement: *[]Point,
     ops: *std.ArrayList(Op),
@@ -243,7 +243,7 @@ fn addRamanOp(
 
 fn moveAodQubits(
     allocator: std.mem.Allocator,
-    cz: arch.EntanglementZone,
+    cz: arch.ComputeZone,
     aod_qubits: [][]?usize,
     placement: *[]Point,
     ops: *std.ArrayList(Op),
@@ -352,7 +352,7 @@ pub fn qubitPlacement(
 
 // NOTE: There is a relationship between the logical timesteps and the coloring steps.
 // For example, we need to place the SLMs first (t0).
-pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: Schedule) !PhysicalSchedule {
+pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: Logical) !Physical {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const alloc = arena.allocator();
@@ -368,7 +368,7 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
 
     try moveSlmQubits(
         alloc,
-        layout.entanglement_zone,
+        layout.compute_zone,
         logical.slm_slots,
         &placement,
         &ops,
@@ -379,7 +379,7 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
 
     try moveAodQubits(
         alloc,
-        layout.entanglement_zone,
+        layout.compute_zone,
         logical.aod_slots_per_color,
         &placement,
         &ops,
@@ -393,18 +393,18 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
     };
 }
 
-pub const Schedule = struct {
+pub const Logical = struct {
     slm_slots: []const ?usize,
     aod_slots_per_color: [][]?usize,
     max_color: i32,
 
-    pub fn deinit(self: *Schedule, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Logical, allocator: std.mem.Allocator) void {
         allocator.free(self.slm_slots);
         for (self.aod_slots_per_color) |slot| allocator.free(slot);
         allocator.free(self.aod_slots_per_color);
     }
 
-    pub fn print(self: Schedule) void {
+    pub fn print(self: Logical) void {
         const n_slots = self.slm_slots.len;
 
         std.debug.print("\n", .{});
@@ -443,7 +443,7 @@ pub const Schedule = struct {
     }
 };
 
-pub fn toJson(allocator: std.mem.Allocator, schedule: *const Schedule) ![]u8 {
+pub fn toJson(allocator: std.mem.Allocator, schedule: *const Logical) ![]u8 {
     var buf: std.Io.Writer.Allocating = .init(allocator);
     defer buf.deinit();
     const w = &buf.writer;
@@ -475,7 +475,7 @@ pub fn toJson(allocator: std.mem.Allocator, schedule: *const Schedule) ![]u8 {
     return allocator.dupe(u8, buf.written());
 }
 
-pub fn writeToFile(allocator: std.mem.Allocator, io: std.Io, schedule: *const Schedule, filename: []const u8) !void {
+pub fn writeToFile(allocator: std.mem.Allocator, io: std.Io, schedule: *const Logical, filename: []const u8) !void {
     const json = try toJson(allocator, schedule);
     defer allocator.free(json);
 

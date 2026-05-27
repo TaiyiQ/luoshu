@@ -817,7 +817,7 @@ fn initialPositions(allocator: std.mem.Allocator, final: []const Point, ops: []c
 // -----------------------------------------------------------------------
 // Main interactive slideshow
 // -----------------------------------------------------------------------
-pub fn simulate(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.PhysicalSchedule) !void {
+pub fn simulate(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Physical) !void {
     if (s.placement.len == 0 or s.ops.len == 0) return;
 
     const initial_pos = try initialPositions(allocator, s.placement, s.ops);
@@ -873,7 +873,7 @@ pub fn simulate(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     const sz = layout.storage_zone;
     const storage_rect = slmZoneRect(sz.offset_nm[0], sz.offset_nm[1], sz.slm);
 
-    const ez = layout.entanglement_zone;
+    const ez = layout.compute_zone;
     var compute_rect = slmZoneRect(ez.offset_nm[0], ez.offset_nm[1], ez.slms[0]);
     for (ez.slms[1..]) |slm| {
         const r = slmZoneRect(ez.offset_nm[0], ez.offset_nm[1], slm);

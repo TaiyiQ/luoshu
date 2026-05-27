@@ -9,7 +9,7 @@ version = "0.1"
 
 # ── Single AOD array ───────────────────────────────────────────
 # One AOD is sufficient for MVP — add aod_id = 1 later for
-# parallel shuttling across multiple entanglement zones.
+# parallel shuttling across multiple compute zones.
 [aod]
 aod_id = 0
 min_sep_um = 4.0 # minimum row-to-row and col-to-col separation
@@ -31,11 +31,11 @@ num_col = 10
 sep_um = [3.0, 3.0]    # trap spacing (x, y)
 offset_um = [0.0, 0.0] # relative to storage_zone.offset_um
 
-# ── Entanglement zone ──────────────────────────────────────────
+# ── Compute zone ───────────────────────────────────────────────
 # Where Rydberg laser fires. Atoms must be shuttled here for 2Q gates.
 # Two SLM arrays define Rydberg sites (pairs of traps separated by
 # dRyd). Engineer sets these from laser spot size measurements.
-[entanglement_zone]
+[compute_zone]
 zone_id = 1
 offset_um = [0.0, 307.0]
 dimension_um = [240.0, 70.0]
@@ -46,14 +46,14 @@ dw_um = 10.0                 # site-to-site separation (must exceed blockade rad
 # paired along x, separated by dRyd = slm_b.offset - slm_a.offset.
 # dRyd = 2um here (37 - 35 = 2).
 # Site-to-site spacing dω = 10um (sep_um values below).
-[[entanglement_zone.slms]]
+[[compute_zone.slms]]
 slm_id = 1
 num_row = 7
 num_col = 20
 sep_um = [12.0, 10.0]     # [dr_um + dw_um, dw_um]
 offset_um = [35.0, 307.0]
 
-[[entanglement_zone.slms]]
+[[compute_zone.slms]]
 slm_id = 2
 num_row = 7
 num_col = 20

@@ -346,7 +346,12 @@ fn topoSort(allocator: std.mem.Allocator, g: core.Graph, aod_set: []const bool) 
     return order.toOwnedSlice(allocator);
 }
 
-fn matchAodToSlm(allocator: std.mem.Allocator, g: *const core.Graph, aod: Aod, t: i32) ![]?usize {
+fn matchAodToSlm(
+    allocator: std.mem.Allocator,
+    g: *const core.Graph,
+    aod: Aod,
+    t: i32,
+) ![]?usize {
     if (aod.nodes.items.len == 0) return try allocator.alloc(?usize, 0);
 
     const match = try allocator.alloc(?usize, aod.nodes.items.len);
@@ -366,7 +371,12 @@ fn matchAodToSlm(allocator: std.mem.Allocator, g: *const core.Graph, aod: Aod, t
     return match;
 }
 
-fn logicalSchedule(allocator: std.mem.Allocator, g: *core.Graph, aod: Aod, slm_slots: []const ?usize) !schedule.Schedule {
+fn logicalSchedule(
+    allocator: std.mem.Allocator,
+    g: *core.Graph,
+    aod: Aod,
+    slm_slots: []const ?usize,
+) !schedule.Logical {
     var slm_pos = std.AutoHashMap(usize, usize).init(allocator);
     defer slm_pos.deinit();
     for (slm_slots, 0..) |v, t| {
@@ -406,6 +416,7 @@ fn logicalSchedule(allocator: std.mem.Allocator, g: *core.Graph, aod: Aod, slm_s
                 }
             }
         }
+
         // Phase 2: place resting AODs.
         // nodes[0]=rightmost; nodes[i] must land strictly LEFT of nodes[i-1].
         for (aod.nodes.items, 0..) |v, i| {
@@ -448,7 +459,7 @@ fn logicalSchedule(allocator: std.mem.Allocator, g: *core.Graph, aod: Aod, slm_s
         filled += 1; // ← only incremented after successful assignment
     }
 
-    return schedule.Schedule{
+    return schedule.Logical{
         .slm_slots = slm_slots,
         .aod_slots_per_color = aod_slots_per_color,
         .max_color = max_c,
@@ -635,7 +646,7 @@ fn computeRestingPositions(allocator: std.mem.Allocator, g: *core.Graph, aod: Ao
     return positions.toOwnedSlice(allocator);
 }
 
-pub fn compile(allocator: std.mem.Allocator, g: *core.Graph) !schedule.Schedule {
+pub fn compile(allocator: std.mem.Allocator, g: *core.Graph) !schedule.Logical {
     // 1. AOD set.
     var aod = try maxIndependentSet(allocator, g.*);
     defer aod.deinit(allocator);

@@ -18,7 +18,7 @@ pub const RawStorageZone = struct {
     slm: RawSlm,
 };
 
-pub const RawEntanglementZone = struct {
+pub const RawComputeZone = struct {
     zone_id: u32,
     offset_um: [2]f64,
     dimension_um: [2]f64,
@@ -52,7 +52,7 @@ pub const RawArchConfig = struct {
     platform: Platform,
     aod: RawAod,
     storage_zone: RawStorageZone,
-    entanglement_zone: RawEntanglementZone,
+    compute_zone: RawComputeZone,
     readout_zone: RawReadoutZone,
     constraints: RawConstraints,
 };
@@ -86,7 +86,7 @@ pub const StorageZone = struct {
     slm: Slm,
 };
 
-pub const EntanglementZone = struct {
+pub const ComputeZone = struct {
     zone_id: u32,
     offset_nm: [2]i32,
     dimension_nm: [2]u32,
@@ -113,7 +113,7 @@ pub const ArchConfig = struct {
     platform: Platform,
     aod: HardwareAod,
     storage_zone: StorageZone,
-    entanglement_zone: EntanglementZone,
+    compute_zone: ComputeZone,
     readout_zone: ReadoutZone,
     constraints: Constraints,
 
@@ -137,13 +137,13 @@ pub const ArchConfig = struct {
             s.storage_zone.slm.sep_nm[0],
             s.storage_zone.slm.sep_nm[1],
         });
-        std.debug.print("  Entanglement: zone={d}  dr={d}nm  dw={d}nm  slms={d}\n", .{
-            s.entanglement_zone.zone_id,
-            s.entanglement_zone.dr_nm,
-            s.entanglement_zone.dw_nm,
-            s.entanglement_zone.slms.len,
+        std.debug.print("  Compute zone: zone={d}  dr={d}nm  dw={d}nm  slms={d}\n", .{
+            s.compute_zone.zone_id,
+            s.compute_zone.dr_nm,
+            s.compute_zone.dw_nm,
+            s.compute_zone.slms.len,
         });
-        for (s.entanglement_zone.slms) |slm| {
+        for (s.compute_zone.slms) |slm| {
             std.debug.print("    slm={d}  {d}x{d}  offset=({d},{d})nm\n", .{
                 slm.slm_id,       slm.num_row,      slm.num_col,
                 slm.offset_nm[0], slm.offset_nm[1],
@@ -187,8 +187,8 @@ fn convertSlm(raw: RawSlm) Slm {
 }
 
 pub fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
-    const slms = try alloc.alloc(Slm, raw.entanglement_zone.slms.len);
-    for (raw.entanglement_zone.slms, 0..) |raw_slm, i| {
+    const slms = try alloc.alloc(Slm, raw.compute_zone.slms.len);
+    for (raw.compute_zone.slms, 0..) |raw_slm, i| {
         slms[i] = convertSlm(raw_slm);
     }
 
@@ -206,12 +206,12 @@ pub fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
             .dimension_nm = .{ umToNm(raw.storage_zone.dimension_um[0]), umToNm(raw.storage_zone.dimension_um[1]) },
             .slm = convertSlm(raw.storage_zone.slm),
         },
-        .entanglement_zone = .{
-            .zone_id = raw.entanglement_zone.zone_id,
-            .offset_nm = .{ umToNmSigned(raw.entanglement_zone.offset_um[0]), umToNmSigned(raw.entanglement_zone.offset_um[1]) },
-            .dimension_nm = .{ umToNm(raw.entanglement_zone.dimension_um[0]), umToNm(raw.entanglement_zone.dimension_um[1]) },
-            .dr_nm = umToNm(raw.entanglement_zone.dr_um),
-            .dw_nm = umToNm(raw.entanglement_zone.dw_um),
+        .compute_zone = .{
+            .zone_id = raw.compute_zone.zone_id,
+            .offset_nm = .{ umToNmSigned(raw.compute_zone.offset_um[0]), umToNmSigned(raw.compute_zone.offset_um[1]) },
+            .dimension_nm = .{ umToNm(raw.compute_zone.dimension_um[0]), umToNm(raw.compute_zone.dimension_um[1]) },
+            .dr_nm = umToNm(raw.compute_zone.dr_um),
+            .dw_nm = umToNm(raw.compute_zone.dw_um),
             .slms = slms,
         },
         .readout_zone = .{
