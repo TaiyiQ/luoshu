@@ -117,6 +117,12 @@ pub const ArchConfig = struct {
     readout_zone: ReadoutZone,
     constraints: Constraints,
 
+    pub fn deinit(self: ArchConfig, allocator: std.mem.Allocator) void {
+        allocator.free(self.platform.name);
+        allocator.free(self.platform.version);
+        allocator.free(self.compute_zone.slms);
+    }
+
     pub fn print(s: ArchConfig) void {
         std.debug.print(">> ArchConfig\n", .{});
         std.debug.print("  Platform:     {s} v{s}\n", .{
@@ -187,13 +193,17 @@ fn convertSlm(raw: RawSlm) Slm {
 }
 
 pub fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
+    const name = try alloc.dupe(u8, raw.platform.name);
+    errdefer alloc.free(name);
+    const version = try alloc.dupe(u8, raw.platform.version);
+    errdefer alloc.free(version);
     const slms = try alloc.alloc(Slm, raw.compute_zone.slms.len);
     for (raw.compute_zone.slms, 0..) |raw_slm, i| {
         slms[i] = convertSlm(raw_slm);
     }
 
     return .{
-        .platform = raw.platform,
+        .platform = .{ .name = name, .version = version },
         .aod = .{
             .aod_id = raw.aod.aod_id,
             .min_sep_nm = umToNm(raw.aod.min_sep_um),

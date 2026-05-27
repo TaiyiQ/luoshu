@@ -395,11 +395,13 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: 
         t_aod_base,
     );
 
+    const slots = try allSlmSlots(alloc, layout);
+
     return .{
         .arena = arena,
         .ops = ops.items,
         .placement = initial_placement,
-        .slots = try allSlmSlots(alloc, layout),
+        .slots = slots,
     };
 }
 

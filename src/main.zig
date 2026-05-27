@@ -7,25 +7,18 @@ const schedule = @import("schedule");
 const viz = @import("viz");
 
 pub fn main(init: std.process.Init) !void {
-    var gpa = std.heap.DebugAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
-
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-    const arenaAlloc = arena.allocator();
-
-    var parser = toml.Parser(arch.RawArchConfig).init(arenaAlloc);
+    var parser = toml.Parser(arch.RawArchConfig).init(init.gpa);
     defer parser.deinit();
 
     var raw = try parser.parseFile(init.io, "./example/arch.toml");
     defer raw.deinit();
 
-    const cfg = try arch.convertConfig(raw.value, arenaAlloc);
-    cfg.print();
+    const cfg = try arch.convertConfig(raw.value, init.gpa);
+    defer cfg.deinit(init.gpa);
+    //cfg.print();
 
     // MVP
-    var g = try core.Graph.init(alloc, 7, false);
+    var g = try core.Graph.init(init.gpa, 7, false);
     defer g.deinit();
     try g.addEdge(0, 1);
     try g.addEdge(0, 5);
@@ -86,16 +79,16 @@ pub fn main(init: std.process.Init) !void {
     //    try g.addEdge(2, 6);
     //    try g.addEdge(3, 7);
 
-    var logical = try route.compile(alloc, &g);
+    var logical = try route.compile(init.gpa, &g);
     defer logical.deinit();
     //try logical.writeToFile(alloc, init.io, "./zig-out/logical.json");
-    logical.print();
+    //logical.print();
 
-    var physical = try schedule.physical(init.arena.allocator(), cfg, logical);
+    var physical = try schedule.physical(init.gpa, cfg, logical);
     defer physical.deinit();
     //try physical.writeToFile(alloc, init.io, "./zig-out/physical.json");
 
-    try viz.simulate(alloc, cfg, physical);
+    try viz.simulate(init.gpa, cfg, physical);
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }
