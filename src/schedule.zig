@@ -42,7 +42,7 @@ pub const Physical = struct {
     arena: std.heap.ArenaAllocator,
     ops: []const Op,
     placement: []Point, // Initial storage-zone position of each qubit (index = qubit id).
-    slots: []const Point, // SLM trap sites in the compute zone.
+    slots: []const Point, // All SLM trap sites across storage and compute zones.
 
     pub fn deinit(s: *Physical) void {
         s.arena.deinit();
@@ -139,9 +139,9 @@ fn zoneName(z: Zone) []const u8 {
     };
 }
 
-// Enumerate every SLM trap site in the compute zone. These are drawn
-// as background indicators in the slideshow (grey ring = empty, green = occupied).
-fn computeSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const Point {
+// Enumerate every SLM trap site across storage and compute zones. These are drawn
+// as background indicators in the visualization.
+fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const Point {
     var slots: std.ArrayList(Point) = .empty;
 
     {
@@ -399,7 +399,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: 
         .arena = arena,
         .ops = ops.items,
         .placement = initial_placement,
-        .slots = try computeSlots(alloc, layout),
+        .slots = try allSlmSlots(alloc, layout),
     };
 }
 
