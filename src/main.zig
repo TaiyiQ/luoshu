@@ -92,12 +92,8 @@ pub fn main(init: std.process.Init) !void {
 
     var physical = try schedule.physicalSchedule(init.arena.allocator(), cfg, logical);
     defer physical.deinit();
-    try viz.showSlideshow(alloc, cfg, physical);
-    //try physical.dumpSlideshow(alloc, init.io, "./zig-out/slideshow");
-    //    try physical.dumpSvg(alloc, init.io, "./zig-out/placement.svg");
-
-    //    const io = init.io;
-    //    try schedule.writeToFile(alloc, io, &s, "./testdata/test.json");
+    try physical.writeToFile(alloc, init.io, "./zig-out/schedule.json");
+    //try viz.showSlideshow(alloc, cfg, physical);
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }

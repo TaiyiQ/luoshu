@@ -71,8 +71,8 @@ dimension_um = [240.0, 30.0]
 # ── Physical constraints ───────────────────────────────────────
 # Compiler uses these to validate shuttles and estimate timing.
 [constraints]
-db_um = 10.0 # Rydberg interaction range (blockage radius)
-dz_um = 10.0 # min gap between zones (avoid stray excitation)
+db_um = 3.0 # Rydberg interaction range (blockage radius)
+dz_um = 3.0 # min gap between zones (avoid stray excitation)
 
 # Gate and readout fidelity
 one_qubit_gate_fidelity = 0.999

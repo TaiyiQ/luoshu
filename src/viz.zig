@@ -171,19 +171,20 @@ fn drawArrivalRipple(cam: Camera, pos: Point, settle_t: f32, fill: rl.Color) voi
     rl.drawCircleLinesV(screen, r + 1.5, c);
 }
 
-fn drawEntanglementLines(cam: Camera, positions: []const Point, active: []const bool, time: f32, color: rl.Color) void {
-    const pulse = 0.5 + 0.5 * @sin(time * std.math.pi * 3.0);
-    const alpha: u8 = @intFromFloat(25.0 + pulse * 95.0);
-    const thickness: f32 = 0.5 + pulse * 1.5;
-    for (0..positions.len) |i| {
-        if (i >= active.len or !active[i]) continue;
-        const s1 = cam.worldToScreen(toVec(positions[i]));
-        for (i + 1..positions.len) |j| {
-            if (j >= active.len or !active[j]) continue;
-            rl.drawLineEx(s1, cam.worldToScreen(toVec(positions[j])), thickness,
-                rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = alpha });
-        }
-    }
+fn drawPairHalo(cam: Camera, a: Point, b: Point, color: rl.Color) void {
+    const sa = cam.worldToScreen(toVec(a));
+    const sb = cam.worldToScreen(toVec(b));
+    const base_r = 600.0 * cam.zoom;
+    const cx = (sa.x + sb.x) / 2.0;
+    const cy = (sa.y + sb.y) / 2.0;
+    const dx = sb.x - sa.x;
+    const dy = sb.y - sa.y;
+    const r = @sqrt(dx * dx + dy * dy) / 2.0 + base_r * 1.8;
+    const center = rl.Vector2{ .x = cx, .y = cy };
+    rl.drawCircleV(center, r, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 12 });
+    rl.drawCircleLinesV(center, r, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 90 });
+    rl.drawCircleLinesV(center, r + 2.0, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 40 });
+    rl.drawCircleLinesV(center, r + 4.0, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 15 });
 }
 
 fn drawGatePulse(cam: Camera, pos: Point, time: f32, color: rl.Color) void {
@@ -313,10 +314,22 @@ fn drawPanel(
     num_qubits: usize,
     positions: []const Point,
     summary: Summary,
-) void {
+    scroll: f32,
+) f32 {
     const screen_h: f32 = @floatFromInt(rl.getScreenHeight());
     const cw: f32 = PANEL_W - 2 * PAD;
     const accent = opAccent(op);
+
+    const ctrl = [_][2][:0]const u8{
+        .{ "j / k", "step" },
+        .{ "space", "play / pause" },
+        .{ "r", "reset" },
+        .{ "scroll", "zoom / scroll" },
+        .{ "drag", "pan" },
+        .{ "h", "hide" },
+    };
+    const ctrl_block_h: f32 = SEP_ADV + LABEL_ADV + @as(f32, @floatFromInt(ctrl.len)) * CTRL_ROW_H;
+    const avail_h: f32 = screen_h - ctrl_block_h;
 
     rl.drawRectangle(0, 0, @intFromFloat(PANEL_W), @intFromFloat(screen_h), palette.panel_bg);
     rl.drawLineEx(.{ .x = PANEL_W, .y = 0 }, .{ .x = PANEL_W, .y = screen_h }, 1.0, palette.divider);
@@ -684,84 +697,67 @@ fn drawPanel(
     }
     y += PAD;
 
-    // ── Qubit roster ──────────────────────────────────────────────
+    // ── Qubit roster (scrollable) ─────────────────────────────────
     sep(y);
     y += SEP_ADV;
     sectionLabel(font, "QUBITS", y);
     y += LABEL_ADV;
+    var max_qubit_scroll: f32 = 0;
     {
         const per_row: usize = @intFromFloat(cw / (QUBIT_SQ + QUBIT_GAP));
-        for (0..num_qubits) |q| {
-            const col = q % per_row;
-            const row_n = q / per_row;
-            const qx = PAD + @as(f32, @floatFromInt(col)) * (QUBIT_SQ + QUBIT_GAP);
-            const qy = y + @as(f32, @floatFromInt(row_n)) * (QUBIT_SQ + QUBIT_GAP);
-            const rec = rl.Rectangle{ .x = qx, .y = qy, .width = QUBIT_SQ, .height = QUBIT_SQ };
-            const is_active = q < active.len and active[q];
-            const qfill = if (is_active) rl.Color{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 160 } else rl.Color{
-                .r = 56,
-                .g = 60,
-                .b = 78,
-                .a = 200,
-            };
-            rl.drawRectangleRounded(rec, 0.3, 4, qfill);
-            rl.drawRectangleRoundedLinesEx(
-                rec,
-                0.3,
-                4,
-                1.0,
-                if (is_active) accent else palette.divider,
-            );
-            var qb: [4]u8 = undefined;
-            const ql = std.fmt.bufPrintZ(&qb, "{d}", .{q}) catch "?";
-            const qtw = rl.measureTextEx(font, ql, FS_QUBIT, 0.5).x;
-            rl.drawTextEx(
-                font,
-                ql,
-                .{ .x = qx + (QUBIT_SQ - qtw) / 2, .y = qy + (QUBIT_SQ - FS_QUBIT) / 2 },
-                FS_QUBIT,
-                0.5,
-                if (is_active) palette.bg else palette.text_sub,
-            );
+        var num_active: usize = 0;
+        for (0..num_qubits) |q| if (q < active.len and active[q]) {
+            num_active += 1;
+        };
+        const num_rows: usize = if (num_active == 0) 0 else (num_active - 1) / per_row + 1;
+        const qubit_content_h: f32 = @as(f32, @floatFromInt(num_rows)) * (QUBIT_SQ + QUBIT_GAP);
+        const qubit_box_h: f32 = avail_h - y;
+
+        if (qubit_box_h > 0) {
+            rl.beginScissorMode(0, @intFromFloat(y), @intFromFloat(PANEL_W), @intFromFloat(qubit_box_h));
+            var slot: usize = 0;
+            for (0..num_qubits) |q| {
+                if (q >= active.len or !active[q]) continue;
+                const col = slot % per_row;
+                const row_n = slot / per_row;
+                const qx = PAD + @as(f32, @floatFromInt(col)) * (QUBIT_SQ + QUBIT_GAP);
+                const qy = y + @as(f32, @floatFromInt(row_n)) * (QUBIT_SQ + QUBIT_GAP) - scroll;
+                const rec = rl.Rectangle{ .x = qx, .y = qy, .width = QUBIT_SQ, .height = QUBIT_SQ };
+                rl.drawRectangleRounded(rec, 0.3, 4, rl.Color{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 160 });
+                rl.drawRectangleRoundedLinesEx(rec, 0.3, 4, 1.0, accent);
+                var qb: [4]u8 = undefined;
+                const ql = std.fmt.bufPrintZ(&qb, "{d}", .{q}) catch "?";
+                const qtw = rl.measureTextEx(font, ql, FS_QUBIT, 0.5).x;
+                rl.drawTextEx(font, ql, .{ .x = qx + (QUBIT_SQ - qtw) / 2, .y = qy + (QUBIT_SQ - FS_QUBIT) / 2 }, FS_QUBIT, 0.5, palette.bg);
+                slot += 1;
+            }
+            rl.endScissorMode();
+
+            if (qubit_content_h > qubit_box_h) {
+                const sb_w: f32 = 5;
+                const sb_x: f32 = PANEL_W - sb_w - 3;
+                const thumb_h: f32 = @max(24, qubit_box_h * qubit_box_h / qubit_content_h);
+                const thumb_y: f32 = y + (scroll / (qubit_content_h - qubit_box_h)) * (qubit_box_h - thumb_h);
+                rl.drawRectangleRounded(.{ .x = sb_x, .y = y, .width = sb_w, .height = qubit_box_h }, 1.0, 4, rl.Color{ .r = 65, .g = 69, .b = 89, .a = 100 });
+                rl.drawRectangleRounded(.{ .x = sb_x, .y = thumb_y, .width = sb_w, .height = thumb_h }, 1.0, 4, rl.Color{ .r = 115, .g = 121, .b = 148, .a = 210 });
+            }
+
+            max_qubit_scroll = @max(0, qubit_content_h - qubit_box_h);
         }
-        const num_rows: usize = if (num_qubits == 0) 0 else (num_qubits - 1) / per_row + 1;
-        y += @as(f32, @floatFromInt(num_rows)) * (QUBIT_SQ + QUBIT_GAP) + PAD;
     }
 
-    // ── Controls (pinned to bottom) ───────────────────────────────
-    const ctrl = [_][2][:0]const u8{
-        .{ "j / k", "step" },
-        .{ "space", "play / pause" },
-        .{ "r", "reset" },
-        .{ "scroll", "zoom" },
-        .{ "drag", "pan" },
-        .{ "h", "hide" },
-    };
-    const ctrl_block_h: f32 = SEP_ADV + LABEL_ADV + @as(f32, @floatFromInt(ctrl.len)) * CTRL_ROW_H;
-    var cy: f32 = screen_h - ctrl_block_h;
-    sep(cy);
-    cy += SEP_ADV;
+    // ── Controls (fixed at bottom, never scrolls) ─────────────────
+    sep(avail_h);
+    var cy: f32 = avail_h + SEP_ADV;
     sectionLabel(font, "CONTROLS", cy);
     cy += LABEL_ADV;
     for (ctrl) |row| {
-        rl.drawTextEx(
-            font,
-            row[0],
-            .{ .x = PAD, .y = cy },
-            FS_CTRL,
-            0.8,
-            palette.text_sub,
-        );
-        rl.drawTextEx(
-            font,
-            row[1],
-            .{ .x = KV_VX, .y = cy },
-            FS_CTRL,
-            0.8,
-            palette.text,
-        );
+        rl.drawTextEx(font, row[0], .{ .x = PAD, .y = cy }, FS_CTRL, 0.8, palette.text_sub);
+        rl.drawTextEx(font, row[1], .{ .x = KV_VX, .y = cy }, FS_CTRL, 0.8, palette.text);
         cy += CTRL_ROW_H;
     }
+
+    return max_qubit_scroll;
 }
 
 // -----------------------------------------------------------------------
@@ -882,6 +878,8 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
     var timer: f32 = 0.0;
     const step_sec: f32 = 1.5;
     var panel_visible = false;
+    var panel_scroll: f32 = 0;
+    var panel_content_h: f32 = 0;
 
     var active = try allocator.alloc(bool, initial_pos.len);
     defer allocator.free(active);
@@ -925,10 +923,15 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
 
         const wheel = rl.getMouseWheelMove();
         if (wheel != 0) {
-            camera.zoom += wheel * 0.05 * camera.zoom;
-            const mw = camera.screenToWorld(mouse_pos);
-            camera.offset.x = mw.x - mouse_pos.x / camera.zoom;
-            camera.offset.y = mw.y - mouse_pos.y / camera.zoom;
+            if (panel_visible and mouse_pos.x < PANEL_W) {
+                panel_scroll -= wheel * 50.0;
+                panel_scroll = @max(0, @min(panel_scroll, panel_content_h));
+            } else {
+                camera.zoom += wheel * 0.05 * camera.zoom;
+                const mw = camera.screenToWorld(mouse_pos);
+                camera.offset.x = mw.x - mouse_pos.x / camera.zoom;
+                camera.offset.y = mw.y - mouse_pos.y / camera.zoom;
+            }
         }
 
         if (playing) {
@@ -940,6 +943,14 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
         }
 
         const op = s.ops[frame];
+
+        // Throttle to 15 FPS on static frames — saves GPU/CPU when stepping manually.
+        // Panning and playing need full 60 FPS; Raman gate pulse animates continuously.
+        rl.setTargetFPS(if (playing or panning or op.kind == .raman) 60 else 15);
+
+        // ── Draw ───────────────────────────────────────────────────
+        rl.beginDrawing();
+        defer rl.endDrawing();
 
         // Determine active qubits.
         @memset(active, false);
@@ -954,22 +965,26 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
                 active[q] = true;
             },
             .rydberg => {
-                for (frame_positions[frame], 0..) |pos, id| {
-                    if (id >= active.len) break;
-                    if (pos.x >= compute_rect.x0 and pos.x <= compute_rect.x1 and
-                        pos.y >= compute_rect.y0 and pos.y <= compute_rect.y1)
-                        active[id] = true;
-                }
+                //                const db: i64 = layout.constraints.db_nm;
+                //                const db2 = db * db;
+                //                for (frame_positions[frame][0..num_qubits], 0..) |pa, ia| {
+                //                    for (frame_positions[frame][0..num_qubits], 0..) |pb, ib| {
+                //                        if (ib == ia) continue;
+                //                        const dx: i64 = @as(i64, pa.x) - @as(i64, pb.x);
+                //                        const dy: i64 = @as(i64, pa.y) - @as(i64, pb.y);
+                //                        if (dx * dx + dy * dy <= db2) {
+                //                            active[ia] = true;
+                //                            active[ib] = true;
+                //                        }
+                //                    }
+                //                }
             },
         }
 
-        // ── Draw ───────────────────────────────────────────────────
-        rl.beginDrawing();
-        defer rl.endDrawing();
         rl.clearBackground(palette.bg);
 
         drawZone(camera, storage_rect, palette.zone_storage);
-        drawZone(camera, compute_rect, if (op.kind == .rydberg) palette.zone_compute_active else palette.zone_compute);
+        drawZone(camera, compute_rect, palette.zone_compute);
 
         @memcpy(draw_positions, frame_positions[frame]);
 
@@ -1007,29 +1022,36 @@ pub fn showSlideshow(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, 
             }
         }
 
-        const now: f32 = @floatCast(rl.getTime());
-
         if (op.kind == .rydberg) {
-            drawEntanglementLines(camera, draw_positions, active, now, opColors(op).fill);
+            const fill = opColors(op).fill;
+            const db: i64 = layout.constraints.db_nm;
+            const db2 = db * db;
+            for (draw_positions[0..num_qubits], 0..) |pa, ia| {
+                if (!active[ia]) continue;
+                for (draw_positions[0..num_qubits], 0..) |pb, ib| {
+                    if (ib <= ia or !active[ib]) continue;
+                    const dx: i64 = @as(i64, pa.x) - @as(i64, pb.x);
+                    const dy: i64 = @as(i64, pa.y) - @as(i64, pb.y);
+                    if (dx * dx + dy * dy <= db2) drawPairHalo(camera, pa, pb, fill);
+                }
+            }
         }
 
+        const now: f32 = @floatCast(rl.getTime());
         const colors = opColors(op);
         for (draw_positions, 0..) |pos, id| {
             drawQubit(camera, font, pos, id, active[id], colors.fill, colors.stroke);
         }
 
-        switch (op.kind) {
-            .raman, .rydberg => {
-                for (draw_positions, 0..) |pos, id| {
-                    if (id < active.len and active[id])
-                        drawGatePulse(camera, pos, now, colors.stroke);
-                }
-            },
-            else => {},
+        if (op.kind == .raman) {
+            for (draw_positions, 0..) |pos, id| {
+                if (id < active.len and active[id])
+                    drawGatePulse(camera, pos, now, colors.stroke);
+            }
         }
 
         if (panel_visible) {
-            drawPanel(font, op, frame, frame_count, active, num_qubits, frame_positions[frame], summary);
+            panel_content_h = drawPanel(font, op, frame, frame_count, active, num_qubits, frame_positions[frame], summary, panel_scroll);
         } else {
             rl.drawTextEx(font, "h  show panel", .{ .x = 16, .y = 16 }, 13, 0.8, palette.text_sub);
         }

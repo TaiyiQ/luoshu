@@ -47,7 +47,97 @@ pub const PhysicalSchedule = struct {
     pub fn deinit(s: *PhysicalSchedule) void {
         s.arena.deinit();
     }
+
+    pub fn writeToFile(self: *const PhysicalSchedule, allocator: std.mem.Allocator, io: std.Io, filename: []const u8) !void {
+        const json = try self.toJson(allocator);
+        defer allocator.free(json);
+
+        const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
+        defer file.close(io);
+        try file.writePositionalAll(io, json, 0);
+    }
+
+    pub fn toJson(self: *const PhysicalSchedule, allocator: std.mem.Allocator) ![]u8 {
+        var buf: std.Io.Writer.Allocating = .init(allocator);
+        defer buf.deinit();
+        const w = &buf.writer;
+
+        try w.writeAll("{\n");
+        try w.writeAll("  \"version\": \"1.1\",\n");
+        try w.writeAll("  \"platform\": \"taiyi-v1\",\n");
+        try w.print("  \"num_qubits\": {d},\n", .{self.placement.len});
+        try w.writeAll("  \"ops\": [\n");
+
+        for (self.ops, 0..) |op, i| {
+            const last_op = i == self.ops.len - 1;
+            try w.writeAll("    {\n");
+            switch (op.kind) {
+                .raman => |r| {
+                    try w.writeAll("      \"op\": \"raman\",\n");
+                    try w.print("      \"angle\": {d:.4},\n", .{r.angle});
+                    try w.print("      \"phase\": {d:.4},\n", .{r.phase});
+                    try w.print("      \"t\": {d},\n", .{op.t});
+                    try w.writeAll("      \"targets\": [\n");
+                    for (r.targets, 0..) |target, j| {
+                        const last = j == r.targets.len - 1;
+                        try w.print("        {{ \"qubit\": {d}, \"x\": {d}, \"y\": {d} }}", .{ target.qubit, target.pos.x, target.pos.y });
+                        try w.writeAll(if (last) "\n" else ",\n");
+                    }
+                    try w.writeAll("      ]\n");
+                },
+                .move => |m| {
+                    try w.writeAll("      \"op\": \"move\",\n");
+                    try w.print("      \"aod\": {d},\n", .{m.aod});
+                    try w.print("      \"translate\": \"{s}\",\n", .{@tagName(m.translate)});
+                    try w.print("      \"from_zone\": \"{s}\",\n", .{zoneName(m.src_zone)});
+                    try w.print("      \"to_zone\": \"{s}\",\n", .{zoneName(m.dest_zone)});
+                    try w.print("      \"t\": {d},\n", .{op.t});
+                    try w.writeAll("      \"atoms\": [\n");
+                    for (m.atoms, 0..) |atom, j| {
+                        const last = j == m.atoms.len - 1;
+                        try w.writeAll("        {\n");
+                        try w.print("          \"qubit\": {d},\n", .{atom.qubit});
+                        try w.print("          \"from\": {{ \"x\": {d}, \"y\": {d} }},\n", .{ atom.src.x, atom.src.y });
+                        try w.print("          \"to\": {{ \"x\": {d}, \"y\": {d} }}\n", .{ atom.dest.x, atom.dest.y });
+                        try w.writeAll(if (last) "        }\n" else "        },\n");
+                    }
+                    try w.writeAll("      ]\n");
+                },
+                .rydberg => |r| {
+                    try w.writeAll("      \"op\": \"rydberg\",\n");
+                    try w.print("      \"zone\": \"{s}\",\n", .{zoneName(r.zone)});
+                    try w.print("      \"t\": {d}\n", .{op.t});
+                },
+                .measure => |m| {
+                    try w.writeAll("      \"op\": \"measure\",\n");
+                    try w.print("      \"zone\": \"{s}\",\n", .{zoneName(m.zone)});
+                    try w.writeAll("      \"basis\": \"Z\",\n");
+                    try w.print("      \"t\": {d},\n", .{op.t});
+                    try w.writeAll("      \"qubits\": [");
+                    for (m.qubits, 0..) |q, j| {
+                        if (j > 0) try w.writeAll(", ");
+                        try w.print("{d}", .{q});
+                    }
+                    try w.writeAll("]\n");
+                },
+            }
+            try w.writeAll(if (last_op) "    }\n" else "    },\n");
+        }
+
+        try w.writeAll("  ]\n");
+        try w.writeAll("}");
+
+        return allocator.dupe(u8, buf.written());
+    }
 };
+
+fn zoneName(z: Zone) []const u8 {
+    return switch (z) {
+        .storage => "storage",
+        .compute => "compute",
+        .readout => "readout_zone",
+    };
+}
 
 // Enumerate every SLM trap site in the entanglement zone. These are drawn
 // as background indicators in the slideshow (grey ring = empty, green = occupied).
@@ -130,6 +220,27 @@ fn moveSlmQubits(
     try ops.append(allocator, op);
 }
 
+fn addRamanOp(
+    allocator: std.mem.Allocator,
+    placement: []const Point,
+    angle: f32,
+    phase: f32,
+    t: u32,
+    ops: *std.ArrayList(Op),
+) !void {
+    var targets: std.ArrayList(RamanTarget) = .empty;
+    for (placement, 0..) |pos, id| {
+        try targets.append(allocator, .{
+            .qubit = @intCast(id),
+            .pos = pos,
+        });
+    }
+    try ops.append(allocator, Op{
+        .t = t,
+        .kind = .{ .raman = .{ .angle = angle, .phase = phase, .targets = targets.items } },
+    });
+}
+
 fn moveAodQubits(
     allocator: std.mem.Allocator,
     cz: arch.EntanglementZone,
@@ -175,6 +286,16 @@ fn moveAodQubits(
         } };
 
         try ops.append(allocator, op);
+        try ops.append(allocator, Op{
+            .t = @as(u32, @intCast(t)) + 1,
+            .kind = .{ .rydberg = .{ .zone = Zone.compute } },
+        });
+
+        //        // Raman single-qubit layer after each entangling step.
+        //        const pi = std.math.pi;
+        //        const angle: f32 = if (t % 2 == 0) pi else pi / 2.0;
+        //        const phase: f32 = if (t % 2 == 0) 0.0 else pi / 4.0;
+        //        try addRamanOp(allocator, placement.*, angle, phase, @as(u32, @intCast(t)) + 1, ops);
     }
 }
 
@@ -252,6 +373,9 @@ pub fn physicalSchedule(allocator: std.mem.Allocator, layout: arch.ArchConfig, l
         &placement,
         &ops,
     );
+
+    // Initial single-qubit preparation layer (X rotation on all qubits).
+    //try addRamanOp(alloc, placement, std.math.pi, 0.0, 0, &ops);
 
     try moveAodQubits(
         alloc,
