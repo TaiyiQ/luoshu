@@ -36,6 +36,10 @@
             .url = "git+https://github.com/sam701/zig-toml#24e0deeceaad1b7f1b12027ebae1c65ff1d86e33",
             .hash = "toml-0.3.0-bV14BVqIAQANb68hDuVPZ72hrcIhT-fv_fcIbetQIAyg",
         },
+        .raylib_zig = .{
+            .url = "git+https://github.com/raylib-zig/raylib-zig?ref=devel#97be2c7ae646a2f09856604b138c427c0af1b952",
+            .hash = "raylib_zig-6.0.0-KE8REDJ4BQBu7lKwYNt6R4j5ywPeS37zqW6zrtjCcRwH",
+        },
     },
     .paths = .{
         "build.zig",

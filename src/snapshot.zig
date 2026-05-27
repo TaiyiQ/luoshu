@@ -35,7 +35,7 @@ pub fn scheduleToJson(allocator: std.mem.Allocator, schedule: *const Schedule) !
     }
     try w.writeAll("  ],\n");
 
-    try w.print("  \"max_color\": {d}\n", .{schedule.max_color});
+    try w.print("  \"max_color\": {d}\n", .{@as(i32, @intCast(schedule.aod_slots_per_color.len)) - 1});
     try w.writeAll("}");
 
     return allocator.dupe(u8, buf.written());

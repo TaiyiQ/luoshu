@@ -17,7 +17,7 @@ max_num_row = 7  # physical limit of your AOD row component
 max_num_col = 20 # physical limit of your AOD column component
 
 # ── Storage zone ───────────────────────────────────────────────
-# One rectangular SLM grid where idle qubits live
+# One rectangular SLM grid where idle qubits live.
 # Rydberg laser does NOT illuminate this region.
 [storage_zone]
 zone_id = 0
@@ -27,7 +27,7 @@ dimension_um = [300.0, 300.0] # width x height: num_col * sep_um
 [storage_zone.slm]
 slm_id = 0
 num_row = 10
-num_col = 30
+num_col = 10
 sep_um = [3.0, 3.0]    # trap spacing (x, y)
 offset_um = [0.0, 0.0] # relative to storage_zone.offset_um
 
@@ -37,7 +37,7 @@ offset_um = [0.0, 0.0] # relative to storage_zone.offset_um
 # dRyd). Engineer sets these from laser spot size measurements.
 [compute_zone]
 zone_id = 1
-offset_um = [0.0, 50.0]
+offset_um = [0.0, 307.0]
 dimension_um = [240.0, 70.0]
 dr_um = 2.0                  # trap separation within a Rydberg site (laser spot size)
 dw_um = 10.0                 # site-to-site separation (must exceed blockade radius)
@@ -49,16 +49,16 @@ dw_um = 10.0                 # site-to-site separation (must exceed blockade rad
 [[compute_zone.slms]]
 slm_id = 1
 num_row = 7
-num_col = 10
-sep_um = [10.0, 12.0]   # [dr_um + dw_um, dw_um]
-offset_um = [0.0, 0.0] # relative to entangle_zone.offset_um
+num_col = 20
+sep_um = [12.0, 10.0]     # [dr_um + dw_um, dw_um]
+offset_um = [35.0, 307.0]
 
 [[compute_zone.slms]]
 slm_id = 2
 num_row = 7
-num_col = 10
-sep_um = [10.0, 12.0]
-offset_um = [0.0, 2.0]
+num_col = 20
+sep_um = [12.0, 10.0]
+offset_um = [37.0, 307.0]
 
 # ── Readout zone ───────────────────────────────────────────────
 # Where atoms are imaged. No SLM traps needed for MVP —
@@ -71,8 +71,8 @@ dimension_um = [240.0, 30.0]
 # ── Physical constraints ───────────────────────────────────────
 # Compiler uses these to validate shuttles and estimate timing.
 [constraints]
-db_um = 3.0 # Rydberg interaction range (blockage radius)
-dz_um = 3.0 # min gap between zones (avoid stray excitation)
+db_um = 10.0 # Rydberg interaction range (blockage radius)
+dz_um = 10.0 # min gap between zones (avoid stray excitation)
 
 # Gate and readout fidelity
 one_qubit_gate_fidelity = 0.999

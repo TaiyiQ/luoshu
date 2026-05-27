@@ -27,6 +27,7 @@ pub fn build(b: *std.Build) void {
     const schedule_mod = b.addModule("schedule", .{
         .root_source_file = b.path("src/schedule.zig"),
     });
+    schedule_mod.addImport("arch", arch_mod);
     exe.root_module.addImport("schedule", schedule_mod);
 
     const route_mod = b.addModule("route", .{
@@ -35,6 +36,13 @@ pub fn build(b: *std.Build) void {
     route_mod.addImport("graph", graph_mod);
     route_mod.addImport("schedule", schedule_mod);
     exe.root_module.addImport("route", route_mod);
+
+    const viz_mod = b.addModule("viz", .{
+        .root_source_file = b.path("src/viz.zig"),
+    });
+    viz_mod.addImport("schedule", schedule_mod);
+    viz_mod.addImport("arch", arch_mod);
+    exe.root_module.addImport("viz", viz_mod);
 
     const debug_mod = b.addModule("debug", .{
         .root_source_file = b.path("src/debug.zig"),
@@ -47,6 +55,14 @@ pub fn build(b: *std.Build) void {
 
     const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
     exe.root_module.addImport("toml", toml_dep.module("toml"));
+
+    const raylib_dep = b.dependency("raylib_zig", .{
+        .target = target,
+        .optimize = optimize,
+        .linux_display_backend = .Wayland,
+    });
+    exe.root_module.linkLibrary(raylib_dep.artifact("raylib"));
+    viz_mod.addImport("raylib", raylib_dep.module("raylib"));
 
     b.installArtifact(exe); // enables `zig build`
 

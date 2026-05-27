@@ -2,7 +2,7 @@ const std = @import("std");
 
 const MIN: i32 = -1;
 
-pub const EdgeNode = struct {
+const EdgeNode = struct {
     y: usize,
     color: ?i32,
     next: ?*EdgeNode,
