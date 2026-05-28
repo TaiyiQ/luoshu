@@ -19,28 +19,55 @@ fn circuitGraph(allocator: std.mem.Allocator, c: circuit.Circuit) !core.Graph {
     return g;
 }
 
-pub fn main(init: std.process.Init) !void {
-    var parser = toml.Parser(arch.RawArchConfig).init(init.gpa);
+fn loadArch(allocator: std.mem.Allocator, io: std.Io) !arch.ArchConfig {
+    var parser = toml.Parser(arch.RawArchConfig).init(allocator);
     defer parser.deinit();
 
-    var raw = try parser.parseFile(init.io, "./example/arch.toml");
+    var raw = try parser.parseFile(io, "./example/arch.toml");
     defer raw.deinit();
 
-    const cfg = try arch.convertConfig(raw.value, init.gpa);
+    return try arch.convertConfig(raw.value, allocator);
+}
+
+fn loadCircuit(allocator: std.mem.Allocator, io: std.Io) !circuit.Circuit {
+    const cwd = std.Io.Dir.cwd();
+    const file = try cwd.openFile(io, "./example/mvp.qasm", .{ .mode = .read_only });
+    defer file.close(io);
+
+    var read_buf: [4096]u8 = undefined;
+    var fr = file.reader(io, &read_buf);
+    const reader = &fr.interface;
+
+    // Reads everything to EOF into allocator-owned memory. No truncation,
+    // no "must fill exactly N bytes" error.
+    const src = try reader.allocRemaining(allocator, .unlimited);
+    defer allocator.free(src);
+
+    var parser = circuit.QasmParser.init(allocator, src);
+    const circ = try parser.parse();
+
+    return circ;
+}
+
+pub fn main(init: std.process.Init) !void {
+    const cfg = try loadArch(init.gpa, init.io);
     defer cfg.deinit(init.gpa);
     //cfg.print();
 
-    var c = circuit.Circuit.init(init.gpa, 7);
+    var c = try loadCircuit(init.gpa, init.io);
     defer c.deinit();
-    try c.cz(0, 1);
-    try c.cz(0, 5);
-    try c.cz(1, 6);
-    try c.cz(5, 6);
-    try c.cz(6, 3);
-    try c.cz(6, 4);
-    try c.cz(3, 4);
-    try c.cz(3, 2);
-    try c.cz(4, 2);
+
+    //    var c = circuit.Circuit.init(init.gpa, 7);
+    //    defer c.deinit();
+    //    try c.cz(0, 1);
+    //    try c.cz(0, 5);
+    //    try c.cz(1, 6);
+    //    try c.cz(5, 6);
+    //    try c.cz(6, 3);
+    //    try c.cz(6, 4);
+    //    try c.cz(3, 4);
+    //    try c.cz(3, 2);
+    //    try c.cz(4, 2);
 
     //    var c = circuit.Circuit.init(init.gpa, 4);
     //    defer c.deinit();
