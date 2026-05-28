@@ -94,7 +94,24 @@ pub const QasmParser = struct {
         return null;
     }
 
+    fn scanPhysicalQubits(self: *QasmParser) void {
+        var i: usize = 0;
+        while (i < self.src.len) {
+            if (self.src[i] == '$') {
+                i += 1;
+                const start = i;
+                while (i < self.src.len and std.ascii.isDigit(self.src[i])) i += 1;
+                if (i > start) {
+                    if (std.fmt.parseInt(usize, self.src[start..i], 10)) |idx| {
+                        if (idx + 1 > self.total_qubits) self.total_qubits = idx + 1;
+                    } else |_| {}
+                }
+            } else i += 1;
+        }
+    }
+
     fn collectDeclarations(self: *QasmParser) !void {
+        self.scanPhysicalQubits();
         while (self.pos < self.src.len) {
             self.skipWsAndComments();
             if (self.pos >= self.src.len) break;
@@ -119,6 +136,10 @@ pub const QasmParser = struct {
 
     fn parseQubitRef(self: *QasmParser) !usize {
         self.skipWs();
+        if (self.pos < self.src.len and self.src[self.pos] == '$') {
+            self.pos += 1;
+            return try self.readUint();
+        }
         const name = self.readIdent();
         try self.consume('[');
         const idx = try self.readUint();
@@ -271,6 +292,16 @@ pub const QasmParser = struct {
                 const q = try self.parseQubitRef();
                 try self.consume(';');
                 try circ.u(q, theta, phi, lambda);
+            } else if (std.mem.eql(u8, word, "r")) {
+                try self.consume('(');
+                const theta = try self.parseExpr();
+                try self.consume(',');
+                const phi = try self.parseExpr();
+                try self.consume(')');
+                const q = try self.parseQubitRef();
+                try self.consume(';');
+                // r(θ,φ) = U(θ, -π/2+φ, π/2-φ)
+                try circ.u(q, theta, -PI / 2.0 + phi, PI / 2.0 - phi);
             } else if (std.mem.eql(u8, word, "cz")) {
                 const control = try self.parseQubitRef();
                 try self.consume(',');
