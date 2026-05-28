@@ -31,7 +31,7 @@ fn loadArch(allocator: std.mem.Allocator, io: std.Io) !arch.ArchConfig {
 
 fn loadCircuit(allocator: std.mem.Allocator, io: std.Io) !circuit.Circuit {
     const cwd = std.Io.Dir.cwd();
-    const file = try cwd.openFile(io, "./example/shor_nativegates_iqm_opt2_18.qasm", .{ .mode = .read_only });
+    const file = try cwd.openFile(io, "./example/graphstate.qasm", .{ .mode = .read_only });
     defer file.close(io);
 
     var read_buf: [4096]u8 = undefined;
@@ -50,9 +50,6 @@ fn loadCircuit(allocator: std.mem.Allocator, io: std.Io) !circuit.Circuit {
 }
 
 pub fn main(init: std.process.Init) !void {
-    const cfg = try loadArch(init.gpa, init.io);
-    defer cfg.deinit(init.gpa);
-
     var c = try loadCircuit(init.gpa, init.io);
     defer c.deinit();
 
@@ -63,6 +60,9 @@ pub fn main(init: std.process.Init) !void {
     defer logical.deinit();
     try logical.writeToFile(init.gpa, init.io, "./zig-out/logical.json");
     logical.print();
+
+    const cfg = try loadArch(init.gpa, init.io);
+    defer cfg.deinit(init.gpa);
 
     var physical = try schedule.physical(init.gpa, cfg, logical);
     defer physical.deinit();

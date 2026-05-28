@@ -314,6 +314,10 @@ pub const QasmParser = struct {
                 const target = try self.parseQubitRef();
                 try self.consume(';');
                 try circ.cx(control, target);
+            } else if (std.mem.eql(u8, word, "sx")) {
+                const q = try self.parseQubitRef();
+                try self.consume(';');
+                try circ.sx(q);
             } else {
                 self.skipToSemicolon();
             }
@@ -435,5 +439,14 @@ pub const Circuit = struct {
         try self.h(target);
         try self.cz(control, target);
         try self.h(target);
+    }
+
+    pub fn sx(self: *Circuit, q: usize) !void {
+        try self.gates.append(self.allocator, .{ .u = .{
+            .qubit = q,
+            .theta = PI / 2.0,
+            .phi = -PI / 2.0,
+            .lambda = PI / 2.0,
+        } });
     }
 };
