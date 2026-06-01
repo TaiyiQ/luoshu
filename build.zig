@@ -42,12 +42,13 @@ pub fn build(b: *std.Build) void {
     route_mod.addImport("schedule", schedule_mod);
     exe.root_module.addImport("route", route_mod);
 
-    const viz_mod = b.addModule("viz", .{
-        .root_source_file = b.path("src/viz.zig"),
+    const draw_mod = b.addModule("draw", .{
+        .root_source_file = b.path("src/draw.zig"),
     });
-    viz_mod.addImport("schedule", schedule_mod);
-    viz_mod.addImport("arch", arch_mod);
-    exe.root_module.addImport("viz", viz_mod);
+    draw_mod.addImport("schedule", schedule_mod);
+    draw_mod.addImport("arch", arch_mod);
+    draw_mod.addImport("circuit", circuit_mod);
+    exe.root_module.addImport("draw", draw_mod);
 
     const debug_mod = b.addModule("debug", .{
         .root_source_file = b.path("src/debug.zig"),
@@ -67,7 +68,7 @@ pub fn build(b: *std.Build) void {
         .linux_display_backend = .Wayland,
     });
     exe.root_module.linkLibrary(raylib_dep.artifact("raylib"));
-    viz_mod.addImport("raylib", raylib_dep.module("raylib"));
+    draw_mod.addImport("raylib", raylib_dep.module("raylib"));
     circuit_mod.addImport("raylib", raylib_dep.module("raylib"));
     circuit_mod.addImport("raygui", raylib_dep.module("raygui"));
 

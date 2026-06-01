@@ -5,7 +5,7 @@ const circuit = @import("circuit");
 const route = @import("route");
 const core = @import("graph");
 const schedule = @import("schedule");
-const viz = @import("viz");
+const draw = @import("draw");
 
 fn circuitGraph(allocator: std.mem.Allocator, c: circuit.Circuit) !core.Graph {
     var g = try core.Graph.init(allocator, c.n, false);
@@ -53,9 +53,9 @@ pub fn main(init: std.process.Init) !void {
     var c = try loadCircuit(init.gpa, init.io);
     defer c.deinit();
 
-    var stages = try circuit.decompose(init.gpa, c);
-    defer circuit.freeStages(init.gpa, &stages);
-    try circuit.draw(c, stages);
+    var pipeline = try circuit.decompose(init.gpa, c);
+    defer pipeline.deinit();
+    try draw.pipeline(c, pipeline);
 
     var g = try circuitGraph(init.gpa, c);
     defer g.deinit();
@@ -72,7 +72,7 @@ pub fn main(init: std.process.Init) !void {
     defer physical.deinit();
     try physical.writeToFile(init.gpa, init.io, "./zig-out/physical.json");
 
-    try viz.simulate(init.gpa, cfg, physical);
+    try draw.physical(init.gpa, cfg, physical);
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }

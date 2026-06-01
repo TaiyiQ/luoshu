@@ -20,7 +20,31 @@ pub const Native = union(enum) {
     cz: Cz,
 };
 
-const Stages = std.ArrayList(std.ArrayList(Native));
+const Stage = struct {
+    gates: std.ArrayList(Native) = .empty,
+
+    fn deinit(self: *Stage, allocator: std.mem.Allocator) void {
+        self.gates.deinit(allocator);
+    }
+};
+
+pub const Pipeline = struct {
+    allocator: std.mem.Allocator,
+    stages: std.ArrayList(Stage) = .empty,
+
+    pub fn deinit(self: *Pipeline) void {
+        for (self.stages.items) |*stage| stage.deinit(self.allocator);
+        self.stages.deinit(self.allocator);
+    }
+
+    // Place a `gate` into stage `n`, creating intervening stages as needed.
+    fn place(self: *Pipeline, n: usize, gate: Native) !void {
+        while (self.stages.items.len <= n) {
+            try self.stages.append(self.allocator, .{});
+        }
+        try self.stages.items[n].gates.append(self.allocator, gate);
+    }
+};
 
 /// Group the circuit's gates into stages, where a "stage" is a set of gates
 /// that can run in parallel (no shared qubits within a stage).
@@ -45,17 +69,14 @@ const Stages = std.ArrayList(std.ArrayList(Native));
 /// later of its two qubits' current stages.
 ///
 /// Caller owns the result and must free it with `freeStages`.
-pub fn decompose(allocator: std.mem.Allocator, c: Circuit) !Stages {
-    var stages: Stages = .empty;
+pub fn decompose(allocator: std.mem.Allocator, c: Circuit) !Pipeline {
+    var pipe: Pipeline = .{ .allocator = allocator };
+    errdefer pipe.deinit();
 
-    // A map that keeps track of what stage a qubit is on.
-    // Every qubit starts on stage 0.
     var map = std.AutoHashMap(usize, usize).init(allocator);
     defer map.deinit();
     for (0..c.n) |q| try map.put(q, 0);
 
-    // U gates are buffered, then flushed into their stages after the CZ pass, so
-    // each stage lists its CZ gates first and its U gates afterwards.
     const Pending = struct { stage: usize, gate: Native };
     var pending: std.ArrayList(Pending) = .empty;
     defer pending.deinit(allocator);
@@ -69,26 +90,14 @@ pub fn decompose(allocator: std.mem.Allocator, c: Circuit) !Stages {
             },
             .cz => |g| {
                 const stage = @max(map.get(g.control).?, map.get(g.target).?);
-                // Grow stages on demand.
-                while (stages.items.len <= stage) try stages.append(allocator, .empty);
-                try stages.items[stage].append(allocator, gate);
+                try pipe.place(stage, gate);
             },
         }
     }
 
-    // Flush U gates after all CZ gates have been placed.
-    for (pending.items) |p| {
-        try stages.items[p.stage].append(allocator, p.gate);
-    }
+    for (pending.items) |p| try pipe.place(p.stage, p.gate);
 
-    return stages;
-}
-
-pub fn freeStages(allocator: std.mem.Allocator, stages: *Stages) void {
-    for (stages.items) |*stage| {
-        stage.deinit(allocator);
-    }
-    stages.deinit(allocator);
+    return pipe;
 }
 
 pub const Circuit = struct {
@@ -526,129 +535,3 @@ pub const QasmParser = struct {
         }
     }
 };
-
-fn wireY(q: usize, dy: f32, y_offset: f32) f32 {
-    const fq: f32 = @floatFromInt(q);
-    return fq * dy + dy + y_offset;
-}
-
-fn drawGate(gate: Native, x: f32, dy: f32, y_offset: f32, font_size: i32) void {
-    const box: f32 = 40;
-    const radius: f32 = 8;
-    switch (gate) {
-        .u => |u| {
-            const qy = wireY(u.qubit, dy, y_offset);
-            rl.drawRectangleV(
-                .{ .x = x - box / 2, .y = qy - box / 2 },
-                .{ .x = box, .y = box },
-                .dark_purple,
-            );
-            rl.drawText("U", @intFromFloat(x - 6), @intFromFloat(qy - 10), font_size, .white);
-        },
-        .cz => |cz| {
-            const cy = wireY(cz.control, dy, y_offset);
-            const ty = wireY(cz.target, dy, y_offset);
-            rl.drawLineV(.{ .x = x, .y = cy }, .{ .x = x, .y = ty }, .dark_gray);
-            rl.drawCircleV(.{ .x = x, .y = cy }, radius, .dark_gray);
-            rl.drawCircleLinesV(.{ .x = x, .y = ty }, radius, .dark_gray);
-            rl.drawLineV(.{ .x = x - radius, .y = ty }, .{ .x = x + radius, .y = ty }, .dark_gray);
-            rl.drawLineV(.{ .x = x, .y = ty - radius }, .{ .x = x, .y = ty + radius }, .dark_gray);
-        },
-    }
-}
-
-/// Draw the circuit. Pass `stages` to group gates into labelled, divided
-/// columns; pass `null` to lay every gate out flat in order.
-pub fn draw(c: Circuit, stages: ?Stages) !void {
-    const screenWidth = 800;
-    const screenHeight = 450;
-    rl.initWindow(screenWidth, screenHeight, "circuit");
-    defer rl.closeWindow();
-    rl.setTargetFPS(60);
-
-    const sw: f32 = @floatFromInt(screenWidth);
-    const sh: f32 = @floatFromInt(screenHeight);
-    const num_qubits: f32 = @floatFromInt(c.n);
-    const font_size: i32 = 20;
-
-    const dy: f32 = sh / (num_qubits + 1);
-    const x_offset: f32 = @floatFromInt(3 * font_size);
-    const y_offset: f32 = font_size / 2;
-    const col_w: f32 = 60;
-
-    const total_cols: usize = c.gates.items.len; // one column per gate
-    const content_w: f32 = @as(f32, @floatFromInt(total_cols)) * col_w;
-    const max_scroll: f32 = @max(0, content_w - (sw - x_offset));
-
-    var scroll: f32 = 0;
-
-    while (!rl.windowShouldClose()) {
-        scroll -= rl.getMouseWheelMove() * 30;
-        if (rl.isKeyDown(.k)) scroll += 8;
-        if (rl.isKeyDown(.j)) scroll -= 8;
-        scroll = std.math.clamp(scroll, 0, max_scroll);
-
-        rl.beginDrawing();
-        defer rl.endDrawing();
-        rl.clearBackground(.ray_white);
-
-        var buf: [32]u8 = undefined;
-
-        // Wires.
-        for (0..c.n) |q| {
-            const y = wireY(q, dy, y_offset);
-            rl.drawLineV(.{ .x = x_offset, .y = y }, .{ .x = sw, .y = y }, .dark_gray);
-        }
-
-        // Gates. The column index `col` advances per gate either way; the only
-        // difference with stages is the divider + label drawn at each group's start.
-        const colX = struct {
-            fn at(col: usize, cw: f32, xo: f32, s: f32) f32 {
-                return xo + (@as(f32, @floatFromInt(col)) + 0.5) * cw - s;
-            }
-        }.at;
-
-        var col: usize = 0;
-        if (stages) |st| {
-            for (st.items, 0..) |stage, s| {
-                const stage_x0 = x_offset + @as(f32, @floatFromInt(col)) * col_w - scroll;
-                if (s > 0) rl.drawLineV(.{ .x = stage_x0, .y = 0 }, .{ .x = stage_x0, .y = sh }, .light_gray);
-                const slabel = try std.fmt.bufPrintZ(&buf, "S{d}", .{s});
-                rl.drawText(slabel, @intFromFloat(stage_x0 + 4), 4, font_size, .gray);
-
-                for (stage.items) |gate| {
-                    drawGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size);
-                    col += 1;
-                }
-            }
-        } else {
-            for (c.gates.items) |gate| {
-                drawGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size);
-                col += 1;
-            }
-        }
-
-        // Pinned qubit labels (mask the gutter first).
-        rl.drawRectangle(0, 0, @intFromFloat(x_offset), screenHeight, .ray_white);
-        for (0..c.n) |q| {
-            const y: f32 = @as(f32, @floatFromInt(q)) * dy + dy;
-            const str = try std.fmt.bufPrintZ(&buf, "q{d}", .{q});
-            rl.drawText(str, font_size, @intFromFloat(y), font_size, .dark_gray);
-        }
-
-        // Scrollbar (only when overflowing).
-        if (max_scroll > 0) {
-            const track_y: f32 = sh - 16;
-            const track_w: f32 = sw - x_offset;
-            const thumb_w: f32 = @max(30, track_w * (track_w / content_w));
-            const thumb_x: f32 = x_offset + (scroll / max_scroll) * (track_w - thumb_w);
-            rl.drawRectangle(@intFromFloat(x_offset), @intFromFloat(track_y), @intFromFloat(track_w), 12, .light_gray);
-            rl.drawRectangle(@intFromFloat(thumb_x), @intFromFloat(track_y), 12, 12, .gray);
-            const m = rl.getMousePosition();
-            if (rl.isMouseButtonDown(.left) and m.y >= track_y - 4) {
-                const frac = std.math.clamp((m.x - x_offset - thumb_w / 2) / (track_w - thumb_w), 0, 1);
-                scroll = frac * max_scroll;
-            }
-        }
-    }
-}
