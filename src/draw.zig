@@ -1098,29 +1098,26 @@ fn wireY(q: usize, dy: f32, y_offset: f32) f32 {
     return fq * dy + dy + y_offset;
 }
 
-fn drawGate(gate: circuit.Native, x: f32, dy: f32, y_offset: f32, font_size: i32) void {
+fn drawUGate(u: circuit.U, x: f32, dy: f32, y_offset: f32, font_size: i32) void {
     const box: f32 = 40;
+    const qy = wireY(u.qubit, dy, y_offset);
+    rl.drawRectangleV(
+        .{ .x = x - box / 2, .y = qy - box / 2 },
+        .{ .x = box, .y = box },
+        .dark_purple,
+    );
+    rl.drawText("U", @intFromFloat(x - 6), @intFromFloat(qy - 10), font_size, .white);
+}
+
+fn drawCzGate(cz: circuit.Cz, x: f32, dy: f32, y_offset: f32) void {
     const radius: f32 = 8;
-    switch (gate) {
-        .u => |u| {
-            const qy = wireY(u.qubit, dy, y_offset);
-            rl.drawRectangleV(
-                .{ .x = x - box / 2, .y = qy - box / 2 },
-                .{ .x = box, .y = box },
-                .dark_purple,
-            );
-            rl.drawText("U", @intFromFloat(x - 6), @intFromFloat(qy - 10), font_size, .white);
-        },
-        .cz => |cz| {
-            const cy = wireY(cz.control, dy, y_offset);
-            const ty = wireY(cz.target, dy, y_offset);
-            rl.drawLineV(.{ .x = x, .y = cy }, .{ .x = x, .y = ty }, .dark_gray);
-            rl.drawCircleV(.{ .x = x, .y = cy }, radius, .dark_gray);
-            rl.drawCircleLinesV(.{ .x = x, .y = ty }, radius, .dark_gray);
-            rl.drawLineV(.{ .x = x - radius, .y = ty }, .{ .x = x + radius, .y = ty }, .dark_gray);
-            rl.drawLineV(.{ .x = x, .y = ty - radius }, .{ .x = x, .y = ty + radius }, .dark_gray);
-        },
-    }
+    const cy = wireY(cz.control, dy, y_offset);
+    const ty = wireY(cz.target, dy, y_offset);
+    rl.drawLineV(.{ .x = x, .y = cy }, .{ .x = x, .y = ty }, .dark_gray);
+    rl.drawCircleV(.{ .x = x, .y = cy }, radius, .dark_gray);
+    rl.drawCircleLinesV(.{ .x = x, .y = ty }, radius, .dark_gray);
+    rl.drawLineV(.{ .x = x - radius, .y = ty }, .{ .x = x + radius, .y = ty }, .dark_gray);
+    rl.drawLineV(.{ .x = x, .y = ty - radius }, .{ .x = x, .y = ty + radius }, .dark_gray);
 }
 
 /// Draw the circuit. Pass `stages` to group gates into labelled, divided
@@ -1182,15 +1179,15 @@ pub fn pipeline(c: circuit.Circuit, p: ?circuit.Pipeline) !void {
                 const slabel = try std.fmt.bufPrintZ(&buf, "S{d}", .{s});
                 rl.drawText(slabel, @intFromFloat(stage_x0 + 4), 4, font_size, .gray);
 
-                for (stage.gates.items) |gate| {
-                    drawGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size);
+                for (stage.u_gates.items) |gate| {
+                    drawUGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size);
                     col += 1;
                 }
-            }
-        } else {
-            for (c.gates.items) |gate| {
-                drawGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size);
-                col += 1;
+
+                for (stage.cz_gates.items) |gate| {
+                    drawCzGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset);
+                    col += 1;
+                }
             }
         }
 

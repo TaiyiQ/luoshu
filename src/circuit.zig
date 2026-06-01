@@ -1,16 +1,20 @@
 const std = @import("std");
+const core = @import("graph");
+const schedule = @import("schedule");
+const route = @import("route");
+const arch = @import("arch");
 const rl = @import("raylib");
 
 const PI = std.math.pi;
 
-const U = struct {
+pub const U = struct {
     qubit: usize,
     theta: f64,
     phi: f64,
     lambda: f64,
 };
 
-const Cz = struct {
+pub const Cz = struct {
     control: usize,
     target: usize,
 };
@@ -21,10 +25,28 @@ pub const Native = union(enum) {
 };
 
 const Stage = struct {
-    gates: std.ArrayList(Native) = .empty,
+    u_gates: std.ArrayList(U) = .empty,
+    cz_gates: std.ArrayList(Cz) = .empty,
 
-    fn deinit(self: *Stage, allocator: std.mem.Allocator) void {
-        self.gates.deinit(allocator);
+    fn deinit(s: *Stage, allocator: std.mem.Allocator) void {
+        s.u_gates.deinit(allocator);
+        s.cz_gates.deinit(allocator);
+    }
+
+    // Generate a graph connecting CZ qubits, to move them into the compute zone.
+    // The stage owns the graph. Therefore, it compiles a logical sequence from
+    // the CZ gates using a graph.
+    pub fn compile(s: *Stage, allocator: std.mem.Allocator) !schedule.Logical {
+        var g = try core.Graph.init(allocator, s.cz_gates.items.len, false);
+
+        for (s.cz_gates.items) |gate| try g.addEdge(gate.control, gate.target);
+
+        var logical = try route.compile(s.allocator, &g);
+        defer logical.deinit();
+        //try logical.writeToFile(s.allocator, init.io, "./zig-out/logical.json");
+        logical.print();
+
+        return logical;
     }
 };
 
@@ -42,7 +64,65 @@ pub const Pipeline = struct {
         while (self.stages.items.len <= n) {
             try self.stages.append(self.allocator, .{});
         }
-        try self.stages.items[n].gates.append(self.allocator, gate);
+        const stage = &self.stages.items[n];
+        switch (gate) {
+            .u => |g| try stage.u_gates.append(self.allocator, g),
+            .cz => |g| try stage.cz_gates.append(self.allocator, g),
+        }
+    }
+
+    pub fn compile(s: *Pipeline, cfg: arch.ArcConfig) !schedule.Physical {
+        var ops: std.ArrayList(schedule.Op) = .empty;
+
+        // t = 0: SLM bulk move (storage → compute).
+        // t ≥ 1: one AOD move + Rydberg pulse per logical color, in order.
+        const t_slm: u32 = 0;
+        const t_aod_base: u32 = t_slm + 1;
+
+        for (s.stages) |stage| {
+            var logical = try stage.compile(s.allocator);
+            defer logical.deinit();
+
+            var placement = try schedule.qubitPlacement(
+                s.allocator,
+                cfg.storage_zone,
+                logical.slm_slots,
+                logical.aod_slots_per_color,
+            );
+
+            const initial_placement = try s.allocator.dupe(schedule.Point, placement);
+
+            try schedule.moveSlmQubits(
+                s.allocator,
+                cfg.compute_zone,
+                logical.slm_slots,
+                &placement,
+                &ops,
+                t_slm,
+            );
+
+            // Initial single-qubit preparation layer (X rotation on all qubits).
+            //try addRamanOp(alloc, placement, std.math.pi, 0.0, t_slm, &ops);
+
+            try schedule.moveAodQubits(
+                s.allocator,
+                cfg.compute_zone,
+                logical.aod_slots_per_color,
+                &placement,
+                &ops,
+                t_aod_base,
+            );
+        }
+
+        const slots = try schedule.allSlmSlots(s.allocator, cfg);
+
+        return .{
+            .ops = ops.items,
+            .placement = initial_placement,
+            .slots = slots,
+        };
+
+        //try physical.writeToFile(init.gpa, init.io, "./zig-out/physical.json");
     }
 };
 

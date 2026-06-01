@@ -7,16 +7,23 @@ const core = @import("graph");
 const schedule = @import("schedule");
 const draw = @import("draw");
 
-fn circuitGraph(allocator: std.mem.Allocator, c: circuit.Circuit) !core.Graph {
-    var g = try core.Graph.init(allocator, c.n, false);
+pub fn main(init: std.process.Init) !void {
+    var c = try loadCircuit(init.gpa, init.io);
+    defer c.deinit();
 
-    for (c.gates.items) |gate| {
-        if (gate == .cz) {
-            try g.addEdge(gate.cz.control, gate.cz.target);
-        }
-    }
+    var pipeline = try circuit.decompose(init.gpa, c);
+    defer pipeline.deinit();
 
-    return g;
+    const cfg = try loadArch(init.gpa, init.io);
+    defer cfg.deinit(init.gpa);
+
+    const physical = try pipeline.compile(cfg);
+    defer physical.deinit();
+
+    try draw.pipeline(c, pipeline);
+    try draw.physical(init.gpa, cfg, physical);
+
+    std.debug.print(">> Gate compilation completed\n", .{});
 }
 
 fn loadArch(allocator: std.mem.Allocator, io: std.Io) !arch.ArchConfig {
@@ -47,34 +54,6 @@ fn loadCircuit(allocator: std.mem.Allocator, io: std.Io) !circuit.Circuit {
     const circ = try parser.parse();
 
     return circ;
-}
-
-pub fn main(init: std.process.Init) !void {
-    var c = try loadCircuit(init.gpa, init.io);
-    defer c.deinit();
-
-    var pipeline = try circuit.decompose(init.gpa, c);
-    defer pipeline.deinit();
-    try draw.pipeline(c, pipeline);
-
-    var g = try circuitGraph(init.gpa, c);
-    defer g.deinit();
-
-    var logical = try route.compile(init.gpa, &g);
-    defer logical.deinit();
-    try logical.writeToFile(init.gpa, init.io, "./zig-out/logical.json");
-    logical.print();
-
-    const cfg = try loadArch(init.gpa, init.io);
-    defer cfg.deinit(init.gpa);
-
-    var physical = try schedule.physical(init.gpa, cfg, logical);
-    defer physical.deinit();
-    try physical.writeToFile(init.gpa, init.io, "./zig-out/physical.json");
-
-    try draw.physical(init.gpa, cfg, physical);
-
-    std.debug.print(">> Gate compilation completed\n", .{});
 }
 
 //    var c = circuit.Circuit.init(init.gpa, 7);

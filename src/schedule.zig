@@ -39,7 +39,7 @@ pub const Op = struct {
 };
 
 pub const Physical = struct {
-    arena: std.heap.ArenaAllocator,
+    allocator: std.mem.Allocator,
     ops: []const Op,
     placement: []Point, // Initial storage-zone position of each qubit (index = qubit id).
     slots: []const Point, // All SLM trap sites across storage and compute zones.
@@ -141,7 +141,7 @@ fn zoneName(z: Zone) []const u8 {
 
 // Enumerate every SLM trap site across storage and compute zones. These are drawn
 // as background indicators in the visualization.
-fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const Point {
+pub fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const Point {
     var slots: std.ArrayList(Point) = .empty;
 
     {
@@ -174,7 +174,7 @@ fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const P
     return slots.items;
 }
 
-fn moveSlmQubits(
+pub fn moveSlmQubits(
     allocator: std.mem.Allocator,
     cz: arch.ComputeZone,
     slm_qubits: []const ?usize,
@@ -242,7 +242,7 @@ fn addRamanOp(
     });
 }
 
-fn moveAodQubits(
+pub fn moveAodQubits(
     allocator: std.mem.Allocator,
     cz: arch.ComputeZone,
     aod_qubits: [][]?usize,
@@ -353,57 +353,57 @@ pub fn qubitPlacement(
     return placement;
 }
 
-pub fn physical(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: Logical) !Physical {
-    // t = 0: SLM bulk move (storage → compute).
-    // t ≥ 1: one AOD move + Rydberg pulse per logical color, in order.
-    const t_slm: u32 = 0;
-    const t_aod_base: u32 = t_slm + 1;
-
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    errdefer arena.deinit();
-    const alloc = arena.allocator();
-
-    var placement = try qubitPlacement(
-        alloc,
-        layout.storage_zone,
-        logical.slm_slots,
-        logical.aod_slots_per_color,
-    );
-
-    const initial_placement = try alloc.dupe(Point, placement);
-
-    var ops: std.ArrayList(Op) = .empty;
-
-    try moveSlmQubits(
-        alloc,
-        layout.compute_zone,
-        logical.slm_slots,
-        &placement,
-        &ops,
-        t_slm,
-    );
-
-    // Initial single-qubit preparation layer (X rotation on all qubits).
-    //try addRamanOp(alloc, placement, std.math.pi, 0.0, t_slm, &ops);
-
-    try moveAodQubits(
-        alloc,
-        layout.compute_zone,
-        logical.aod_slots_per_color,
-        &placement,
-        &ops,
-        t_aod_base,
-    );
-
-    const slots = try allSlmSlots(alloc, layout);
-
-    return .{
-        .arena = arena,
-        .ops = ops.items,
-        .placement = initial_placement,
-        .slots = slots,
-    };
-}
+//pub fn physical(allocator: std.mem.Allocator, layout: arch.ArchConfig, logical: Logical) !Physical {
+//    // t = 0: SLM bulk move (storage → compute).
+//    // t ≥ 1: one AOD move + Rydberg pulse per logical color, in order.
+//    const t_slm: u32 = 0;
+//    const t_aod_base: u32 = t_slm + 1;
+//
+//    var arena = std.heap.ArenaAllocator.init(allocator);
+//    errdefer arena.deinit();
+//    const alloc = arena.allocator();
+//
+//    var placement = try qubitPlacement(
+//        alloc,
+//        layout.storage_zone,
+//        logical.slm_slots,
+//        logical.aod_slots_per_color,
+//    );
+//
+//    const initial_placement = try alloc.dupe(Point, placement);
+//
+//    var ops: std.ArrayList(Op) = .empty;
+//
+//    try moveSlmQubits(
+//        alloc,
+//        layout.compute_zone,
+//        logical.slm_slots,
+//        &placement,
+//        &ops,
+//        t_slm,
+//    );
+//
+//    // Initial single-qubit preparation layer (X rotation on all qubits).
+//    //try addRamanOp(alloc, placement, std.math.pi, 0.0, t_slm, &ops);
+//
+//    try moveAodQubits(
+//        alloc,
+//        layout.compute_zone,
+//        logical.aod_slots_per_color,
+//        &placement,
+//        &ops,
+//        t_aod_base,
+//    );
+//
+//    const slots = try allSlmSlots(alloc, layout);
+//
+//    return .{
+//        .arena = arena,
+//        .ops = ops.items,
+//        .placement = initial_placement,
+//        .slots = slots,
+//    };
+//}
 
 pub const Logical = struct {
     arena: std.heap.ArenaAllocator,
