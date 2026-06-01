@@ -68,6 +68,8 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.linkLibrary(raylib_dep.artifact("raylib"));
     viz_mod.addImport("raylib", raylib_dep.module("raylib"));
+    circuit_mod.addImport("raylib", raylib_dep.module("raylib"));
+    circuit_mod.addImport("raygui", raylib_dep.module("raygui"));
 
     b.installArtifact(exe); // enables `zig build`
 

@@ -31,7 +31,7 @@ fn loadArch(allocator: std.mem.Allocator, io: std.Io) !arch.ArchConfig {
 
 fn loadCircuit(allocator: std.mem.Allocator, io: std.Io) !circuit.Circuit {
     const cwd = std.Io.Dir.cwd();
-    const file = try cwd.openFile(io, "./example/graphstate.qasm", .{ .mode = .read_only });
+    const file = try cwd.openFile(io, "./example/mvp.qasm", .{ .mode = .read_only });
     defer file.close(io);
 
     var read_buf: [4096]u8 = undefined;
@@ -52,6 +52,10 @@ fn loadCircuit(allocator: std.mem.Allocator, io: std.Io) !circuit.Circuit {
 pub fn main(init: std.process.Init) !void {
     var c = try loadCircuit(init.gpa, init.io);
     defer c.deinit();
+
+    var stages = try circuit.decompose(init.gpa, c);
+    defer circuit.freeStages(init.gpa, &stages);
+    try circuit.draw(c, stages);
 
     var g = try circuitGraph(init.gpa, c);
     defer g.deinit();
