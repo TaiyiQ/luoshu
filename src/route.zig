@@ -176,7 +176,10 @@ fn maxIndependentSet(allocator: std.mem.Allocator, g: Graph) !Aod {
     }.less);
 
     // Greedy MIS: add a node when none of its neighbours are in the set.
+    // Skip isolated nodes (degree 0): they have no two-qubit interactions and
+    // must remain SLM qubits.
     for (order.items) |v| {
+        if (g.degree[v] == 0) continue;
         var add = true;
         var e = g.edges[v];
         while (e) |edge| : (e = edge.next) {
@@ -394,11 +397,12 @@ fn slmGraph(allocator: std.mem.Allocator, g: *Graph, aod_set: []const bool) !Gra
     return dep;
 }
 
-fn topoSort(allocator: std.mem.Allocator, g: Graph, aod_set: []const bool) ![]usize {
-    // Only SLM qubits
+fn topoSort(allocator: std.mem.Allocator, g: Graph, aod_set: []const bool, orig: Graph) ![]usize {
+    // Only SLM qubits that participate in at least one CZ interaction.
+    // Isolated qubits (orig.degree == 0) have no placement constraints.
     var n_slm: usize = 0;
     for (0..g.n) |i| {
-        if (!aod_set[i]) n_slm += 1;
+        if (!aod_set[i] and orig.degree[i] > 0) n_slm += 1;
     }
 
     var order = try std.ArrayList(usize).initCapacity(allocator, n_slm);
@@ -410,10 +414,10 @@ fn topoSort(allocator: std.mem.Allocator, g: Graph, aod_set: []const bool) ![]us
     defer allocator.free(in_degree);
 
     for (0..g.n) |u| {
-        if (aod_set[u]) continue;
+        if (aod_set[u] or orig.degree[u] == 0) continue;
         var e = g.edges[u];
         while (e) |edge| : (e = edge.next) {
-            if (!aod_set[edge.y]) in_degree[edge.y] += 1;
+            if (!aod_set[edge.y] and orig.degree[edge.y] > 0) in_degree[edge.y] += 1;
         }
     }
 
@@ -422,7 +426,7 @@ fn topoSort(allocator: std.mem.Allocator, g: Graph, aod_set: []const bool) ![]us
     defer queue.deinit(allocator);
 
     for (0..g.n) |i| {
-        if (!aod_set[i] and in_degree[i] == 0) try queue.append(allocator, i);
+        if (!aod_set[i] and orig.degree[i] > 0 and in_degree[i] == 0) try queue.append(allocator, i);
     }
 
     while (queue.items.len > 0) {
@@ -433,7 +437,7 @@ fn topoSort(allocator: std.mem.Allocator, g: Graph, aod_set: []const bool) ![]us
         var e = g.edges[u];
         while (e) |edge| : (e = edge.next) {
             const v = edge.y;
-            if (!aod_set[v]) {
+            if (!aod_set[v] and orig.degree[v] > 0) {
                 in_degree[v] -= 1;
                 if (in_degree[v] == 0) try queue.append(allocator, v);
             }
@@ -756,7 +760,7 @@ pub fn compile(allocator: std.mem.Allocator, g: *Graph) !schedule.Logical {
     defer dep_graph.deinit();
     //dep_graph.print("slm-dep");
 
-    const slm_order = try topoSort(allocator, dep_graph, aod.set);
+    const slm_order = try topoSort(allocator, dep_graph, aod.set, g.*);
     defer allocator.free(slm_order);
     std.debug.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
 
