@@ -1,5 +1,4 @@
 const std = @import("std");
-const core = @import("graph");
 const schedule = @import("schedule");
 const route = @import("route");
 const arch = @import("arch");
@@ -36,13 +35,19 @@ const Stage = struct {
     // Generate a graph connecting CZ qubits, to move them into the compute zone.
     // The stage owns the graph. Therefore, it compiles a logical sequence from
     // the CZ gates using a graph.
-    pub fn compile(s: *Stage, allocator: std.mem.Allocator) !schedule.Logical {
-        var g = try core.Graph.init(allocator, s.cz_gates.items.len, false);
+    pub fn compile(s: *Stage, allocator: std.mem.Allocator, num_qubit: usize) !schedule.Logical {
+        std.debug.print(">> Stage: compiling\n", .{});
+
+        for (s.cz_gates.items) |gate| {
+            std.debug.print("{any}\nn", .{gate});
+        }
+
+        var g = try route.Graph.init(allocator, num_qubit, false);
+        defer g.deinit();
 
         for (s.cz_gates.items) |gate| try g.addEdge(gate.control, gate.target);
 
-        var logical = try route.compile(s.allocator, &g);
-        defer logical.deinit();
+        const logical = try route.compile(allocator, &g);
         //try logical.writeToFile(s.allocator, init.io, "./zig-out/logical.json");
         logical.print();
 
@@ -52,7 +57,16 @@ const Stage = struct {
 
 pub const Pipeline = struct {
     allocator: std.mem.Allocator,
-    stages: std.ArrayList(Stage) = .empty,
+    stages: std.ArrayList(Stage),
+    num_qubits: usize,
+
+    fn init(allocator: std.mem.Allocator, n: usize) !Pipeline {
+        return .{
+            .allocator = allocator,
+            .stages = .empty,
+            .num_qubits = n,
+        };
+    }
 
     pub fn deinit(self: *Pipeline) void {
         for (self.stages.items) |*stage| stage.deinit(self.allocator);
@@ -71,26 +85,33 @@ pub const Pipeline = struct {
         }
     }
 
-    pub fn compile(s: *Pipeline, cfg: arch.ArcConfig) !schedule.Physical {
+    pub fn compile(s: *Pipeline, cfg: arch.ArchConfig) !schedule.Physical {
         var ops: std.ArrayList(schedule.Op) = .empty;
 
         // t = 0: SLM bulk move (storage → compute).
-        // t ≥ 1: one AOD move + Rydberg pulse per logical color, in order.
         const t_slm: u32 = 0;
+
+        // t ≥ 1: one AOD move + Rydberg pulse per logical color, in order.
         const t_aod_base: u32 = t_slm + 1;
 
-        for (s.stages) |stage| {
-            var logical = try stage.compile(s.allocator);
+        var initial_placement: []schedule.Point = &.{};
+
+        for (s.stages.items) |*stage| {
+            var logical = try stage.compile(s.allocator, s.num_qubits);
             defer logical.deinit();
 
+            // FIXME: This will always be the same after t=0.
+            // This is initial setup.
             var placement = try schedule.qubitPlacement(
                 s.allocator,
                 cfg.storage_zone,
                 logical.slm_slots,
                 logical.aod_slots_per_color,
             );
+            defer s.allocator.free(placement);
 
-            const initial_placement = try s.allocator.dupe(schedule.Point, placement);
+            if (initial_placement.len > 0) s.allocator.free(initial_placement);
+            initial_placement = try s.allocator.dupe(schedule.Point, placement);
 
             try schedule.moveSlmQubits(
                 s.allocator,
@@ -100,9 +121,6 @@ pub const Pipeline = struct {
                 &ops,
                 t_slm,
             );
-
-            // Initial single-qubit preparation layer (X rotation on all qubits).
-            //try addRamanOp(alloc, placement, std.math.pi, 0.0, t_slm, &ops);
 
             try schedule.moveAodQubits(
                 s.allocator,
@@ -117,12 +135,11 @@ pub const Pipeline = struct {
         const slots = try schedule.allSlmSlots(s.allocator, cfg);
 
         return .{
-            .ops = ops.items,
+            .allocator = s.allocator,
+            .ops = try ops.toOwnedSlice(s.allocator),
             .placement = initial_placement,
             .slots = slots,
         };
-
-        //try physical.writeToFile(init.gpa, init.io, "./zig-out/physical.json");
     }
 };
 
@@ -150,7 +167,8 @@ pub const Pipeline = struct {
 ///
 /// Caller owns the result and must free it with `freeStages`.
 pub fn decompose(allocator: std.mem.Allocator, c: Circuit) !Pipeline {
-    var pipe: Pipeline = .{ .allocator = allocator };
+    //    var pipe: Pipeline = .{ .allocator = allocator };
+    var pipe = try Pipeline.init(allocator, c.n);
     errdefer pipe.deinit();
 
     var map = std.AutoHashMap(usize, usize).init(allocator);

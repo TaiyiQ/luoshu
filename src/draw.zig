@@ -1179,15 +1179,23 @@ pub fn pipeline(c: circuit.Circuit, p: ?circuit.Pipeline) !void {
                 const slabel = try std.fmt.bufPrintZ(&buf, "S{d}", .{s});
                 rl.drawText(slabel, @intFromFloat(stage_x0 + 4), 4, font_size, .gray);
 
-                for (stage.u_gates.items) |gate| {
-                    drawUGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size);
-                    col += 1;
-                }
-
                 for (stage.cz_gates.items) |gate| {
                     drawCzGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset);
                     col += 1;
                 }
+
+                for (stage.u_gates.items) |gate| {
+                    drawUGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size);
+                    col += 1;
+                }
+            }
+        } else {
+            for (c.gates.items) |gate| {
+                switch (gate) {
+                    .u => |g| drawUGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size),
+                    .cz => |g| drawCzGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset),
+                }
+                col += 1;
             }
         }
 

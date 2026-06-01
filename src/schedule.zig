@@ -45,7 +45,17 @@ pub const Physical = struct {
     slots: []const Point, // All SLM trap sites across storage and compute zones.
 
     pub fn deinit(s: *Physical) void {
-        s.arena.deinit();
+        for (s.ops) |op| {
+            switch (op.kind) {
+                .move => |m| s.allocator.free(m.atoms),
+                .raman => |r| s.allocator.free(r.targets),
+                .measure => |m| s.allocator.free(m.qubits),
+                .rydberg => {},
+            }
+        }
+        s.allocator.free(s.ops);
+        s.allocator.free(s.placement);
+        s.allocator.free(s.slots);
     }
 
     pub fn writeToFile(self: *const Physical, allocator: std.mem.Allocator, io: std.Io, filename: []const u8) !void {
@@ -171,7 +181,7 @@ pub fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]con
         };
     }
 
-    return slots.items;
+    return try slots.toOwnedSlice(allocator);
 }
 
 pub fn moveSlmQubits(
@@ -214,7 +224,7 @@ pub fn moveSlmQubits(
             .translate = Axis.y,
             .src_zone = Zone.storage,
             .dest_zone = Zone.compute,
-            .atoms = atoms.items,
+            .atoms = try atoms.toOwnedSlice(allocator),
         },
     } };
 
@@ -238,7 +248,7 @@ fn addRamanOp(
     }
     try ops.append(allocator, Op{
         .t = t,
-        .kind = .{ .raman = .{ .angle = angle, .phase = phase, .targets = targets.items } },
+        .kind = .{ .raman = .{ .angle = angle, .phase = phase, .targets = try targets.toOwnedSlice(allocator) } },
     });
 }
 
@@ -284,7 +294,7 @@ pub fn moveAodQubits(
                 .translate = Axis.y,
                 .src_zone = Zone.compute,
                 .dest_zone = Zone.compute,
-                .atoms = atoms.items,
+                .atoms = try atoms.toOwnedSlice(allocator),
             },
         } };
 
@@ -321,6 +331,7 @@ pub fn qubitPlacement(
     const y_sep = @as(i32, @intCast(sz.slm.sep_nm[1]));
 
     var sites: std.ArrayList(Point) = .empty;
+    defer sites.deinit(allocator);
     for (0..sz.slm.num_row) |row| {
         // Start from the row closest to the compute zone.
         const i = sz.slm.num_row - 1 - row;

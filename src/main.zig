@@ -3,25 +3,26 @@ const toml = @import("toml");
 const arch = @import("arch");
 const circuit = @import("circuit");
 const route = @import("route");
-const core = @import("graph");
 const schedule = @import("schedule");
 const draw = @import("draw");
 
 pub fn main(init: std.process.Init) !void {
-    var c = try loadCircuit(init.gpa, init.io);
-    defer c.deinit();
+    var circ = try loadCircuit(init.gpa, init.io);
+    defer circ.deinit();
 
-    var pipeline = try circuit.decompose(init.gpa, c);
+    var pipeline = try circuit.decompose(init.gpa, circ);
     defer pipeline.deinit();
 
     const cfg = try loadArch(init.gpa, init.io);
     defer cfg.deinit(init.gpa);
 
-    const physical = try pipeline.compile(cfg);
-    defer physical.deinit();
+    var sched = try pipeline.compile(cfg);
+    defer sched.deinit();
+    //try sched.writeToFile(init.gpa, init.io, "./zig-out/physical.json");
 
-    try draw.pipeline(c, pipeline);
-    try draw.physical(init.gpa, cfg, physical);
+    try draw.pipeline(circ, pipeline);
+    //try draw.pipeline(circ, null); // Draw original circuit.
+    try draw.physical(init.gpa, cfg, sched);
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }

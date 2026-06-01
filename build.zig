@@ -19,16 +19,10 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("arch", arch_mod);
 
-    const graph_mod = b.addModule("graph", .{
-        .root_source_file = b.path("src/graph.zig"),
-    });
-    exe.root_module.addImport("graph", graph_mod);
-
     const circuit_mod = b.addModule("circuit", .{
         .root_source_file = b.path("src/circuit.zig"),
     });
     exe.root_module.addImport("circuit", circuit_mod);
-    circuit_mod.addImport("graph", graph_mod);
 
     const schedule_mod = b.addModule("schedule", .{
         .root_source_file = b.path("src/schedule.zig"),
@@ -39,9 +33,11 @@ pub fn build(b: *std.Build) void {
     const route_mod = b.addModule("route", .{
         .root_source_file = b.path("src/route.zig"),
     });
-    route_mod.addImport("graph", graph_mod);
     route_mod.addImport("schedule", schedule_mod);
     exe.root_module.addImport("route", route_mod);
+    circuit_mod.addImport("arch", arch_mod);
+    circuit_mod.addImport("schedule", schedule_mod);
+    circuit_mod.addImport("route", route_mod);
 
     const draw_mod = b.addModule("draw", .{
         .root_source_file = b.path("src/draw.zig"),
@@ -50,13 +46,6 @@ pub fn build(b: *std.Build) void {
     draw_mod.addImport("arch", arch_mod);
     draw_mod.addImport("circuit", circuit_mod);
     exe.root_module.addImport("draw", draw_mod);
-
-    const debug_mod = b.addModule("debug", .{
-        .root_source_file = b.path("src/debug.zig"),
-    });
-    exe.root_module.addImport("debug", debug_mod);
-    debug_mod.addImport("graph", graph_mod);
-    route_mod.addImport("debug", debug_mod);
 
     // --- External dependecies.
 
