@@ -2,6 +2,7 @@ const std = @import("std");
 const rl = @import("raylib");
 const schedule = @import("schedule");
 const arch_mod = @import("arch");
+const circuit = @import("circuit");
 
 const Point = schedule.Point;
 const Op = schedule.Op;
@@ -805,7 +806,7 @@ fn drawPanel(
 // -----------------------------------------------------------------------
 // Main interactive slideshow
 // -----------------------------------------------------------------------
-pub fn simulate(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Physical) !void {
+pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Physical) !void {
     if (s.placement.len == 0 or s.ops.len == 0) return;
 
     const frame_count = s.ops.len;
@@ -1088,6 +1089,137 @@ pub fn simulate(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
             );
         } else {
             rl.drawTextEx(font, "h  show panel", .{ .x = 16, .y = 16 }, 13, 0.8, palette.text_sub);
+        }
+    }
+}
+
+fn wireY(q: usize, dy: f32, y_offset: f32) f32 {
+    const fq: f32 = @floatFromInt(q);
+    return fq * dy + dy + y_offset;
+}
+
+fn drawUGate(u: circuit.U, x: f32, dy: f32, y_offset: f32, font_size: i32) void {
+    const box: f32 = 40;
+    const qy = wireY(u.qubit, dy, y_offset);
+    rl.drawRectangleV(
+        .{ .x = x - box / 2, .y = qy - box / 2 },
+        .{ .x = box, .y = box },
+        .dark_purple,
+    );
+    rl.drawText("U", @intFromFloat(x - 6), @intFromFloat(qy - 10), font_size, .white);
+}
+
+fn drawCzGate(cz: circuit.Cz, x: f32, dy: f32, y_offset: f32) void {
+    const radius: f32 = 8;
+    const cy = wireY(cz.control, dy, y_offset);
+    const ty = wireY(cz.target, dy, y_offset);
+    rl.drawLineV(.{ .x = x, .y = cy }, .{ .x = x, .y = ty }, .dark_gray);
+    rl.drawCircleV(.{ .x = x, .y = cy }, radius, .dark_gray);
+    rl.drawCircleLinesV(.{ .x = x, .y = ty }, radius, .dark_gray);
+    rl.drawLineV(.{ .x = x - radius, .y = ty }, .{ .x = x + radius, .y = ty }, .dark_gray);
+    rl.drawLineV(.{ .x = x, .y = ty - radius }, .{ .x = x, .y = ty + radius }, .dark_gray);
+}
+
+/// Draw the circuit. Pass `stages` to group gates into labelled, divided
+/// columns; pass `null` to lay every gate out flat in order.
+pub fn pipeline(c: circuit.Circuit, p: ?circuit.Pipeline) !void {
+    const screenWidth = 800;
+    const screenHeight = 450;
+    rl.initWindow(screenWidth, screenHeight, "circuit");
+    defer rl.closeWindow();
+    rl.setTargetFPS(60);
+
+    const sw: f32 = @floatFromInt(screenWidth);
+    const sh: f32 = @floatFromInt(screenHeight);
+    const num_qubits: f32 = @floatFromInt(c.n);
+    const font_size: i32 = 20;
+
+    const dy: f32 = sh / (num_qubits + 1);
+    const x_offset: f32 = @floatFromInt(3 * font_size);
+    const y_offset: f32 = font_size / 2;
+    const col_w: f32 = 60;
+
+    const total_cols: usize = c.gates.items.len; // one column per gate
+    const content_w: f32 = @as(f32, @floatFromInt(total_cols)) * col_w;
+    const max_scroll: f32 = @max(0, content_w - (sw - x_offset));
+
+    var scroll: f32 = 0;
+
+    while (!rl.windowShouldClose()) {
+        scroll -= rl.getMouseWheelMove() * 30;
+        if (rl.isKeyDown(.k)) scroll += 8;
+        if (rl.isKeyDown(.j)) scroll -= 8;
+        scroll = std.math.clamp(scroll, 0, max_scroll);
+
+        rl.beginDrawing();
+        defer rl.endDrawing();
+        rl.clearBackground(.ray_white);
+
+        var buf: [32]u8 = undefined;
+
+        // Wires.
+        for (0..c.n) |q| {
+            const y = wireY(q, dy, y_offset);
+            rl.drawLineV(.{ .x = x_offset, .y = y }, .{ .x = sw, .y = y }, .dark_gray);
+        }
+
+        // Gates. The column index `col` advances per gate either way; the only
+        // difference with stages is the divider + label drawn at each group's start.
+        const colX = struct {
+            fn at(col: usize, cw: f32, xo: f32, s: f32) f32 {
+                return xo + (@as(f32, @floatFromInt(col)) + 0.5) * cw - s;
+            }
+        }.at;
+
+        var col: usize = 0;
+        if (p) |pipe| {
+            for (pipe.stages.items, 0..) |stage, s| {
+                const stage_x0 = x_offset + @as(f32, @floatFromInt(col)) * col_w - scroll;
+                if (s > 0) rl.drawLineV(.{ .x = stage_x0, .y = 0 }, .{ .x = stage_x0, .y = sh }, .light_gray);
+                const slabel = try std.fmt.bufPrintZ(&buf, "S{d}", .{s});
+                rl.drawText(slabel, @intFromFloat(stage_x0 + 4), 4, font_size, .gray);
+
+                for (stage.cz_gates.items) |gate| {
+                    drawCzGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset);
+                    col += 1;
+                }
+
+                for (stage.u_gates.items) |gate| {
+                    drawUGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size);
+                    col += 1;
+                }
+            }
+        } else {
+            for (c.gates.items) |gate| {
+                switch (gate) {
+                    .u => |g| drawUGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size),
+                    .cz => |g| drawCzGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset),
+                }
+                col += 1;
+            }
+        }
+
+        // Pinned qubit labels (mask the gutter first).
+        rl.drawRectangle(0, 0, @intFromFloat(x_offset), screenHeight, .ray_white);
+        for (0..c.n) |q| {
+            const y: f32 = @as(f32, @floatFromInt(q)) * dy + dy;
+            const str = try std.fmt.bufPrintZ(&buf, "q{d}", .{q});
+            rl.drawText(str, font_size, @intFromFloat(y), font_size, .dark_gray);
+        }
+
+        // Scrollbar (only when overflowing).
+        if (max_scroll > 0) {
+            const track_y: f32 = sh - 16;
+            const track_w: f32 = sw - x_offset;
+            const thumb_w: f32 = @max(30, track_w * (track_w / content_w));
+            const thumb_x: f32 = x_offset + (scroll / max_scroll) * (track_w - thumb_w);
+            rl.drawRectangle(@intFromFloat(x_offset), @intFromFloat(track_y), @intFromFloat(track_w), 12, .light_gray);
+            rl.drawRectangle(@intFromFloat(thumb_x), @intFromFloat(track_y), 12, 12, .gray);
+            const m = rl.getMousePosition();
+            if (rl.isMouseButtonDown(.left) and m.y >= track_y - 4) {
+                const frac = std.math.clamp((m.x - x_offset - thumb_w / 2) / (track_w - thumb_w), 0, 1);
+                scroll = frac * max_scroll;
+            }
         }
     }
 }
