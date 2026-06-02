@@ -388,16 +388,11 @@ pub fn moveAodCompute(
         } };
 
         try ops.append(allocator, op);
+
         try ops.append(allocator, Op{
             .t = op_t,
             .kind = .{ .rydberg = .{ .zone = Zone.compute } },
         });
-
-        //        // Raman single-qubit layer after each entangling step.
-        //        const pi = std.math.pi;
-        //        const angle: f32 = if (t % 2 == 0) pi else pi / 2.0;
-        //        const phase: f32 = if (t % 2 == 0) 0.0 else pi / 4.0;
-        //        try addRamanOp(allocator, placement.*, angle, phase, op_t, ops);
     }
 }
 
@@ -408,8 +403,9 @@ pub fn qubitPlacement(
     aod_slots: [][]?usize,
     num_qubits: usize,
 ) ![]Point {
-    const max_qubit = num_qubits;
-    var placement = try allocator.alloc(Point, max_qubit);
+    var tmp = try allocator.alloc(?Point, num_qubits);
+    defer allocator.free(tmp);
+    @memset(tmp, null);
 
     // Relative starting origin of grid (bottom-left).
     const x_orig = sz.offset_nm[0] + sz.slm.offset_nm[0];
@@ -432,17 +428,12 @@ pub fn qubitPlacement(
         }
     }
 
-    var placed = try allocator.alloc(bool, num_qubits);
-    defer allocator.free(placed);
-    @memset(placed, false);
-
     var qubit_id: usize = 0;
 
     // 1. Place SLM qubits (those involved in CZ gates, fixed traps).
     for (slm_slots) |maybe_qubit| {
         if (maybe_qubit) |id| {
-            placement[id] = sites.items[qubit_id];
-            placed[id] = true;
+            tmp[id] = sites.items[qubit_id];
             qubit_id += 1;
         }
     }
@@ -450,19 +441,22 @@ pub fn qubitPlacement(
     // 2. Place AOD qubits (those involved in CZ gates, mobile traps).
     for (aod_slots[0]) |maybe_qubit| {
         if (maybe_qubit) |id| {
-            placement[id] = sites.items[qubit_id];
-            placed[id] = true;
+            tmp[id] = sites.items[qubit_id];
             qubit_id += 1;
         }
     }
 
     // 3. Place isolated qubits (U-gate-only, not in any CZ) in remaining sites.
     for (0..num_qubits) |id| {
-        if (!placed[id]) {
-            placement[id] = sites.items[qubit_id];
+        if (tmp[id] == null) {
+            tmp[id] = sites.items[qubit_id];
             qubit_id += 1;
         }
     }
+
+    // Ensure all qubits are placed.
+    const placement = try allocator.alloc(Point, num_qubits);
+    for (tmp, placement) |maybe_p, *out| out.* = maybe_p.?;
 
     return placement;
 }
