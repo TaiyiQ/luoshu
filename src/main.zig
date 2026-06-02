@@ -20,8 +20,8 @@ pub fn main(init: std.process.Init) !void {
     defer sched.deinit();
     //try sched.writeToFile(init.gpa, init.io, "./zig-out/physical.json");
 
+    try draw.pipeline(circ, null); // Draw original circuit.
     try draw.pipeline(circ, pipeline);
-    //try draw.pipeline(circ, null); // Draw original circuit.
     try draw.physical(init.gpa, cfg, sched);
 
     std.debug.print(">> Gate compilation completed\n", .{});
@@ -39,7 +39,8 @@ fn loadArch(allocator: std.mem.Allocator, io: std.Io) !arch.ArchConfig {
 
 fn loadCircuit(allocator: std.mem.Allocator, io: std.Io) !circuit.Circuit {
     const cwd = std.Io.Dir.cwd();
-    const file = try cwd.openFile(io, "./example/mvp.qasm", .{ .mode = .read_only });
+    //const file = try cwd.openFile(io, "./example/mvp.qasm", .{ .mode = .read_only });
+    const file = try cwd.openFile(io, "./example/ghz.qasm", .{ .mode = .read_only });
     defer file.close(io);
 
     var read_buf: [4096]u8 = undefined;
