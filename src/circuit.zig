@@ -94,24 +94,23 @@ pub const Pipeline = struct {
         // t ≥ 1: one AOD move + Rydberg pulse per logical color, in order.
         const t_aod_base: u32 = t_slm + 1;
 
+        var placement: []schedule.Point = &.{};
         var initial_placement: []schedule.Point = &.{};
 
-        for (s.stages.items) |*stage| {
+        for (s.stages.items, 0..) |*stage, stage_idx| {
             var logical = try stage.compile(s.allocator, s.num_qubits);
             defer logical.deinit();
 
-            // FIXME: This will always be the same after t=0.
-            // This is initial setup.
-            var placement = try schedule.qubitPlacement(
-                s.allocator,
-                cfg.storage_zone,
-                logical.slm_slots,
-                logical.aod_slots_per_color,
-            );
-            defer s.allocator.free(placement);
-
-            if (initial_placement.len > 0) s.allocator.free(initial_placement);
-            initial_placement = try s.allocator.dupe(schedule.Point, placement);
+            if (stage_idx == 0) {
+                placement = try schedule.qubitPlacement(
+                    s.allocator,
+                    cfg.storage_zone,
+                    logical.slm_slots,
+                    logical.aod_slots_per_color,
+                    s.num_qubits,
+                );
+                initial_placement = try s.allocator.dupe(schedule.Point, placement);
+            }
 
             try schedule.moveSlmQubits(
                 s.allocator,
@@ -130,7 +129,18 @@ pub const Pipeline = struct {
                 &ops,
                 t_aod_base,
             );
+
+            try schedule.moveBack(
+                s.allocator,
+                logical.aod_slots_per_color,
+                initial_placement,
+                &placement,
+                &ops,
+                t_aod_base + 1,
+            );
         }
+
+        s.allocator.free(placement);
 
         const slots = try schedule.allSlmSlots(s.allocator, cfg);
 

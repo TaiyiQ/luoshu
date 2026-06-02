@@ -252,6 +252,48 @@ fn addRamanOp(
     });
 }
 
+pub fn moveBack(
+    allocator: std.mem.Allocator,
+    aod_qubits: [][]?usize,
+    init_placement: []Point,
+    placement: *[]Point,
+    ops: *std.ArrayList(Op),
+    t_base: u32,
+) !void {
+    for (aod_qubits, 0..) |aod_row, t| {
+        var atoms: std.ArrayList(MoveAtom) = .empty;
+
+        for (aod_row) |maybe_aod| {
+            if (maybe_aod) |qubit_id| {
+                const src = placement.*[qubit_id];
+                const dest = init_placement[qubit_id];
+
+                try atoms.append(allocator, MoveAtom{
+                    .qubit = @as(u32, @intCast(qubit_id)),
+                    .src = src,
+                    .dest = dest,
+                });
+
+                // Update new qubit location.
+                placement.*[qubit_id] = dest;
+            }
+        }
+
+        const op_t = t_base + @as(u32, @intCast(t));
+        const op = Op{ .t = op_t, .kind = .{
+            .move = .{
+                .aod = 0,
+                .translate = Axis.y,
+                .src_zone = Zone.compute,
+                .dest_zone = Zone.storage,
+                .atoms = try atoms.toOwnedSlice(allocator),
+            },
+        } };
+
+        try ops.append(allocator, op);
+    }
+}
+
 pub fn moveAodQubits(
     allocator: std.mem.Allocator,
     cz: arch.ComputeZone,
@@ -317,9 +359,9 @@ pub fn qubitPlacement(
     sz: arch.StorageZone,
     slm_slots: []const ?usize,
     aod_slots: [][]?usize,
+    num_qubits: usize,
 ) ![]Point {
-    // FIXME: Update the qubit count.
-    const max_qubit = sz.slm.num_col * sz.slm.num_row;
+    const max_qubit = num_qubits;
     var placement = try allocator.alloc(Point, max_qubit);
 
     // Relative starting origin of grid (bottom-left).
