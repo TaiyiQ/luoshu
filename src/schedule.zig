@@ -432,19 +432,33 @@ pub fn qubitPlacement(
         }
     }
 
+    var placed = try allocator.alloc(bool, num_qubits);
+    defer allocator.free(placed);
+    @memset(placed, false);
+
     var qubit_id: usize = 0;
 
-    // 1. First move the SLM qubits.
+    // 1. Place SLM qubits (those involved in CZ gates, fixed traps).
     for (slm_slots) |maybe_qubit| {
         if (maybe_qubit) |id| {
             placement[id] = sites.items[qubit_id];
+            placed[id] = true;
             qubit_id += 1;
         }
     }
 
-    // 2. Second move the AOD qubits.
+    // 2. Place AOD qubits (those involved in CZ gates, mobile traps).
     for (aod_slots[0]) |maybe_qubit| {
         if (maybe_qubit) |id| {
+            placement[id] = sites.items[qubit_id];
+            placed[id] = true;
+            qubit_id += 1;
+        }
+    }
+
+    // 3. Place isolated qubits (U-gate-only, not in any CZ) in remaining sites.
+    for (0..num_qubits) |id| {
+        if (!placed[id]) {
             placement[id] = sites.items[qubit_id];
             qubit_id += 1;
         }
