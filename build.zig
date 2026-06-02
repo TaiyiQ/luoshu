@@ -28,6 +28,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/schedule.zig"),
     });
     schedule_mod.addImport("arch", arch_mod);
+    schedule_mod.addImport("circuit", circuit_mod);
     exe.root_module.addImport("schedule", schedule_mod);
 
     const route_mod = b.addModule("route", .{

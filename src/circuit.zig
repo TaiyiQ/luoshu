@@ -112,7 +112,7 @@ pub const Pipeline = struct {
                 initial_placement = try s.allocator.dupe(schedule.Point, placement);
             }
 
-            try schedule.moveSlmQubits(
+            try schedule.moveSlmCompute(
                 s.allocator,
                 cfg.compute_zone,
                 logical.slm_slots,
@@ -121,7 +121,8 @@ pub const Pipeline = struct {
                 t_slm,
             );
 
-            try schedule.moveAodQubits(
+            // Rydberg after each move.
+            try schedule.moveAodCompute(
                 s.allocator,
                 cfg.compute_zone,
                 logical.aod_slots_per_color,
@@ -130,13 +131,31 @@ pub const Pipeline = struct {
                 t_aod_base,
             );
 
-            try schedule.moveBack(
+            try schedule.moveAodStorage(
                 s.allocator,
                 logical.aod_slots_per_color,
                 initial_placement,
                 &placement,
                 &ops,
                 t_aod_base + 1,
+            );
+
+            const t_slm_back = t_aod_base + 1 + @as(u32, @intCast(logical.aod_slots_per_color.len));
+            try schedule.moveSlmStorage(
+                s.allocator,
+                logical.slm_slots,
+                initial_placement,
+                &placement,
+                &ops,
+                t_slm_back,
+            );
+
+            try schedule.addRamanOp(
+                s.allocator,
+                placement,
+                stage.u_gates.items,
+                t_aod_base,
+                &ops,
             );
         }
 

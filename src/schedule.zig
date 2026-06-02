@@ -1,5 +1,6 @@
 const std = @import("std");
 const arch = @import("arch");
+const circuit = @import("circuit");
 
 pub const Zone = enum { storage, compute, readout };
 const Axis = enum { x, y };
@@ -9,8 +10,8 @@ const RamanTarget = struct { qubit: u32, pos: Point };
 const MoveAtom = struct { qubit: u32, src: Point, dest: Point };
 
 const Raman = struct {
-    angle: f32,
-    phase: f32,
+    angle: f64,
+    phase: f64,
     targets: []const RamanTarget,
 };
 
@@ -184,7 +185,7 @@ pub fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]con
     return try slots.toOwnedSlice(allocator);
 }
 
-pub fn moveSlmQubits(
+pub fn moveSlmCompute(
     allocator: std.mem.Allocator,
     cz: arch.ComputeZone,
     slm_qubits: []const ?usize,
@@ -231,28 +232,74 @@ pub fn moveSlmQubits(
     try ops.append(allocator, op);
 }
 
-fn addRamanOp(
+pub fn addRamanOp(
     allocator: std.mem.Allocator,
     placement: []const Point,
-    angle: f32,
-    phase: f32,
+    u_gates: []const circuit.U,
     t: u32,
     ops: *std.ArrayList(Op),
 ) !void {
-    var targets: std.ArrayList(RamanTarget) = .empty;
-    for (placement, 0..) |pos, id| {
+    // FIXME, do we need a list of targets?
+    for (u_gates) |gate| {
+        var targets: std.ArrayList(RamanTarget) = .empty;
+
         try targets.append(allocator, .{
-            .qubit = @intCast(id),
-            .pos = pos,
+            .qubit = @intCast(gate.qubit),
+            .pos = placement[gate.qubit],
+        });
+
+        try ops.append(allocator, Op{
+            .t = t,
+            .kind = .{
+                .raman = .{
+                    .angle = gate.theta,
+                    .phase = gate.phi,
+                    .targets = try targets.toOwnedSlice(allocator),
+                },
+            },
         });
     }
-    try ops.append(allocator, Op{
-        .t = t,
-        .kind = .{ .raman = .{ .angle = angle, .phase = phase, .targets = try targets.toOwnedSlice(allocator) } },
-    });
 }
 
-pub fn moveBack(
+pub fn moveSlmStorage(
+    allocator: std.mem.Allocator,
+    slm_qubits: []const ?usize,
+    init_placement: []Point,
+    placement: *[]Point,
+    ops: *std.ArrayList(Op),
+    t: u32,
+) !void {
+    var atoms: std.ArrayList(MoveAtom) = .empty;
+
+    for (slm_qubits) |maybe_slm| {
+        if (maybe_slm) |qubit_id| {
+            const src = placement.*[qubit_id];
+            const dest = init_placement[qubit_id];
+
+            try atoms.append(allocator, MoveAtom{
+                .qubit = @as(u32, @intCast(qubit_id)),
+                .src = src,
+                .dest = dest,
+            });
+
+            placement.*[qubit_id] = dest;
+        }
+    }
+
+    const op = Op{ .t = t, .kind = .{
+        .move = .{
+            .aod = 0,
+            .translate = Axis.y,
+            .src_zone = Zone.compute,
+            .dest_zone = Zone.storage,
+            .atoms = try atoms.toOwnedSlice(allocator),
+        },
+    } };
+
+    try ops.append(allocator, op);
+}
+
+pub fn moveAodStorage(
     allocator: std.mem.Allocator,
     aod_qubits: [][]?usize,
     init_placement: []Point,
@@ -294,7 +341,7 @@ pub fn moveBack(
     }
 }
 
-pub fn moveAodQubits(
+pub fn moveAodCompute(
     allocator: std.mem.Allocator,
     cz: arch.ComputeZone,
     aod_qubits: [][]?usize,
