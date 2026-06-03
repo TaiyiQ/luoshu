@@ -1162,11 +1162,17 @@ pub fn stageGraph(c: circuit.Circuit, p: circuit.Pipeline) !void {
         for (0..n) |q| {
             var in_cz = false;
             for (stage.cz_gates.items) |cz| {
-                if (cz.control == q or cz.target == q) { in_cz = true; break; }
+                if (cz.control == q or cz.target == q) {
+                    in_cz = true;
+                    break;
+                }
             }
             var in_u = false;
             for (stage.u_gates.items) |ug| {
-                if (ug.qubit == q) { in_u = true; break; }
+                if (ug.qubit == q) {
+                    in_u = true;
+                    break;
+                }
             }
 
             const p0 = pos[q];

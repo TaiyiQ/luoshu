@@ -35,7 +35,7 @@ const Stage = struct {
     // Generate a graph connecting CZ qubits, to move them into the compute zone.
     // The stage owns the graph. Therefore, it compiles a logical sequence from
     // the CZ gates using a graph.
-    pub fn compile(s: *Stage, allocator: std.mem.Allocator, num_qubit: usize) !schedule.Logical {
+    pub fn compile(s: *Stage, allocator: std.mem.Allocator, num_qubit: usize) !route.Sequence {
         std.debug.print(">> Stage: compiling\n", .{});
 
         for (s.cz_gates.items) |gate| {
@@ -47,11 +47,11 @@ const Stage = struct {
 
         for (s.cz_gates.items) |gate| try g.addEdge(gate.control, gate.target);
 
-        const logical = try route.compile(allocator, &g);
-        //try logical.writeToFile(s.allocator, init.io, "./zig-out/logical.json");
-        logical.print();
+        const sequence = try route.compile(allocator, &g);
+        //try sequence.writeToFile(s.allocator, init.io, "./zig-out/logical.json");
+        sequence.print();
 
-        return logical;
+        return sequence;
     }
 };
 
@@ -68,20 +68,20 @@ pub const Pipeline = struct {
         };
     }
 
-    pub fn deinit(self: *Pipeline) void {
-        for (self.stages.items) |*stage| stage.deinit(self.allocator);
-        self.stages.deinit(self.allocator);
+    pub fn deinit(s: *Pipeline) void {
+        for (s.stages.items) |*stage| stage.deinit(s.allocator);
+        s.stages.deinit(s.allocator);
     }
 
     // Place a `gate` into stage `n`, creating intervening stages as needed.
-    fn place(self: *Pipeline, n: usize, gate: Native) !void {
-        while (self.stages.items.len <= n) {
-            try self.stages.append(self.allocator, .{});
+    fn place(s: *Pipeline, n: usize, gate: Native) !void {
+        while (s.stages.items.len <= n) {
+            try s.stages.append(s.allocator, .{});
         }
-        const stage = &self.stages.items[n];
+        const stage = &s.stages.items[n];
         switch (gate) {
-            .u => |g| try stage.u_gates.append(self.allocator, g),
-            .cz => |g| try stage.cz_gates.append(self.allocator, g),
+            .u => |g| try stage.u_gates.append(s.allocator, g),
+            .cz => |g| try stage.cz_gates.append(s.allocator, g),
         }
     }
 
@@ -98,15 +98,15 @@ pub const Pipeline = struct {
         var initial_placement: []schedule.Point = &.{};
 
         for (s.stages.items, 0..) |*stage, stage_idx| {
-            var logical = try stage.compile(s.allocator, s.num_qubits);
-            defer logical.deinit();
+            var sequence = try stage.compile(s.allocator, s.num_qubits);
+            defer sequence.deinit();
 
             if (stage_idx == 0) {
                 placement = try schedule.qubitPlacement(
                     s.allocator,
                     cfg.storage_zone,
-                    logical.slm_slots,
-                    logical.aod_slots_per_color,
+                    sequence.fixed,
+                    sequence.moveable,
                     s.num_qubits,
                 );
                 initial_placement = try s.allocator.dupe(schedule.Point, placement);
@@ -115,7 +115,7 @@ pub const Pipeline = struct {
             try schedule.moveSlmCompute(
                 s.allocator,
                 cfg.compute_zone,
-                logical.slm_slots,
+                sequence.fixed,
                 &placement,
                 &ops,
                 t_slm,
@@ -125,7 +125,7 @@ pub const Pipeline = struct {
             try schedule.moveAodCompute(
                 s.allocator,
                 cfg.compute_zone,
-                logical.aod_slots_per_color,
+                sequence.moveable,
                 &placement,
                 &ops,
                 t_aod_base,
@@ -133,17 +133,17 @@ pub const Pipeline = struct {
 
             try schedule.moveAodStorage(
                 s.allocator,
-                logical.aod_slots_per_color,
+                sequence.moveable,
                 initial_placement,
                 &placement,
                 &ops,
                 t_aod_base + 1,
             );
 
-            const t_slm_back = t_aod_base + 1 + @as(u32, @intCast(logical.aod_slots_per_color.len));
+            const t_slm_back = t_aod_base + 1 + @as(u32, @intCast(sequence.moveable.len));
             try schedule.moveSlmStorage(
                 s.allocator,
-                logical.slm_slots,
+                sequence.fixed,
                 initial_placement,
                 &placement,
                 &ops,
@@ -181,7 +181,7 @@ pub const Pipeline = struct {
 /// Within a stage, CZ gate indices are listed first, then U gate indices.
 ///
 /// Returns a `Stages` = list of stages, indexed by stage number. Each stage is
-/// itself a list of gate indices into `c.gates.items`. Within a stage, the CZ
+/// its a list of gate indices into `c.gates.items`. Within a stage, the CZ
 /// gates are listed first, followed by the U gates:
 ///
 ///     stages.items[s]      -> gate indices that run during stage s (CZs, then Us)
