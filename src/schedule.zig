@@ -1,3 +1,5 @@
+// Schedule opartions.
+
 const std = @import("std");
 const arch = @import("arch");
 const circuit = @import("circuit");
@@ -15,6 +17,17 @@ const Raman = struct {
     targets: []const RamanTarget,
 };
 
+const Load = struct {
+    qubit: u32,
+    position: Point,
+};
+
+const Store = struct {
+    qubit: u32,
+    position: Point,
+};
+
+// TODO: Make sure a moving atom has been loaded before.
 const Move = struct {
     aod: u32,
     translate: Axis,
@@ -29,7 +42,9 @@ const Measure = struct { zone: Zone, qubits: []u32 };
 
 const OpKind = union(enum) {
     raman: Raman,
+    load: Load,
     move: Move,
+    store: Store,
     rydberg: Rydberg,
     measure: Measure,
 };
@@ -185,14 +200,50 @@ pub fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]con
     return try slots.toOwnedSlice(allocator);
 }
 
+// A qubit set to have fast lookup on which qubits have been picked up.
+const Register = std.AutoHashMap(usize, void);
+
+// Pick up atoms into the moveable register.
+pub fn pickup(
+    allocator: std.mem.Allocator,
+    fixed_qubits: []const ?usize,
+    placement: *[]Point,
+    ops: *std.ArrayList(Op),
+) !Register {
+    var register = Register.init(allocator);
+
+    for (fixed_qubits) |maybe_qubit| {
+        if (maybe_qubit) |q| {
+            const pos = placement.*[q];
+
+            // FIXME: Set proper timeframe.
+            const op = Op{ .t = 0, .kind = .{
+                .load = .{
+                    .qubit = q,
+                    .position = pos,
+                },
+            } };
+
+            try ops.append(allocator, op);
+
+            register.put(q, void);
+        }
+    }
+
+    return register;
+}
+
 pub fn moveSlmCompute(
     allocator: std.mem.Allocator,
     cz: arch.ComputeZone,
-    slm_qubits: []const ?usize,
+    fixed_qubits: []const ?usize,
     placement: *[]Point,
     ops: *std.ArrayList(Op),
     t: u32,
 ) !void {
+    // FIXME: mayube we dont need a register, since we will always pickup the current set?
+    _ = try pickup(allocator, fixed_qubits, placement, ops);
+
     const control = cz.slms[0];
     const x_slm_orig = cz.offset_nm[0] + control.offset_nm[0];
     const y_slm_orig = cz.offset_nm[1] + control.offset_nm[1];
@@ -200,11 +251,11 @@ pub fn moveSlmCompute(
 
     var atoms: std.ArrayList(MoveAtom) = .empty;
 
-    for (slm_qubits, 0..) |maybe_slm, i| {
+    for (fixed_qubits, 0..) |maybe_qubit, i| {
         const x = x_slm_orig + @as(i32, @intCast(i)) * @as(i32, @intCast(x_sep));
         const y = y_slm_orig + @as(i32, @intCast(control.sep_nm[1]));
 
-        if (maybe_slm) |qubit_id| {
+        if (maybe_qubit) |qubit_id| {
             const src = placement.*[qubit_id];
             const dest = Point{ .x = x, .y = y };
 
