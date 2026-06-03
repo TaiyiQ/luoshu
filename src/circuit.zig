@@ -114,7 +114,7 @@ pub const Pipeline = struct {
 
             try schedule.moveSlmCompute(
                 s.allocator,
-                cfg.compute_zone,
+                cfg,
                 sequence.fixed,
                 &placement,
                 &ops,

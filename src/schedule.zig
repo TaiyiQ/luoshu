@@ -66,7 +66,7 @@ pub const Physical = struct {
                 .move => |m| s.allocator.free(m.atoms),
                 .raman => |r| s.allocator.free(r.targets),
                 .measure => |m| s.allocator.free(m.qubits),
-                .rydberg => {},
+                .rydberg, .load, .store => {},
             }
         }
         s.allocator.free(s.ops);
@@ -146,6 +146,20 @@ pub const Physical = struct {
                     }
                     try w.writeAll("]\n");
                 },
+                .load => |ld| {
+                    try w.writeAll("      \"op\": \"load\",\n");
+                    try w.print("      \"qubit\": {d},\n", .{ld.qubit});
+                    try w.print("      \"x\": {d},\n", .{ld.position.x});
+                    try w.print("      \"y\": {d},\n", .{ld.position.y});
+                    try w.print("      \"t\": {d}\n", .{op.t});
+                },
+                .store => |st| {
+                    try w.writeAll("      \"op\": \"store\",\n");
+                    try w.print("      \"qubit\": {d},\n", .{st.qubit});
+                    try w.print("      \"x\": {d},\n", .{st.position.x});
+                    try w.print("      \"y\": {d},\n", .{st.position.y});
+                    try w.print("      \"t\": {d}\n", .{op.t});
+                },
             }
             try w.writeAll(if (last_op) "    }\n" else "    },\n");
         }
@@ -204,29 +218,55 @@ pub fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]con
 const Register = std.AutoHashMap(usize, void);
 
 // Pick up atoms into the moveable register.
+// Pick up does include Manhattan moves to each atom.
+// They have to architecture aware in order not to cross sites.
 pub fn pickup(
     allocator: std.mem.Allocator,
+    cfg: arch.ArchConfig,
     fixed_qubits: []const ?usize,
     placement: *[]Point,
     ops: *std.ArrayList(Op),
 ) !Register {
     var register = Register.init(allocator);
 
+    // FIXME: for now, just move it down a bit. Will do proper spacing later on.
+    const d = cfg.storage_zone.slm.sep_nm[0] / 2;
+
     for (fixed_qubits) |maybe_qubit| {
         if (maybe_qubit) |q| {
-            const pos = placement.*[q];
+            var src = placement.*[q];
 
             // FIXME: Set proper timeframe.
-            const op = Op{ .t = 0, .kind = .{
+            var op = Op{ .t = 0, .kind = .{
                 .load = .{
-                    .qubit = q,
-                    .position = pos,
+                    .qubit = @as(u32, @intCast(q)),
+                    .position = src,
                 },
             } };
-
             try ops.append(allocator, op);
 
-            register.put(q, void);
+            var atoms: std.ArrayList(MoveAtom) = .empty;
+
+            src.y += @as(i32, @intCast(d));
+
+            try atoms.append(allocator, MoveAtom{
+                .qubit = @as(u32, @intCast(q)),
+                .src = src,
+                .dest = .{ .x = src.x, .y = src.y },
+            });
+
+            op = Op{ .t = 0, .kind = .{
+                .move = .{
+                    .aod = 0,
+                    .translate = Axis.y,
+                    .src_zone = Zone.storage,
+                    .dest_zone = Zone.compute,
+                    .atoms = try atoms.toOwnedSlice(allocator),
+                },
+            } };
+            try ops.append(allocator, op);
+
+            try register.put(q, {});
         }
     }
 
@@ -235,14 +275,17 @@ pub fn pickup(
 
 pub fn moveSlmCompute(
     allocator: std.mem.Allocator,
-    cz: arch.ComputeZone,
+    cfg: arch.ArchConfig,
     fixed_qubits: []const ?usize,
     placement: *[]Point,
     ops: *std.ArrayList(Op),
     t: u32,
 ) !void {
     // FIXME: mayube we dont need a register, since we will always pickup the current set?
-    _ = try pickup(allocator, fixed_qubits, placement, ops);
+    var register = try pickup(allocator, cfg, fixed_qubits, placement, ops);
+    defer register.deinit();
+
+    const cz = cfg.compute_zone;
 
     const control = cz.slms[0];
     const x_slm_orig = cz.offset_nm[0] + control.offset_nm[0];

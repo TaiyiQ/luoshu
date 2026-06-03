@@ -27,7 +27,12 @@ const palette = struct {
     pub const zone_compute = rl.Color{ .r = 46, .g = 70, .b = 66, .a = 90 };
     pub const zone_compute_active = rl.Color{ .r = 65, .g = 130, .b = 120, .a = 120 };
     pub const zone_border = rl.Color{ .r = 115, .g = 121, .b = 148, .a = 100 };
+    pub const qload_fill = rl.Color{ .r = 147, .g = 154, .b = 183, .a = 255 };
+    pub const qload_stroke = rl.Color{ .r = 184, .g = 192, .b = 224, .a = 255 };
 };
+
+const ATOM_R: f32 = 300.0;
+const ATOM_R_LOADED: f32 = 450.0;
 
 fn toVec(p: Point) rl.Vector2 {
     return .{ .x = @floatFromInt(p.x), .y = @floatFromInt(p.y) };
@@ -113,9 +118,13 @@ fn computeBoundingBox(slots: []const Point) BBox {
 // -----------------------------------------------------------------------
 fn opColors(op: Op) struct { fill: rl.Color, stroke: rl.Color } {
     return switch (op.kind) {
-        .move => .{
+        .move, .store => .{
             .fill = palette.qact_fill,
             .stroke = palette.qact_stroke,
+        },
+        .load => .{
+            .fill = palette.qload_fill,
+            .stroke = palette.qload_stroke,
         },
         .raman => .{
             .fill = palette.qmeas_fill,
@@ -163,7 +172,7 @@ fn drawArrivalRipple(cam: Camera, pos: Point, settle_t: f32, fill: rl.Color) voi
     if (settle_t <= 0) return;
 
     const screen = cam.worldToScreen(toVec(pos));
-    const base_r = 600.0 * cam.zoom;
+    const base_r = ATOM_R * cam.zoom;
     const fade: f32 = 1.0 - settle_t;
     const alpha: u8 = @intFromFloat(fade * 255.0);
     const r = base_r * (1.0 + settle_t * 2.0);
@@ -177,7 +186,7 @@ fn drawArrivalRipple(cam: Camera, pos: Point, settle_t: f32, fill: rl.Color) voi
 fn drawPairHalo(cam: Camera, a: Point, b: Point, color: rl.Color) void {
     const sa = cam.worldToScreen(toVec(a));
     const sb = cam.worldToScreen(toVec(b));
-    const base_r = 600.0 * cam.zoom;
+    const base_r = ATOM_R * cam.zoom;
     const cx = (sa.x + sb.x) / 2.0;
     const cy = (sa.y + sb.y) / 2.0;
     const dx = sb.x - sa.x;
@@ -193,7 +202,7 @@ fn drawPairHalo(cam: Camera, a: Point, b: Point, color: rl.Color) void {
 
 fn drawGatePulse(cam: Camera, pos: Point, time: f32, color: rl.Color) void {
     const screen = cam.worldToScreen(toVec(pos));
-    const base_r = 600.0 * cam.zoom;
+    const base_r = ATOM_R * cam.zoom;
     const pulse = @sin(time * std.math.pi * 5.0);
     const r = base_r * (1.7 + 0.35 * pulse);
     const a1: u8 = @intFromFloat(80.0 + 100.0 * (0.5 + 0.5 * pulse));
@@ -204,7 +213,7 @@ fn drawGatePulse(cam: Camera, pos: Point, time: f32, color: rl.Color) void {
 
 fn drawGhostQubit(cam: Camera, pos: Point, fill: rl.Color) void {
     const screen = cam.worldToScreen(toVec(pos));
-    const screen_radius = 600.0 * cam.zoom;
+    const screen_radius = ATOM_R * cam.zoom;
 
     rl.drawCircleV(screen, screen_radius, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 35 });
     rl.drawCircleLinesV(screen, screen_radius, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 90 });
@@ -233,7 +242,7 @@ fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
 
 fn drawSlot(cam: Camera, slot: Point, positions: []const Point) void {
     const screen = cam.worldToScreen(toVec(slot));
-    const screen_radius = 600.0 * cam.zoom;
+    const screen_radius = ATOM_R * cam.zoom;
 
     var occupied = false;
     for (positions) |p| {
@@ -250,9 +259,9 @@ fn drawSlot(cam: Camera, slot: Point, positions: []const Point) void {
     }
 }
 
-fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, active: bool, fill: rl.Color, stroke: rl.Color) void {
+fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, active: bool, loaded: bool, fill: rl.Color, stroke: rl.Color) void {
     const screen = cam.worldToScreen(toVec(pos));
-    const screen_radius = 600.0 * cam.zoom;
+    const screen_radius = (if (loaded) ATOM_R_LOADED else ATOM_R) * cam.zoom;
 
     rl.drawCircleV(screen, screen_radius, palette.qdot);
 
@@ -329,6 +338,7 @@ fn drawPanel(
     active: []const bool,
     num_qubits: usize,
     positions: []const Point,
+    loaded: []const bool,
     summary: Summary,
     scroll: f32,
 ) f32 {
@@ -429,6 +439,7 @@ fn drawPanel(
             .rydberg => |r| @tagName(r.zone),
             .measure => |m| @tagName(m.zone),
             .raman => "-",
+            .load, .store => "storage",
         };
         rl.drawTextEx(font, "zone", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
         rl.drawTextEx(font, zone_str, .{ .x = KV_VX, .y = y }, FS_KV, KV_SP, accent);
@@ -651,6 +662,32 @@ fn drawPanel(
             );
             y += KV_ROW_H;
         },
+        .load => |ld| {
+            rl.drawTextEx(font, "qubit", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            var b0: [8]u8 = undefined;
+            rl.drawTextEx(
+                font,
+                std.fmt.bufPrintSentinel(&b0, "{d}", .{ld.qubit}, 0) catch "?",
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
+            y += KV_ROW_H;
+        },
+        .store => |st| {
+            rl.drawTextEx(font, "qubit", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+            var b0: [8]u8 = undefined;
+            rl.drawTextEx(
+                font,
+                std.fmt.bufPrintSentinel(&b0, "{d}", .{st.qubit}, 0) catch "?",
+                .{ .x = KV_VX, .y = y },
+                FS_KV,
+                KV_SP,
+                palette.text,
+            );
+            y += KV_ROW_H;
+        },
     }
     y += PAD;
 
@@ -710,6 +747,45 @@ fn drawPanel(
                 KV_SP,
                 palette.text_sub,
             );
+            y += KV_ROW_H;
+        }
+    }
+    y += PAD;
+
+    // ── Loaded atoms (AOD register) ───────────────────────────────
+    sep(y);
+    y += SEP_ADV;
+    sectionLabel(font, "LOADED", y);
+    y += LABEL_ADV;
+    {
+        var any_loaded = false;
+        var shown: usize = 0;
+        for (loaded, 0..) |l, q| {
+            if (!l) continue;
+            any_loaded = true;
+            if (shown >= ATOM_MAX) {
+                rl.drawTextEx(font, "...", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
+                y += KV_ROW_H;
+                break;
+            }
+            var buf: [48]u8 = undefined;
+            const line = if (q < positions.len) blk: {
+                const pos = positions[q];
+                break :blk std.fmt.bufPrintSentinel(
+                    &buf,
+                    "q{d}  ({d}, {d}) um",
+                    .{ q, @divTrunc(pos.x, 1000), @divTrunc(pos.y, 1000) },
+                    0,
+                ) catch "?";
+            } else blk: {
+                break :blk std.fmt.bufPrintSentinel(&buf, "q{d}", .{q}, 0) catch "?";
+            };
+            rl.drawTextEx(font, line, .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.qact_fill);
+            y += KV_ROW_H;
+            shown += 1;
+        }
+        if (!any_loaded) {
+            rl.drawTextEx(font, "-", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
             y += KV_ROW_H;
         }
     }
@@ -826,6 +902,25 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         }
     }
 
+    var frame_loaded = try allocator.alloc([]bool, frame_count);
+    defer {
+        for (frame_loaded) |fl| allocator.free(fl);
+        allocator.free(frame_loaded);
+    }
+    {
+        const cur = try allocator.alloc(bool, s.placement.len);
+        defer allocator.free(cur);
+        @memset(cur, false);
+        for (s.ops, 0..) |op, i| {
+            switch (op.kind) {
+                .load => |ld| cur[ld.qubit] = true,
+                .store => |st| cur[st.qubit] = false,
+                else => {},
+            }
+            frame_loaded[i] = try allocator.dupe(bool, cur);
+        }
+    }
+
     // Count logical qubits and op types across the full schedule.
     var num_qubits: usize = 0;
     var summary = Summary{ .move = 0, .raman = 0, .rydberg = 0, .measure = 0 };
@@ -852,6 +947,8 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
                     num_qubits = @max(num_qubits, q + 1);
                 }
             },
+            .load => |ld| num_qubits = @max(num_qubits, ld.qubit + 1),
+            .store => |st| num_qubits = @max(num_qubits, st.qubit + 1),
         }
     }
 
@@ -989,21 +1086,9 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
             .measure => |m| for (m.qubits) |q| {
                 active[q] = true;
             },
-            .rydberg => {
-                //                const db: i64 = layout.constraints.db_nm;
-                //                const db2 = db * db;
-                //                for (frame_positions[frame][0..num_qubits], 0..) |pa, ia| {
-                //                    for (frame_positions[frame][0..num_qubits], 0..) |pb, ib| {
-                //                        if (ib == ia) continue;
-                //                        const dx: i64 = @as(i64, pa.x) - @as(i64, pb.x);
-                //                        const dy: i64 = @as(i64, pa.y) - @as(i64, pb.y);
-                //                        if (dx * dx + dy * dy <= db2) {
-                //                            active[ia] = true;
-                //                            active[ib] = true;
-                //                        }
-                //                    }
-                //                }
-            },
+            .load => |ld| active[ld.qubit] = true,
+            .store => |st| active[st.qubit] = true,
+            .rydberg => {},
         }
 
         rl.clearBackground(palette.bg);
@@ -1065,7 +1150,8 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         const now: f32 = @floatCast(rl.getTime());
         const colors = opColors(op);
         for (draw_positions, 0..) |pos, id| {
-            drawQubit(camera, font, pos, id, active[id], colors.fill, colors.stroke);
+            const is_loaded = id < frame_loaded[frame].len and frame_loaded[frame][id];
+            drawQubit(camera, font, pos, id, active[id], is_loaded, colors.fill, colors.stroke);
         }
 
         if (op.kind == .raman) {
@@ -1084,6 +1170,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
                 active,
                 num_qubits,
                 frame_positions[frame],
+                frame_loaded[frame],
                 summary,
                 panel_scroll,
             );
