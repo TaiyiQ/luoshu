@@ -230,31 +230,60 @@ pub fn pickup(
     var register = Register.init(allocator);
 
     // FIXME: for now, just move it down a bit. Will do proper spacing later on.
-    const d = cfg.storage_zone.slm.sep_nm[0] / 2;
+    const d = @as(i32, @intCast(cfg.storage_zone.slm.sep_nm[0] / 2));
 
+    var qubits: std.ArrayList(usize) = .empty;
+    defer qubits.deinit(allocator);
     for (fixed_qubits) |maybe_qubit| {
-        if (maybe_qubit) |q| {
-            var src = placement.*[q];
+        if (maybe_qubit) |q| try qubits.append(allocator, q);
+    }
 
-            // FIXME: Set proper timeframe.
-            var op = Op{ .t = 0, .kind = .{
-                .load = .{
-                    .qubit = @as(u32, @intCast(q)),
-                    .position = src,
-                },
-            } };
-            try ops.append(allocator, op);
+    // FIXME: you want all move all qubits in the register.
+    // This is starting to feel like a proper compiler graph/tree type problem.
+    for (0..qubits.items.len - 1) |i| {
+        const q = @as(u32, @intCast(qubits.items[i]));
+        const q_next = @as(u32, @intCast(qubits.items[i + 1]));
 
-            var atoms: std.ArrayList(MoveAtom) = .empty;
+        var src = placement.*[q];
 
-            src.y += @as(i32, @intCast(d));
+        // FIXME: Set proper timeframe.
+        var op = Op{ .t = 0, .kind = .{
+            .load = .{
+                .qubit = q,
+                .position = src,
+            },
+        } };
+        try ops.append(allocator, op);
+        try register.put(q, {});
 
-            try atoms.append(allocator, MoveAtom{
-                .qubit = @as(u32, @intCast(q)),
-                .src = src,
-                .dest = .{ .x = src.x, .y = src.y },
-            });
+        // --- Add moves to pickup next atom.
 
+        var atoms: std.ArrayList(MoveAtom) = .empty;
+        src.y += d;
+        var move = MoveAtom{
+            .qubit = q,
+            .src = src,
+            .dest = .{ .x = src.x, .y = src.y },
+        };
+        try atoms.append(allocator, move);
+        op = Op{ .t = 0, .kind = .{
+            .move = .{
+                .aod = 0,
+                .translate = Axis.y,
+                .src_zone = Zone.storage,
+                .dest_zone = Zone.compute,
+                .atoms = try atoms.toOwnedSlice(allocator),
+            },
+        } };
+        try ops.append(allocator, op);
+
+        // Move left
+        if (q_next < q) {
+            move.dest.x = placement.*[q_next].x - d;
+            move.src = move.dest;
+            try atoms.append(allocator, move);
+            // FIXME. Move per op, remove list of moves.
+            // FFS, you want to always discretize your domain space.
             op = Op{ .t = 0, .kind = .{
                 .move = .{
                     .aod = 0,
@@ -266,8 +295,31 @@ pub fn pickup(
             } };
             try ops.append(allocator, op);
 
-            try register.put(q, {});
+            move.dest.y -= d;
+            move.src = move.dest;
+            try atoms.append(allocator, move);
+            op = Op{ .t = 0, .kind = .{
+                .move = .{
+                    .aod = 0,
+                    .translate = Axis.y,
+                    .src_zone = Zone.storage,
+                    .dest_zone = Zone.compute,
+                    .atoms = try atoms.toOwnedSlice(allocator),
+                },
+            } };
+            try ops.append(allocator, op);
         }
+
+        //        op = Op{ .t = 0, .kind = .{
+        //            .move = .{
+        //                .aod = 0,
+        //                .translate = Axis.y,
+        //                .src_zone = Zone.storage,
+        //                .dest_zone = Zone.compute,
+        //                .atoms = try atoms.toOwnedSlice(allocator),
+        //            },
+        //        } };
+        //        try ops.append(allocator, op);
     }
 
     return register;
@@ -493,28 +545,25 @@ pub fn moveAodCompute(
 pub fn qubitPlacement(
     allocator: std.mem.Allocator,
     sz: arch.StorageZone,
-    slm_slots: []const ?usize,
-    aod_slots: [][]?usize,
     num_qubits: usize,
 ) ![]Point {
-    var tmp = try allocator.alloc(?Point, num_qubits);
-    defer allocator.free(tmp);
-    @memset(tmp, null);
-
-    // Relative starting origin of grid (bottom-left).
     const x_orig = sz.offset_nm[0] + sz.slm.offset_nm[0];
     const y_orig = sz.offset_nm[1] + sz.slm.offset_nm[1];
-
-    // Seperation spacing between grid items.
     const x_sep = @as(i32, @intCast(sz.slm.sep_nm[0]));
     const y_sep = @as(i32, @intCast(sz.slm.sep_nm[1]));
 
+    const num_col = sz.slm.num_col;
+    const num_row = sz.slm.num_row;
+
+    // Center half: columns from 25% to 75% of the grid width.
+    const col_start = num_col / 4;
+    const col_end = num_col - num_col / 4;
+
     var sites: std.ArrayList(Point) = .empty;
     defer sites.deinit(allocator);
-    for (0..sz.slm.num_row) |row| {
-        // Start from the row closest to the compute zone.
-        const i = sz.slm.num_row - 1 - row;
-        for (0..sz.slm.num_col) |j| {
+    for (0..num_row) |row| {
+        const i = num_row - 1 - row;
+        for (col_start..col_end) |j| {
             try sites.append(allocator, Point{
                 .x = x_orig + @as(i32, @intCast(j)) * x_sep,
                 .y = y_orig + @as(i32, @intCast(i)) * y_sep,
@@ -522,35 +571,8 @@ pub fn qubitPlacement(
         }
     }
 
-    var qubit_id: usize = 0;
-
-    // 1. Place SLM qubits (those involved in CZ gates, fixed traps).
-    for (slm_slots) |maybe_qubit| {
-        if (maybe_qubit) |id| {
-            tmp[id] = sites.items[qubit_id];
-            qubit_id += 1;
-        }
-    }
-
-    // 2. Place AOD qubits (those involved in CZ gates, mobile traps).
-    for (aod_slots[0]) |maybe_qubit| {
-        if (maybe_qubit) |id| {
-            tmp[id] = sites.items[qubit_id];
-            qubit_id += 1;
-        }
-    }
-
-    // 3. Place isolated qubits (U-gate-only, not in any CZ) in remaining sites.
-    for (0..num_qubits) |id| {
-        if (tmp[id] == null) {
-            tmp[id] = sites.items[qubit_id];
-            qubit_id += 1;
-        }
-    }
-
-    // Ensure all qubits are placed.
     const placement = try allocator.alloc(Point, num_qubits);
-    for (tmp, placement) |maybe_p, *out| out.* = maybe_p.?;
+    for (placement, 0..) |*p, i| p.* = sites.items[i];
 
     return placement;
 }

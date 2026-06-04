@@ -105,8 +105,6 @@ pub const Pipeline = struct {
                 placement = try schedule.qubitPlacement(
                     s.allocator,
                     cfg.storage_zone,
-                    sequence.fixed,
-                    sequence.moveable,
                     s.num_qubits,
                 );
                 initial_placement = try s.allocator.dupe(schedule.Point, placement);

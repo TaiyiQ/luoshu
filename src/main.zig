@@ -20,9 +20,9 @@ pub fn main(init: std.process.Init) !void {
     defer sched.deinit();
     //try sched.writeToFile(init.gpa, init.io, "./zig-out/physical.json");
 
-    //try draw.pipeline(circ, null); // Draw original circuit.
-    //try draw.pipeline(circ, pipeline);
-    //try draw.stageGraph(circ, pipeline);
+    try draw.pipeline(circ, null); // Draw original circuit.
+    try draw.pipeline(circ, pipeline);
+    try draw.stageGraph(circ, pipeline);
     try draw.physical(init.gpa, cfg, sched);
 
     std.debug.print(">> Gate compilation completed\n", .{});
