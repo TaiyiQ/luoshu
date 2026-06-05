@@ -157,6 +157,7 @@ pub const Pipeline = struct {
             //            );
         }
 
+        for (placement) |*a| a.deinit();
         s.allocator.free(placement);
 
         const slots = try schedule.allSlmSlots(s.allocator, cfg);

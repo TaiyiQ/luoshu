@@ -669,20 +669,26 @@ fn drawPanel(
 pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Physical) !void {
     if (s.placement.len == 0 or s.ops.len == 0) return;
 
-    const frame_count = s.ops.len;
+    var max_t: u32 = 0;
+    for (s.ops) |op| max_t = @max(max_t, op.t);
+    const frame_count = @as(usize, max_t) + 1;
+
     var frame_positions = try allocator.alloc([]Point, frame_count);
     defer {
         for (frame_positions) |fp| allocator.free(fp);
         allocator.free(frame_positions);
     }
     {
-        const cur = try allocator.dupe(Point, s.placement);
+        const cur = try allocator.alloc(Point, s.placement.len);
+        for (s.placement, 0..) |atom, i| cur[i] = atom.pos;
         defer allocator.free(cur);
-        for (s.ops, 0..) |op, i| {
-            if (op.kind == .move) {
-                cur[op.kind.move.qubit] = op.kind.move.dest;
+        for (0..frame_count) |t| {
+            for (s.ops) |op| {
+                if (op.t == @as(u32, @intCast(t)) and op.kind == .move) {
+                    cur[op.kind.move.qubit] = op.kind.move.dest;
+                }
             }
-            frame_positions[i] = try allocator.dupe(Point, cur);
+            frame_positions[t] = try allocator.dupe(Point, cur);
         }
     }
 
@@ -695,13 +701,16 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         const cur = try allocator.alloc(bool, s.placement.len);
         defer allocator.free(cur);
         @memset(cur, false);
-        for (s.ops, 0..) |op, i| {
-            switch (op.kind) {
-                .load => |ld| cur[ld.qubit] = true,
-                .store => |st| cur[st.qubit] = false,
-                else => {},
+        for (0..frame_count) |t| {
+            for (s.ops) |op| {
+                if (op.t != @as(u32, @intCast(t))) continue;
+                switch (op.kind) {
+                    .load => |ld| cur[ld.qubit] = true,
+                    .store => |st| cur[st.qubit] = false,
+                    else => {},
+                }
             }
-            frame_loaded[i] = try allocator.dupe(bool, cur);
+            frame_loaded[t] = try allocator.dupe(bool, cur);
         }
     }
 
@@ -846,29 +855,48 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
             }
         }
 
-        const op = s.ops[frame];
+        const op_t: u32 = @intCast(frame);
+
+        // First op at this timestep — used for badge/colors/panel display.
+        var primary_op: Op = s.ops[0];
+        for (s.ops) |op| {
+            if (op.t == op_t) {
+                primary_op = op;
+                break;
+            }
+        }
+
+        var any_move = false;
+        var any_raman = false;
+        for (s.ops) |op| {
+            if (op.t != op_t) continue;
+            if (op.kind == .move) any_move = true;
+            if (op.kind == .raman) any_raman = true;
+        }
 
         // Throttle to 15 FPS on static frames — saves GPU/CPU when stepping manually.
-        // Panning and playing need full 60 FPS; Raman gate pulse animates continuously.
-        rl.setTargetFPS(if (playing or panning or op.kind == .raman) 60 else 15);
+        rl.setTargetFPS(if (playing or panning or any_raman) 60 else 15);
 
         // ── Draw ───────────────────────────────────────────────────
         rl.beginDrawing();
         defer rl.endDrawing();
 
-        // Determine active qubits.
+        // Active qubits = union across all ops at this timestep.
         @memset(active, false);
-        switch (op.kind) {
-            .move => |m| active[m.qubit] = true,
-            .raman => |r| for (r.targets) |t| {
-                active[t.qubit] = true;
-            },
-            .measure => |m| for (m.qubits) |q| {
-                active[q] = true;
-            },
-            .load => |ld| active[ld.qubit] = true,
-            .store => |st| active[st.qubit] = true,
-            .rydberg => {},
+        for (s.ops) |op| {
+            if (op.t != op_t) continue;
+            switch (op.kind) {
+                .move => |m| active[m.qubit] = true,
+                .raman => |r| for (r.targets) |tgt| {
+                    active[tgt.qubit] = true;
+                },
+                .measure => |m| for (m.qubits) |q| {
+                    active[q] = true;
+                },
+                .load => |ld| active[ld.qubit] = true,
+                .store => |st| active[st.qubit] = true,
+                .rydberg => {},
+            }
         }
 
         rl.clearBackground(palette.bg);
@@ -880,18 +908,20 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
 
         const travel_frac: f32 = 0.55;
         const move_t: f32 = blk: {
-            if (op.kind != .move or !playing) break :blk 1.0;
-            const t = @min(timer / (step_sec * travel_frac), 1.0);
-            break :blk t * t * (3.0 - 2.0 * t); // smoothstep
+            if (!any_move or !playing) break :blk 1.0;
+            const frac = @min(timer / (step_sec * travel_frac), 1.0);
+            break :blk frac * frac * (3.0 - 2.0 * frac); // smoothstep
         };
         const settle_t: f32 = blk: {
-            if (op.kind != .move or !playing) break :blk 0.0;
+            if (!any_move or !playing) break :blk 0.0;
             const travel_end = step_sec * travel_frac;
             if (timer <= travel_end) break :blk 0.0;
             break :blk @min((timer - travel_end) / (step_sec - travel_end), 1.0);
         };
 
-        if (op.kind == .move) {
+        // Animate all moves at this timestep simultaneously.
+        for (s.ops) |op| {
+            if (op.t != op_t or op.kind != .move) continue;
             const a = op.kind.move;
             const sv = toVec(a.src);
             const ev = toVec(a.dest);
@@ -903,15 +933,17 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
 
         for (s.slots) |slot| drawSlot(camera, slot, draw_positions);
 
-        if (op.kind == .move) {
+        // Ghost, tail, and ripple for every move at this timestep.
+        for (s.ops) |op| {
+            if (op.t != op_t or op.kind != .move) continue;
             const a = op.kind.move;
-            drawGhostQubit(camera, a.src, opColors(op).fill);
-            drawMoveTail(camera, a.src, draw_positions[a.qubit], 1.0, opColors(op).fill);
-            drawArrivalRipple(camera, a.dest, settle_t, opColors(op).fill);
+            drawGhostQubit(camera, a.src, opColors(primary_op).fill);
+            drawMoveTail(camera, a.src, draw_positions[a.qubit], 1.0, opColors(primary_op).fill);
+            drawArrivalRipple(camera, a.dest, settle_t, opColors(primary_op).fill);
         }
 
-        if (op.kind == .rydberg) {
-            const fill = opColors(op).fill;
+        if (primary_op.kind == .rydberg) {
+            const fill = opColors(primary_op).fill;
             const db: i64 = layout.constraints.db_nm;
             const db2 = db * db;
             for (draw_positions[0..num_qubits], 0..) |pa, ia| {
@@ -926,13 +958,13 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         }
 
         const now: f32 = @floatCast(rl.getTime());
-        const colors = opColors(op);
+        const colors = opColors(primary_op);
         for (draw_positions, 0..) |pos, id| {
             const is_loaded = id < frame_loaded[frame].len and frame_loaded[frame][id];
             drawQubit(camera, font, pos, id, active[id], is_loaded, colors.fill, colors.stroke);
         }
 
-        if (op.kind == .raman) {
+        if (any_raman) {
             for (draw_positions, 0..) |pos, id| {
                 if (id < active.len and active[id])
                     drawGatePulse(camera, pos, now, colors.stroke);
@@ -942,7 +974,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         if (panel_visible) {
             panel_content_h = drawPanel(
                 font,
-                op,
+                primary_op,
                 frame,
                 frame_count,
                 active,

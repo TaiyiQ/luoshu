@@ -8,7 +8,6 @@ const Axis = enum { x, y };
 pub const Atom = struct {
     allocator: std.mem.Allocator,
     id: u32,
-    t: u32,
     pos: Point,
     ops: std.ArrayList(Op),
 
@@ -16,7 +15,6 @@ pub const Atom = struct {
         return .{
             .allocator = allocator,
             .id = @as(u32, @intCast(id)),
-            .t = 0,
             .pos = pos,
             .ops = .empty,
         };
@@ -26,33 +24,42 @@ pub const Atom = struct {
         s.ops.deinit(s.allocator);
     }
 
-    fn load(s: *Atom) !void {
-        try s.ops.append(s.allocator, .{ .t = s.t, .kind = .{ .load = .{ .qubit = s.id, .position = s.pos } } });
-        s.t += 1;
+    fn load(s: *Atom, t: u32) !void {
+        try s.ops.append(s.allocator, .{ .t = t, .kind = .{
+            .load = .{
+                .qubit = s.id,
+                .position = s.pos,
+            },
+        } });
     }
 
-    fn move(s: *Atom, dx: i32, dy: i32) !void {
+    fn move(s: *Atom, dx: i32, dy: i32, t: u32) !void {
         const src = s.pos;
         s.pos.x += dx;
         s.pos.y += dy;
-        try s.ops.append(s.allocator, .{ .t = s.t, .kind = .{ .move = .{ .qubit = s.id, .src = src, .dest = s.pos } } });
-        s.t += 1;
+        try s.ops.append(s.allocator, .{ .t = t, .kind = .{
+            .move = .{
+                .qubit = s.id,
+                .src = src,
+                .dest = s.pos,
+            },
+        } });
     }
 
-    fn moveLeft(s: *Atom, d: u32) !void {
-        try s.move(-@as(i32, @intCast(d)), 0);
+    fn moveLeft(s: *Atom, d: u32, t: u32) !void {
+        try s.move(-@as(i32, @intCast(d)), 0, t);
     }
 
-    fn moveRight(s: *Atom, d: u32) !void {
-        try s.move(@intCast(d), 0);
+    fn moveRight(s: *Atom, d: u32, t: u32) !void {
+        try s.move(@intCast(d), 0, t);
     }
 
-    fn moveUp(s: *Atom, d: u32) !void {
-        try s.move(0, -@as(i32, @intCast(d)));
+    fn moveUp(s: *Atom, d: u32, t: u32) !void {
+        try s.move(0, -@as(i32, @intCast(d)), t);
     }
 
-    fn moveDown(s: *Atom, d: u32) !void {
-        try s.move(0, @intCast(d));
+    fn moveDown(s: *Atom, d: u32, t: u32) !void {
+        try s.move(0, @intCast(d), t);
     }
 
     fn order(s: Atom, other: Atom) std.math.Order {
@@ -133,6 +140,7 @@ pub const Physical = struct {
             }
         }
         s.allocator.free(s.ops);
+        for (s.placement) |*p| p.deinit();
         s.allocator.free(s.placement);
         s.allocator.free(s.slots);
     }
@@ -285,22 +293,10 @@ fn pickUpAtom(
     register: *Register,
     allocator: std.mem.Allocator,
     atom: *Atom,
-    d: i32,
+    t: u32,
 ) !void {
-
-    // Move all registed atoms to be in the same row with
-    // atom to be picked up, since physically represents
-    // the AOD row.
-    //var atom = try Atom.init(allocator, id, p);
-    try atom.load();
-    //try atom.moveDown(@intCast(d));
-    //    try atom.moveLeft(@intCast(d));
+    try atom.load(t);
     try register.append(allocator, atom);
-
-    // Then, move it back down again to be transported.
-    for (register.items) |*a| {
-        try a.*.moveDown(@intCast(d));
-    }
 }
 
 pub fn pickup(
@@ -309,38 +305,43 @@ pub fn pickup(
     ord: []const usize,
     plc: *[]Atom,
 ) !Register {
-
-    // FIXME: for now, just move it down a bit. Will do proper spacing later on.
     const d = @as(i32, @intCast(cfg.storage_zone.slm.sep_nm[0] / 2));
 
-    // One slot per site, all empty to start. alloc returns uninitialized
-    // memory, so the @memset to null is required before any slot is read.
     var register: Register = .empty;
-    errdefer {
-        for (register.items) |*atom| atom.*.deinit();
-        register.deinit(allocator);
-    }
+    errdefer register.deinit(allocator);
 
     if (ord.len == 0) return register;
 
-    try pickUpAtom(&register, allocator, &plc.*[ord[0]], d);
+    var t: u32 = 0;
+
+    // Pick up first atom.
+    try pickUpAtom(&register, allocator, &plc.*[ord[0]], t);
+    t += 1;
     var frontier = plc.*[ord[0]];
 
     for (ord[1..]) |q| {
-        std.debug.print("{}\n", .{q});
         var home = plc.*[q];
 
-        if (!home.isRightOf(frontier)) {
-            const dx: i32 = frontier.pos.x - home.pos.x + d;
-            for (register.items) |*atom| {
-                try atom.*.moveLeft(@intCast(dx));
-                try atom.*.moveUp(@intCast(d));
-            }
-            frontier.pos.x -= dx;
+        // Manhattan slide: rise above the SLM plane, move left, descend.
+        // This avoids crossing any fixed atoms still sitting in their traps.
+        if (home.isLeftOf(frontier)) {
+            const dx: i32 = frontier.pos.x - home.pos.x;
+            for (register.items) |*atom| try atom.*.moveUp(@intCast(d), t);
+            t += 1;
+            for (register.items) |*atom| try atom.*.moveLeft(@intCast(dx + d), t);
+            t += 1;
+            for (register.items) |*atom| try atom.*.moveDown(@intCast(d), t);
+            t += 1;
         }
 
-        try pickUpAtom(&register, allocator, &home, d);
+        try pickUpAtom(&register, allocator, &plc.*[q], t);
+        t += 1;
         frontier = home;
+    }
+
+    // Move all loaded atoms down together at the same timestep.
+    for (register.items) |*a| {
+        try a.*.moveDown(@intCast(4 * d), t);
     }
 
     return register;
@@ -363,10 +364,7 @@ pub fn moveSlmCompute(
     std.debug.print("order:{any}\n", .{ordered});
 
     var register = try pickup(allocator, cfg, ordered.items, placement);
-    defer {
-        for (register.items) |*atom| atom.*.deinit();
-        register.deinit(allocator);
-    }
+    defer register.deinit(allocator);
 
     std.debug.print("t:{}\n", .{t});
 
