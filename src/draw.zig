@@ -60,7 +60,7 @@ const BBox = struct {
         return (self.min_y + self.max_y) / 2;
     }
     fn pad(self: BBox) f32 {
-        return 2 * @max(self.dx() * 0.1, self.dy() * 0.1);
+        return @max(self.dx(), self.dy()) * 0.15;
     }
 };
 
@@ -240,12 +240,41 @@ fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
     rl.drawRectangleRoundedLinesEx(rec, 0.06, 8, 1.0, palette.zone_border);
 }
 
-fn drawSlot(cam: Camera, slot: Point, positions: []const Point) void {
+fn drawAodHighlight(cam: Camera, positions: []const Point, loaded: []const bool, ops: []const Op, op_t: u32, sw: f32, sh: f32) void {
+    const fill = rl.Color{ .r = palette.qact_fill.r, .g = palette.qact_fill.g, .b = palette.qact_fill.b, .a = 15 };
+    const edge = rl.Color{ .r = palette.qact_fill.r, .g = palette.qact_fill.g, .b = palette.qact_fill.b, .a = 55 };
+    const hw = ATOM_R * cam.zoom;
+
+    for (positions, 0..) |pos, id| {
+        if (id >= loaded.len or !loaded[id]) continue;
+        const s = cam.worldToScreen(toVec(pos));
+
+        // Horizontal row — always visible while the atom is in the AOD.
+        rl.drawRectangleV(.{ .x = 0, .y = s.y - hw }, .{ .x = sw, .y = 2.0 * hw }, fill);
+        rl.drawLineEx(.{ .x = 0, .y = s.y }, .{ .x = sw, .y = s.y }, 1.0, edge);
+
+        // Vertical column — only at the timestep this atom is loaded (picked up).
+        var being_loaded = false;
+        for (ops) |op| {
+            if (op.t == op_t and op.kind == .load and op.kind.load.qubit == @as(u32, @intCast(id))) {
+                being_loaded = true;
+                break;
+            }
+        }
+        if (being_loaded) {
+            rl.drawRectangleV(.{ .x = s.x - hw, .y = 0 }, .{ .x = 2.0 * hw, .y = sh }, fill);
+            rl.drawLineEx(.{ .x = s.x, .y = 0 }, .{ .x = s.x, .y = sh }, 1.0, edge);
+        }
+    }
+}
+
+fn drawSlot(cam: Camera, slot: Point, positions: []const Point, loaded: []const bool) void {
     const screen = cam.worldToScreen(toVec(slot));
     const screen_radius = ATOM_R * cam.zoom;
 
     var occupied = false;
-    for (positions) |p| {
+    for (positions, 0..) |p, id| {
+        if (id < loaded.len and loaded[id]) continue; // atom is in AOD, not in this SLM trap
         if (p.x == slot.x and p.y == slot.y) {
             occupied = true;
             break;
@@ -931,7 +960,11 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
             };
         }
 
-        for (s.slots) |slot| drawSlot(camera, slot, draw_positions);
+        const sw: f32 = @floatFromInt(rl.getScreenWidth());
+        const sh: f32 = @floatFromInt(rl.getScreenHeight());
+        drawAodHighlight(camera, draw_positions, frame_loaded[frame], s.ops, op_t, sw, sh);
+
+        for (s.slots) |slot| drawSlot(camera, slot, draw_positions, frame_loaded[frame]);
 
         // Ghost, tail, and ripple for every move at this timestep.
         for (s.ops) |op| {
