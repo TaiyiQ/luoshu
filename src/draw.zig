@@ -435,7 +435,7 @@ fn drawPanel(
     // ── Zone indicator ────────────────────────────────────────────
     {
         const zone_str: [:0]const u8 = switch (op.kind) {
-            .move => |m| @tagName(m.dest_zone),
+            .move => "-",
             .rydberg => |r| @tagName(r.zone),
             .measure => |m| @tagName(m.zone),
             .raman => "-",
@@ -474,222 +474,6 @@ fn drawPanel(
         );
         y += FS_PROGRESS + PAD;
     }
-
-    // ── Operation ─────────────────────────────────────────────────
-    sep(y);
-    y += SEP_ADV;
-    sectionLabel(font, "OPERATION", y);
-    y += LABEL_ADV;
-
-    switch (op.kind) {
-        .move => |m| {
-            rl.drawTextEx(font, "aod", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
-            var b0: [8]u8 = undefined;
-            rl.drawTextEx(
-                font,
-                std.fmt.bufPrintSentinel(&b0, "{d}", .{m.aod}, 0) catch "?",
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-            rl.drawTextEx(
-                font,
-                "axis",
-                .{ .x = PAD, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text_sub,
-            );
-            rl.drawTextEx(
-                font,
-                @tagName(m.translate),
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-            rl.drawTextEx(font, "from", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
-            rl.drawTextEx(
-                font,
-                @tagName(m.src_zone),
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-            rl.drawTextEx(font, "to", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
-            rl.drawTextEx(
-                font,
-                @tagName(m.dest_zone),
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-            rl.drawTextEx(
-                font,
-                "atoms",
-                .{ .x = PAD, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text_sub,
-            );
-            var b1: [8]u8 = undefined;
-            rl.drawTextEx(
-                font,
-                std.fmt.bufPrintSentinel(&b1, "{d}", .{m.atoms.len}, 0) catch "?",
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-        },
-        .raman => |r| {
-            rl.drawTextEx(
-                font,
-                "angle",
-                .{ .x = PAD, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text_sub,
-            );
-            var b0: [16]u8 = undefined;
-            rl.drawTextEx(
-                font,
-                std.fmt.bufPrintSentinel(&b0, "{d:.4}", .{r.angle}, 0) catch "?",
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-            rl.drawTextEx(
-                font,
-                "phase",
-                .{ .x = PAD, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text_sub,
-            );
-            var b1: [16]u8 = undefined;
-            rl.drawTextEx(
-                font,
-                std.fmt.bufPrintSentinel(&b1, "{d:.4}", .{r.phase}, 0) catch "?",
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-            rl.drawTextEx(
-                font,
-                "targets",
-                .{ .x = PAD, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text_sub,
-            );
-            var b2: [8]u8 = undefined;
-            rl.drawTextEx(
-                font,
-                std.fmt.bufPrintSentinel(&b2, "{d}", .{r.targets.len}, 0) catch "?",
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-        },
-        .rydberg => |r| {
-            rl.drawTextEx(
-                font,
-                "zone",
-                .{ .x = PAD, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text_sub,
-            );
-            rl.drawTextEx(
-                font,
-                @tagName(r.zone),
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-        },
-        .measure => |m| {
-            rl.drawTextEx(
-                font,
-                "zone",
-                .{ .x = PAD, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text_sub,
-            );
-            rl.drawTextEx(
-                font,
-                @tagName(m.zone),
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-            rl.drawTextEx(
-                font,
-                "qubits",
-                .{ .x = PAD, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text_sub,
-            );
-            var b0: [8]u8 = undefined;
-            rl.drawTextEx(
-                font,
-                std.fmt.bufPrintSentinel(&b0, "{d}", .{m.qubits.len}, 0) catch "?",
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-        },
-        .load => |ld| {
-            rl.drawTextEx(font, "qubit", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
-            var b0: [8]u8 = undefined;
-            rl.drawTextEx(
-                font,
-                std.fmt.bufPrintSentinel(&b0, "{d}", .{ld.qubit}, 0) catch "?",
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-        },
-        .store => |st| {
-            rl.drawTextEx(font, "qubit", .{ .x = PAD, .y = y }, FS_KV, KV_SP, palette.text_sub);
-            var b0: [8]u8 = undefined;
-            rl.drawTextEx(
-                font,
-                std.fmt.bufPrintSentinel(&b0, "{d}", .{st.qubit}, 0) catch "?",
-                .{ .x = KV_VX, .y = y },
-                FS_KV,
-                KV_SP,
-                palette.text,
-            );
-            y += KV_ROW_H;
-        },
-    }
-    y += PAD;
 
     // ── Atom positions ────────────────────────────────────────────
     // Each atom: one line "q{id}  (x, y) µm" — integer µm keeps width bounded.
@@ -896,7 +680,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         defer allocator.free(cur);
         for (s.ops, 0..) |op, i| {
             if (op.kind == .move) {
-                for (op.kind.move.atoms) |a| cur[a.qubit] = a.dest;
+                cur[op.kind.move.qubit] = op.kind.move.dest;
             }
             frame_positions[i] = try allocator.dupe(Point, cur);
         }
@@ -928,9 +712,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         switch (op.kind) {
             .move => |m| {
                 summary.move += 1;
-                for (m.atoms) |a| {
-                    num_qubits = @max(num_qubits, a.qubit + 1);
-                }
+                num_qubits = @max(num_qubits, m.qubit + 1);
             },
             .raman => |r| {
                 summary.raman += 1;
@@ -1077,9 +859,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         // Determine active qubits.
         @memset(active, false);
         switch (op.kind) {
-            .move => |m| for (m.atoms) |a| {
-                active[a.qubit] = true;
-            },
+            .move => |m| active[m.qubit] = true,
             .raman => |r| for (r.targets) |t| {
                 active[t.qubit] = true;
             },
@@ -1112,24 +892,22 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         };
 
         if (op.kind == .move) {
-            for (op.kind.move.atoms) |a| {
-                const sv = toVec(a.src);
-                const ev = toVec(a.dest);
-                draw_positions[a.qubit] = .{
-                    .x = @intFromFloat(sv.x + (ev.x - sv.x) * move_t),
-                    .y = @intFromFloat(sv.y + (ev.y - sv.y) * move_t),
-                };
-            }
+            const a = op.kind.move;
+            const sv = toVec(a.src);
+            const ev = toVec(a.dest);
+            draw_positions[a.qubit] = .{
+                .x = @intFromFloat(sv.x + (ev.x - sv.x) * move_t),
+                .y = @intFromFloat(sv.y + (ev.y - sv.y) * move_t),
+            };
         }
 
         for (s.slots) |slot| drawSlot(camera, slot, draw_positions);
 
         if (op.kind == .move) {
-            for (op.kind.move.atoms) |a| {
-                drawGhostQubit(camera, a.src, opColors(op).fill);
-                drawMoveTail(camera, a.src, draw_positions[a.qubit], 1.0, opColors(op).fill);
-                drawArrivalRipple(camera, a.dest, settle_t, opColors(op).fill);
-            }
+            const a = op.kind.move;
+            drawGhostQubit(camera, a.src, opColors(op).fill);
+            drawMoveTail(camera, a.src, draw_positions[a.qubit], 1.0, opColors(op).fill);
+            drawArrivalRipple(camera, a.dest, settle_t, opColors(op).fill);
         }
 
         if (op.kind == .rydberg) {

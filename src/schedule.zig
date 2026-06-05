@@ -1,5 +1,3 @@
-// Schedule opartions.
-
 const std = @import("std");
 const arch = @import("arch");
 const circuit = @import("circuit");
@@ -7,9 +5,78 @@ const circuit = @import("circuit");
 pub const Zone = enum { storage, compute, readout };
 const Axis = enum { x, y };
 
-pub const Point = struct { x: i32, y: i32 };
+pub const Atom = struct {
+    allocator: std.mem.Allocator,
+    id: u32,
+    t: u32,
+    pos: Point,
+    ops: std.ArrayList(Op),
+
+    fn init(allocator: std.mem.Allocator, id: usize, pos: Point) !Atom {
+        return .{
+            .allocator = allocator,
+            .id = @as(u32, @intCast(id)),
+            .t = 0,
+            .pos = pos,
+            .ops = .empty,
+        };
+    }
+
+    pub fn deinit(s: *Atom) void {
+        s.ops.deinit(s.allocator);
+    }
+
+    fn load(s: *Atom) !void {
+        try s.ops.append(s.allocator, .{ .t = s.t, .kind = .{ .load = .{ .qubit = s.id, .position = s.pos } } });
+        s.t += 1;
+    }
+
+    fn move(s: *Atom, dx: i32, dy: i32) !void {
+        const src = s.pos;
+        s.pos.x += dx;
+        s.pos.y += dy;
+        try s.ops.append(s.allocator, .{ .t = s.t, .kind = .{ .move = .{ .qubit = s.id, .src = src, .dest = s.pos } } });
+        s.t += 1;
+    }
+
+    fn moveLeft(s: *Atom, d: u32) !void {
+        try s.move(-@as(i32, @intCast(d)), 0);
+    }
+
+    fn moveRight(s: *Atom, d: u32) !void {
+        try s.move(@intCast(d), 0);
+    }
+
+    fn moveUp(s: *Atom, d: u32) !void {
+        try s.move(0, -@as(i32, @intCast(d)));
+    }
+
+    fn moveDown(s: *Atom, d: u32) !void {
+        try s.move(0, @intCast(d));
+    }
+};
+
+pub const Point = struct {
+    x: i32,
+    y: i32,
+
+    pub fn order(self: Point, other: Point) std.math.Order {
+        return switch (std.math.order(self.x, other.x)) {
+            .eq => std.math.order(self.y, other.y),
+            else => |o| o,
+        };
+    }
+
+    pub fn left(self: Point, other: Point) bool {
+        return self.order(other) == .lt;
+    }
+
+    pub fn right(self: Point, other: Point) bool {
+        return self.order(other) == .gt;
+    }
+};
+
 const RamanTarget = struct { qubit: u32, pos: Point };
-const MoveAtom = struct { qubit: u32, src: Point, dest: Point };
 
 const Raman = struct {
     angle: f64,
@@ -27,13 +94,10 @@ const Store = struct {
     position: Point,
 };
 
-// TODO: Make sure a moving atom has been loaded before.
 const Move = struct {
-    aod: u32,
-    translate: Axis,
-    src_zone: Zone,
-    dest_zone: Zone,
-    atoms: []const MoveAtom,
+    qubit: u32,
+    src: Point,
+    dest: Point,
 };
 
 const Rydberg = struct { zone: Zone };
@@ -63,10 +127,9 @@ pub const Physical = struct {
     pub fn deinit(s: *Physical) void {
         for (s.ops) |op| {
             switch (op.kind) {
-                .move => |m| s.allocator.free(m.atoms),
                 .raman => |r| s.allocator.free(r.targets),
                 .measure => |m| s.allocator.free(m.qubits),
-                .rydberg, .load, .store => {},
+                .rydberg, .load, .move, .store => {},
             }
         }
         s.allocator.free(s.ops);
@@ -214,112 +277,73 @@ pub fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]con
     return try slots.toOwnedSlice(allocator);
 }
 
-// A qubit set to have fast lookup on which qubits have been picked up.
-const Register = std.AutoHashMap(usize, void);
+/// Indexed by qubit id; null means the atom hasn't been picked up.
+/// Backed by a single allocation sized to the number of sites.
+pub const Register = std.ArrayList(Atom);
 
-// Pick up atoms into the moveable register.
-// Pick up does include Manhattan moves to each atom.
-// They have to architecture aware in order not to cross sites.
+fn pickUpAtom(
+    register: *Register,
+    allocator: std.mem.Allocator,
+    id: usize,
+    p: Point,
+    d: i32,
+) !void {
+
+    // Move all registed atoms to be in the same row with
+    // atom to be picked up, since physically represents
+    // the AOD row.
+    for (register.items) |*a| {
+        try a.moveUp(@intCast(d));
+    }
+
+    var atom = try Atom.init(allocator, id, p);
+    try atom.load();
+    //try atom.moveDown(@intCast(d));
+    //    try atom.moveLeft(@intCast(d));
+    try register.append(allocator, atom);
+
+    // Then, move it back down again to be transported.
+    for (register.items) |*a| {
+        try a.moveDown(@intCast(d));
+    }
+}
+
 pub fn pickup(
     allocator: std.mem.Allocator,
     cfg: arch.ArchConfig,
-    fixed_qubits: []const ?usize,
-    placement: *[]Point,
-    ops: *std.ArrayList(Op),
+    ord: []const usize,
+    plc: *[]Point,
 ) !Register {
-    var register = Register.init(allocator);
 
     // FIXME: for now, just move it down a bit. Will do proper spacing later on.
     const d = @as(i32, @intCast(cfg.storage_zone.slm.sep_nm[0] / 2));
 
-    var qubits: std.ArrayList(usize) = .empty;
-    defer qubits.deinit(allocator);
-    for (fixed_qubits) |maybe_qubit| {
-        if (maybe_qubit) |q| try qubits.append(allocator, q);
+    // One slot per site, all empty to start. alloc returns uninitialized
+    // memory, so the @memset to null is required before any slot is read.
+    var register: Register = .empty;
+    errdefer {
+        for (register.items) |*atom| atom.deinit();
+        register.deinit(allocator);
     }
 
-    // FIXME: you want all move all qubits in the register.
-    // This is starting to feel like a proper compiler graph/tree type problem.
-    for (0..qubits.items.len - 1) |i| {
-        const q = @as(u32, @intCast(qubits.items[i]));
-        const q_next = @as(u32, @intCast(qubits.items[i + 1]));
+    if (ord.len == 0) return register;
 
-        var src = placement.*[q];
+    try pickUpAtom(&register, allocator, ord[0], plc.*[ord[0]], d);
+    var frontier = plc.*[ord[0]];
 
-        // FIXME: Set proper timeframe.
-        var op = Op{ .t = 0, .kind = .{
-            .load = .{
-                .qubit = q,
-                .position = src,
-            },
-        } };
-        try ops.append(allocator, op);
-        try register.put(q, {});
+    for (ord[1..]) |q| {
+        const home = plc.*[q];
 
-        // --- Add moves to pickup next atom.
-
-        var atoms: std.ArrayList(MoveAtom) = .empty;
-        src.y += d;
-        var move = MoveAtom{
-            .qubit = q,
-            .src = src,
-            .dest = .{ .x = src.x, .y = src.y },
-        };
-        try atoms.append(allocator, move);
-        op = Op{ .t = 0, .kind = .{
-            .move = .{
-                .aod = 0,
-                .translate = Axis.y,
-                .src_zone = Zone.storage,
-                .dest_zone = Zone.compute,
-                .atoms = try atoms.toOwnedSlice(allocator),
-            },
-        } };
-        try ops.append(allocator, op);
-
-        // Move left
-        if (q_next < q) {
-            move.dest.x = placement.*[q_next].x - d;
-            move.src = move.dest;
-            try atoms.append(allocator, move);
-            // FIXME. Move per op, remove list of moves.
-            // FFS, you want to always discretize your domain space.
-            op = Op{ .t = 0, .kind = .{
-                .move = .{
-                    .aod = 0,
-                    .translate = Axis.y,
-                    .src_zone = Zone.storage,
-                    .dest_zone = Zone.compute,
-                    .atoms = try atoms.toOwnedSlice(allocator),
-                },
-            } };
-            try ops.append(allocator, op);
-
-            move.dest.y -= d;
-            move.src = move.dest;
-            try atoms.append(allocator, move);
-            op = Op{ .t = 0, .kind = .{
-                .move = .{
-                    .aod = 0,
-                    .translate = Axis.y,
-                    .src_zone = Zone.storage,
-                    .dest_zone = Zone.compute,
-                    .atoms = try atoms.toOwnedSlice(allocator),
-                },
-            } };
-            try ops.append(allocator, op);
+        if (!home.right(frontier)) {
+            const dx: i32 = frontier.x - home.x + d;
+            for (register.items) |*atom| {
+                try atom.moveLeft(@intCast(dx));
+            }
+            frontier.x -= dx;
         }
 
-        //        op = Op{ .t = 0, .kind = .{
-        //            .move = .{
-        //                .aod = 0,
-        //                .translate = Axis.y,
-        //                .src_zone = Zone.storage,
-        //                .dest_zone = Zone.compute,
-        //                .atoms = try atoms.toOwnedSlice(allocator),
-        //            },
-        //        } };
-        //        try ops.append(allocator, op);
+        try pickUpAtom(&register, allocator, q, home, d);
+        frontier = home;
     }
 
     return register;
@@ -334,48 +358,56 @@ pub fn moveSlmCompute(
     t: u32,
 ) !void {
     // FIXME: mayube we dont need a register, since we will always pickup the current set?
-    var register = try pickup(allocator, cfg, fixed_qubits, placement, ops);
-    defer register.deinit();
+    var ordered: std.ArrayList(usize) = .empty;
+    defer ordered.deinit(allocator);
+    for (fixed_qubits) |maybe_qubit| {
+        if (maybe_qubit) |q| try ordered.append(allocator, q);
+    }
+    std.debug.print("order:{any}\n", .{ordered});
 
-    const cz = cfg.compute_zone;
+    var register = try pickup(allocator, cfg, ordered.items, placement);
+    defer {
+        for (register.items) |*atom| atom.deinit();
+        register.deinit(allocator);
+    }
 
-    const control = cz.slms[0];
-    const x_slm_orig = cz.offset_nm[0] + control.offset_nm[0];
-    const y_slm_orig = cz.offset_nm[1] + control.offset_nm[1];
-    const x_sep = control.sep_nm[0];
+    std.debug.print("t:{}\n", .{t});
 
-    var atoms: std.ArrayList(MoveAtom) = .empty;
-
-    for (fixed_qubits, 0..) |maybe_qubit, i| {
-        const x = x_slm_orig + @as(i32, @intCast(i)) * @as(i32, @intCast(x_sep));
-        const y = y_slm_orig + @as(i32, @intCast(control.sep_nm[1]));
-
-        if (maybe_qubit) |qubit_id| {
-            const src = placement.*[qubit_id];
-            const dest = Point{ .x = x, .y = y };
-
-            try atoms.append(allocator, MoveAtom{
-                .qubit = @as(u32, @intCast(qubit_id)),
-                .src = src,
-                .dest = dest,
-            });
-
-            // Update to qubit location.
-            placement.*[qubit_id] = dest;
+    for (register.items) |a| {
+        for (a.ops.items) |o| {
+            try ops.append(allocator, o);
         }
     }
 
-    const op = Op{ .t = t, .kind = .{
-        .move = .{
-            .aod = 0,
-            .translate = Axis.y,
-            .src_zone = Zone.storage,
-            .dest_zone = Zone.compute,
-            .atoms = try atoms.toOwnedSlice(allocator),
-        },
-    } };
+    // Calculate movements to the compure zone.
 
-    try ops.append(allocator, op);
+    //    const cz = cfg.compute_zone;
+    //    const control = cz.slms[0];
+    //    const x_slm_orig = cz.offset_nm[0] + control.offset_nm[0];
+    //    const y_slm_orig = cz.offset_nm[1] + control.offset_nm[1];
+    //    const x_sep = control.sep_nm[0];
+
+    //    for (register, 0..) |maybe_qubit, i| {
+    //        const x = x_slm_orig + @as(i32, @intCast(i)) * @as(i32, @intCast(x_sep));
+    //        const y = y_slm_orig + @as(i32, @intCast(control.sep_nm[1]));
+    //
+    //        if (maybe_qubit) |atom| {
+    //            const src = placement.*[atom.id];
+    //            const dest = Point{ .x = x, .y = y };
+    //
+    //            const op = Op{ .t = t, .kind = .{
+    //                .move = .{
+    //                    .qubit = @as(u32, @intCast(qubit_id)),
+    //                    .src = src,
+    //                    .dest = dest,
+    //                },
+    //            } };
+    //            try ops.append(allocator, op);
+    //
+    //            // Update to qubit location.
+    //            placement.*[qubit_id] = dest;
+    //        }
+    //    }
 }
 
 pub fn addRamanOp(
@@ -415,34 +447,24 @@ pub fn moveSlmStorage(
     ops: *std.ArrayList(Op),
     t: u32,
 ) !void {
-    var atoms: std.ArrayList(MoveAtom) = .empty;
-
     for (slm_qubits) |maybe_slm| {
         if (maybe_slm) |qubit_id| {
             const src = placement.*[qubit_id];
             const dest = init_placement[qubit_id];
 
-            try atoms.append(allocator, MoveAtom{
-                .qubit = @as(u32, @intCast(qubit_id)),
-                .src = src,
-                .dest = dest,
-            });
+            const op = Op{ .t = t, .kind = .{
+                .move = .{
+                    .qubit = @as(u32, @intCast(qubit_id)),
+                    .src = src,
+                    .dest = dest,
+                },
+            } };
+
+            try ops.append(allocator, op);
 
             placement.*[qubit_id] = dest;
         }
     }
-
-    const op = Op{ .t = t, .kind = .{
-        .move = .{
-            .aod = 0,
-            .translate = Axis.y,
-            .src_zone = Zone.compute,
-            .dest_zone = Zone.storage,
-            .atoms = try atoms.toOwnedSlice(allocator),
-        },
-    } };
-
-    try ops.append(allocator, op);
 }
 
 pub fn moveAodStorage(
@@ -454,36 +476,26 @@ pub fn moveAodStorage(
     t_base: u32,
 ) !void {
     for (aod_qubits, 0..) |aod_row, t| {
-        var atoms: std.ArrayList(MoveAtom) = .empty;
-
         for (aod_row) |maybe_aod| {
             if (maybe_aod) |qubit_id| {
                 const src = placement.*[qubit_id];
                 const dest = init_placement[qubit_id];
 
-                try atoms.append(allocator, MoveAtom{
-                    .qubit = @as(u32, @intCast(qubit_id)),
-                    .src = src,
-                    .dest = dest,
-                });
+                const op_t = t_base + @as(u32, @intCast(t));
+                const op = Op{ .t = op_t, .kind = .{
+                    .move = .{
+                        .qubit = @as(u32, @intCast(qubit_id)),
+                        .src = src,
+                        .dest = dest,
+                    },
+                } };
+
+                try ops.append(allocator, op);
 
                 // Update new qubit location.
                 placement.*[qubit_id] = dest;
             }
         }
-
-        const op_t = t_base + @as(u32, @intCast(t));
-        const op = Op{ .t = op_t, .kind = .{
-            .move = .{
-                .aod = 0,
-                .translate = Axis.y,
-                .src_zone = Zone.compute,
-                .dest_zone = Zone.storage,
-                .atoms = try atoms.toOwnedSlice(allocator),
-            },
-        } };
-
-        try ops.append(allocator, op);
     }
 }
 
@@ -501,8 +513,6 @@ pub fn moveAodCompute(
     const x_aod_sep = target.sep_nm[0];
 
     for (aod_qubits, 0..) |aod_row, t| {
-        var atoms: std.ArrayList(MoveAtom) = .empty;
-
         for (aod_row, 0..) |maybe_aod, i| {
             const x = x_aod_orig + @as(i32, @intCast(i)) * @as(i32, @intCast(x_aod_sep));
             const y = y_aod_orig + @as(i32, @intCast(target.sep_nm[1]));
@@ -511,34 +521,26 @@ pub fn moveAodCompute(
                 const src = placement.*[qubit_id];
                 const dest = Point{ .x = x, .y = y };
 
-                try atoms.append(allocator, MoveAtom{
-                    .qubit = @as(u32, @intCast(qubit_id)),
-                    .src = src,
-                    .dest = dest,
-                });
+                const op_t = t_base + @as(u32, @intCast(t));
+                const op = Op{ .t = op_t, .kind = .{
+                    .move = .{
+                        .qubit = @as(u32, @intCast(qubit_id)),
+                        .src = src,
+                        .dest = dest,
+                    },
+                } };
+
+                try ops.append(allocator, op);
 
                 // Update new qubit location.
                 placement.*[qubit_id] = dest;
             }
         }
 
-        const op_t = t_base + @as(u32, @intCast(t));
-        const op = Op{ .t = op_t, .kind = .{
-            .move = .{
-                .aod = 0,
-                .translate = Axis.y,
-                .src_zone = Zone.compute,
-                .dest_zone = Zone.compute,
-                .atoms = try atoms.toOwnedSlice(allocator),
-            },
-        } };
-
-        try ops.append(allocator, op);
-
-        try ops.append(allocator, Op{
-            .t = op_t,
-            .kind = .{ .rydberg = .{ .zone = Zone.compute } },
-        });
+        //        try ops.append(allocator, Op{
+        //            .t = op_t,
+        //            .kind = .{ .rydberg = .{ .zone = Zone.compute } },
+        //        });
     }
 }
 
