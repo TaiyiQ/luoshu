@@ -92,10 +92,10 @@ pub const Pipeline = struct {
         const t_slm: u32 = 0;
 
         // t ≥ 1: one AOD move + Rydberg pulse per logical color, in order.
-        const t_aod_base: u32 = t_slm + 1;
+        //const t_aod_base: u32 = t_slm + 1;
 
-        var placement: []schedule.Point = &.{};
-        var initial_placement: []schedule.Point = &.{};
+        var placement: []schedule.Atom = &.{};
+        var initial_placement: []schedule.Atom = &.{};
 
         for (s.stages.items, 0..) |*stage, stage_idx| {
             var sequence = try stage.compile(s.allocator, s.num_qubits);
@@ -107,7 +107,7 @@ pub const Pipeline = struct {
                     cfg.storage_zone,
                     s.num_qubits,
                 );
-                initial_placement = try s.allocator.dupe(schedule.Point, placement);
+                initial_placement = try s.allocator.dupe(schedule.Atom, placement);
             }
 
             try schedule.moveSlmCompute(
@@ -119,42 +119,42 @@ pub const Pipeline = struct {
                 t_slm,
             );
 
-            // Rydberg after each move.
-            try schedule.moveAodCompute(
-                s.allocator,
-                cfg.compute_zone,
-                sequence.moveable,
-                &placement,
-                &ops,
-                t_aod_base,
-            );
-
-            try schedule.moveAodStorage(
-                s.allocator,
-                sequence.moveable,
-                initial_placement,
-                &placement,
-                &ops,
-                t_aod_base + 1,
-            );
-
-            const t_slm_back = t_aod_base + 1 + @as(u32, @intCast(sequence.moveable.len));
-            try schedule.moveSlmStorage(
-                s.allocator,
-                sequence.fixed,
-                initial_placement,
-                &placement,
-                &ops,
-                t_slm_back,
-            );
-
-            try schedule.addRamanOp(
-                s.allocator,
-                placement,
-                stage.u_gates.items,
-                t_aod_base,
-                &ops,
-            );
+            //            // Rydberg after each move.
+            //            try schedule.moveAodCompute(
+            //                s.allocator,
+            //                cfg.compute_zone,
+            //                sequence.moveable,
+            //                &placement,
+            //                &ops,
+            //                t_aod_base,
+            //            );
+            //
+            //            try schedule.moveAodStorage(
+            //                s.allocator,
+            //                sequence.moveable,
+            //                initial_placement,
+            //                &placement,
+            //                &ops,
+            //                t_aod_base + 1,
+            //            );
+            //
+            //            const t_slm_back = t_aod_base + 1 + @as(u32, @intCast(sequence.moveable.len));
+            //            try schedule.moveSlmStorage(
+            //                s.allocator,
+            //                sequence.fixed,
+            //                initial_placement,
+            //                &placement,
+            //                &ops,
+            //                t_slm_back,
+            //            );
+            //
+            //            try schedule.addRamanOp(
+            //                s.allocator,
+            //                placement,
+            //                stage.u_gates.items,
+            //                t_aod_base,
+            //                &ops,
+            //            );
         }
 
         s.allocator.free(placement);

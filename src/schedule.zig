@@ -54,26 +54,26 @@ pub const Atom = struct {
     fn moveDown(s: *Atom, d: u32) !void {
         try s.move(0, @intCast(d));
     }
+
+    fn order(s: Atom, other: Atom) std.math.Order {
+        return switch (std.math.order(s.pos.x, other.pos.x)) {
+            .eq => std.math.order(s.pos.y, other.pos.y),
+            else => |o| o,
+        };
+    }
+
+    pub fn isLeftOf(s: Atom, other: Atom) bool {
+        return s.order(other) == .lt;
+    }
+
+    pub fn isRightOf(s: Atom, other: Atom) bool {
+        return s.order(other) == .gt;
+    }
 };
 
 pub const Point = struct {
     x: i32,
     y: i32,
-
-    pub fn order(self: Point, other: Point) std.math.Order {
-        return switch (std.math.order(self.x, other.x)) {
-            .eq => std.math.order(self.y, other.y),
-            else => |o| o,
-        };
-    }
-
-    pub fn left(self: Point, other: Point) bool {
-        return self.order(other) == .lt;
-    }
-
-    pub fn right(self: Point, other: Point) bool {
-        return self.order(other) == .gt;
-    }
 };
 
 const RamanTarget = struct { qubit: u32, pos: Point };
@@ -121,7 +121,7 @@ pub const Op = struct {
 pub const Physical = struct {
     allocator: std.mem.Allocator,
     ops: []const Op,
-    placement: []Point, // Initial storage-zone position of each qubit (index = qubit id).
+    placement: []Atom, // Initial storage-zone position of each qubit (index = qubit id).
     slots: []const Point, // All SLM trap sites across storage and compute zones.
 
     pub fn deinit(s: *Physical) void {
@@ -279,24 +279,19 @@ pub fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]con
 
 /// Indexed by qubit id; null means the atom hasn't been picked up.
 /// Backed by a single allocation sized to the number of sites.
-pub const Register = std.ArrayList(Atom);
+pub const Register = std.ArrayList(*Atom);
 
 fn pickUpAtom(
     register: *Register,
     allocator: std.mem.Allocator,
-    id: usize,
-    p: Point,
+    atom: *Atom,
     d: i32,
 ) !void {
 
     // Move all registed atoms to be in the same row with
     // atom to be picked up, since physically represents
     // the AOD row.
-    for (register.items) |*a| {
-        try a.moveUp(@intCast(d));
-    }
-
-    var atom = try Atom.init(allocator, id, p);
+    //var atom = try Atom.init(allocator, id, p);
     try atom.load();
     //try atom.moveDown(@intCast(d));
     //    try atom.moveLeft(@intCast(d));
@@ -304,7 +299,7 @@ fn pickUpAtom(
 
     // Then, move it back down again to be transported.
     for (register.items) |*a| {
-        try a.moveDown(@intCast(d));
+        try a.*.moveDown(@intCast(d));
     }
 }
 
@@ -312,7 +307,7 @@ pub fn pickup(
     allocator: std.mem.Allocator,
     cfg: arch.ArchConfig,
     ord: []const usize,
-    plc: *[]Point,
+    plc: *[]Atom,
 ) !Register {
 
     // FIXME: for now, just move it down a bit. Will do proper spacing later on.
@@ -322,27 +317,29 @@ pub fn pickup(
     // memory, so the @memset to null is required before any slot is read.
     var register: Register = .empty;
     errdefer {
-        for (register.items) |*atom| atom.deinit();
+        for (register.items) |*atom| atom.*.deinit();
         register.deinit(allocator);
     }
 
     if (ord.len == 0) return register;
 
-    try pickUpAtom(&register, allocator, ord[0], plc.*[ord[0]], d);
+    try pickUpAtom(&register, allocator, &plc.*[ord[0]], d);
     var frontier = plc.*[ord[0]];
 
     for (ord[1..]) |q| {
-        const home = plc.*[q];
+        std.debug.print("{}\n", .{q});
+        var home = plc.*[q];
 
-        if (!home.right(frontier)) {
-            const dx: i32 = frontier.x - home.x + d;
+        if (!home.isRightOf(frontier)) {
+            const dx: i32 = frontier.pos.x - home.pos.x + d;
             for (register.items) |*atom| {
-                try atom.moveLeft(@intCast(dx));
+                try atom.*.moveLeft(@intCast(dx));
+                try atom.*.moveUp(@intCast(d));
             }
-            frontier.x -= dx;
+            frontier.pos.x -= dx;
         }
 
-        try pickUpAtom(&register, allocator, q, home, d);
+        try pickUpAtom(&register, allocator, &home, d);
         frontier = home;
     }
 
@@ -353,7 +350,7 @@ pub fn moveSlmCompute(
     allocator: std.mem.Allocator,
     cfg: arch.ArchConfig,
     fixed_qubits: []const ?usize,
-    placement: *[]Point,
+    placement: *[]Atom,
     ops: *std.ArrayList(Op),
     t: u32,
 ) !void {
@@ -367,7 +364,7 @@ pub fn moveSlmCompute(
 
     var register = try pickup(allocator, cfg, ordered.items, placement);
     defer {
-        for (register.items) |*atom| atom.deinit();
+        for (register.items) |*atom| atom.*.deinit();
         register.deinit(allocator);
     }
 
@@ -548,7 +545,7 @@ pub fn qubitPlacement(
     allocator: std.mem.Allocator,
     sz: arch.StorageZone,
     num_qubits: usize,
-) ![]Point {
+) ![]Atom {
     const x_orig = sz.offset_nm[0] + sz.slm.offset_nm[0];
     const y_orig = sz.offset_nm[1] + sz.slm.offset_nm[1];
     const x_sep = @as(i32, @intCast(sz.slm.sep_nm[0]));
@@ -573,8 +570,10 @@ pub fn qubitPlacement(
         }
     }
 
-    const placement = try allocator.alloc(Point, num_qubits);
-    for (placement, 0..) |*p, i| p.* = sites.items[i];
+    const placement = try allocator.alloc(Atom, num_qubits);
+    for (placement, 0..) |*p, i| {
+        p.* = try Atom.init(allocator, i, sites.items[i]);
+    }
 
     return placement;
 }
