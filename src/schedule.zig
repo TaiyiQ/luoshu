@@ -454,25 +454,6 @@ pub fn moveSlmStorage(
     const half_sep: i32 = @divTrunc(cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - y_storage_bottom, 2);
     const y_corridor: i32 = y_compute_upper - half_sep;
 
-    // Step 1: move DOWN by d_c to enter the inter-row lane.
-    // Atoms are on compute trap sites; d_c drops them into the gap between rows
-    // so the next horizontal move doesn't sweep through occupied/empty traps.
-    for (slm_qubits) |maybe_slm| {
-        if (maybe_slm) |q| {
-            const src = placement.*[q].pos;
-            const dest = Point{ .x = src.x, .y = src.y - d_c };
-            try ops.append(allocator, .{ .t = t.*, .kind = .{
-                .move = .{
-                    .qubit = @intCast(q),
-                    .src = src,
-                    .dest = dest,
-                },
-            } });
-            placement.*[q].pos = dest;
-        }
-    }
-    t.* += 1;
-
     // Step 2: move LEFT by d_c — rigid shift into the inter-column lane.
     // Shifting by exactly d_c places every atom at an x midpoint between compute
     // columns, so they won't cross a trap site x-column when rising in step 3.
@@ -577,17 +558,6 @@ pub fn moveAodStorage(
         @as(i32, @intCast((sslm.num_row - 1) * sslm.sep_nm[1]));
     const half_sep: i32 = @divTrunc(cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - y_storage_bottom, 2);
     const y_corridor: i32 = y_compute_upper - half_sep;
-
-    // Step 1: move DOWN by d_c — exit compute row into inter-row lane.
-    for (unique.items) |q| {
-        const src = placement.*[q].pos;
-        const dest = Point{ .x = src.x, .y = src.y + d_c };
-        try ops.append(allocator, .{ .t = t.*, .kind = .{
-            .move = .{ .qubit = @intCast(q), .src = src, .dest = dest },
-        } });
-        placement.*[q].pos = dest;
-    }
-    t.* += 1;
 
     // Step 2: move RIGHT by d_c — shift into inter-column lane.
     for (unique.items) |q| {
