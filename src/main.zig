@@ -40,9 +40,9 @@ fn loadArch(allocator: std.mem.Allocator, io: std.Io) !arch.ArchConfig {
 
 fn loadCircuit(allocator: std.mem.Allocator, io: std.Io) !circuit.Circuit {
     const cwd = std.Io.Dir.cwd();
-    const file = try cwd.openFile(io, "./example/mvp.qasm", .{ .mode = .read_only });
+    //const file = try cwd.openFile(io, "./example/mvp.qasm", .{ .mode = .read_only });
     //const file = try cwd.openFile(io, "./example/ghz-test.qasm", .{ .mode = .read_only });
-    //const file = try cwd.openFile(io, "./example/mvp-v2.qasm", .{ .mode = .read_only });
+    const file = try cwd.openFile(io, "./example/mvp-v2.qasm", .{ .mode = .read_only });
     defer file.close(io);
 
     var read_buf: [4096]u8 = undefined;

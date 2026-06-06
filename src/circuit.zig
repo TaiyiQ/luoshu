@@ -89,7 +89,7 @@ pub const Pipeline = struct {
         var ops: std.ArrayList(schedule.Op) = .empty;
 
         // t = 0: SLM bulk move (storage → compute).
-        const t_slm: u32 = 0;
+        var t_slm: u32 = 0;
 
         // t ≥ 1: one AOD move + Rydberg pulse per logical color, in order.
         //const t_aod_base: u32 = t_slm + 1;
@@ -116,8 +116,9 @@ pub const Pipeline = struct {
                 sequence.fixed,
                 &placement,
                 &ops,
-                t_slm,
+                &t_slm,
             );
+            t_slm += 1;
 
             //            // Rydberg after each move.
             //            try schedule.moveAodCompute(
@@ -137,17 +138,18 @@ pub const Pipeline = struct {
             //                &ops,
             //                t_aod_base + 1,
             //            );
-            //
+
             //            const t_slm_back = t_aod_base + 1 + @as(u32, @intCast(sequence.moveable.len));
-            //            try schedule.moveSlmStorage(
-            //                s.allocator,
-            //                sequence.fixed,
-            //                initial_placement,
-            //                &placement,
-            //                &ops,
-            //                t_slm_back,
-            //            );
-            //
+            try schedule.moveSlmStorage(
+                s.allocator,
+                cfg,
+                sequence.fixed,
+                initial_placement,
+                &placement,
+                &ops,
+                &t_slm,
+            );
+
             //            try schedule.addRamanOp(
             //                s.allocator,
             //                placement,

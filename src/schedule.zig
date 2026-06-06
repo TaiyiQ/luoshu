@@ -11,17 +11,17 @@ pub const Atom = struct {
     pos: Point,
     ops: std.ArrayList(Op),
 
-    fn init(allocator: std.mem.Allocator, id: usize, pos: Point) !Atom {
+    pub fn deinit(s: *Atom) void {
+        s.ops.deinit(s.allocator);
+    }
+
+    fn place(allocator: std.mem.Allocator, id: usize, pos: Point) !Atom {
         return .{
             .allocator = allocator,
             .id = @as(u32, @intCast(id)),
             .pos = pos,
             .ops = .empty,
         };
-    }
-
-    pub fn deinit(s: *Atom) void {
-        s.ops.deinit(s.allocator);
     }
 
     fn load(s: *Atom, t: u32) !void {
@@ -304,6 +304,7 @@ pub fn pickup(
     cfg: arch.ArchConfig,
     ord: []const usize,
     plc: *[]Atom,
+    t: *u32,
 ) !Register {
     const d = @as(i32, @intCast(cfg.storage_zone.slm.sep_nm[0] / 2));
 
@@ -312,37 +313,36 @@ pub fn pickup(
 
     if (ord.len == 0) return register;
 
-    var t: u32 = 0;
-
     // Pick up first atom.
-    try pickUpAtom(&register, allocator, &plc.*[ord[0]], t);
-    t += 1;
-    var frontier = plc.*[ord[0]];
+    try pickUpAtom(&register, allocator, &plc.*[ord[0]], t.*);
+    t.* += 1;
+    var front = plc.*[ord[0]];
 
+    // Move the registered atoms to always make the
+    // next qubit the front of the row.
     for (ord[1..]) |q| {
-        var home = plc.*[q];
+        const next = plc.*[q];
 
-        // Manhattan slide: rise above the SLM plane, move left, descend.
-        // This avoids crossing any fixed atoms still sitting in their traps.
-        if (home.isLeftOf(frontier)) {
-            const dx: i32 = frontier.pos.x - home.pos.x;
-            for (register.items) |*atom| try atom.*.moveUp(@intCast(d), t);
-            t += 1;
-            for (register.items) |*atom| try atom.*.moveLeft(@intCast(dx + d), t);
-            t += 1;
-            for (register.items) |*atom| try atom.*.moveDown(@intCast(d), t);
-            t += 1;
+        if (next.isLeftOf(front)) {
+            const dx: i32 = front.pos.x - next.pos.x;
+            for (register.items) |*atom| try atom.*.moveUp(@intCast(d), t.*);
+            t.* += 1;
+            for (register.items) |*atom| try atom.*.moveLeft(@intCast(dx + d), t.*);
+            t.* += 1;
+            for (register.items) |*atom| try atom.*.moveDown(@intCast(d), t.*);
+            t.* += 1;
         }
 
-        try pickUpAtom(&register, allocator, &plc.*[q], t);
-        t += 1;
-        frontier = home;
+        try pickUpAtom(&register, allocator, &plc.*[q], t.*);
+        t.* += 1;
+        front = next;
     }
 
     // Move all loaded atoms down together at the same timestep.
     for (register.items) |*a| {
-        try a.*.moveDown(@intCast(4 * d), t);
+        try a.*.moveDown(@intCast(4 * d), t.*);
     }
+    t.* += 1;
 
     return register;
 }
@@ -353,7 +353,7 @@ pub fn moveSlmCompute(
     fixed_qubits: []const ?usize,
     placement: *[]Atom,
     ops: *std.ArrayList(Op),
-    t: u32,
+    t: *u32,
 ) !void {
     var ordered: std.ArrayList(usize) = .empty;
     defer ordered.deinit(allocator);
@@ -361,17 +361,17 @@ pub fn moveSlmCompute(
         if (maybe_qubit) |q| try ordered.append(allocator, q);
     }
 
-    var register = try pickup(allocator, cfg, ordered.items, placement);
+    var register = try pickup(allocator, cfg, ordered.items, placement, t);
     defer register.deinit(allocator);
 
-    // Find the next timestep after the pickup sequence ends.
-    var next_t: u32 = t;
-    for (register.items) |a| {
-        if (a.ops.items.len > 0) {
-            const last_t = a.ops.items[a.ops.items.len - 1].t;
-            if (last_t >= next_t) next_t = last_t + 1;
-        }
-    }
+    //    // Find the next timestep after the pickup sequence ends.
+    //    var next_t: u32 = t;
+    //    for (register.items) |a| {
+    //        if (a.ops.items.len > 0) {
+    //            const last_t = a.ops.items[a.ops.items.len - 1].t;
+    //            if (last_t >= next_t) next_t = last_t + 1;
+    //        }
+    //    }
 
     // Move each atom to its destination slot in compute zone slms[0].
     const control = cfg.compute_zone.slms[0];
@@ -383,20 +383,20 @@ pub fn moveSlmCompute(
     const d = @as(i32, @intCast(cfg.compute_zone.slms[0].sep_nm[0] / 2));
     for (register.items, 0..) |a, i| {
         const x_dest = x_orig + @as(i32, @intCast(i)) * x_sep;
-        try a.move(x_dest - a.pos.x + d, 0, next_t);
+        try a.move(x_dest - a.pos.x + d, 0, t.*);
     }
-    next_t += 1;
+    t.* += 1;
 
     // Manhattan step 2: move all atoms to the compute zone row.
     const y_dest = y_orig + @as(i32, @intCast(control.sep_nm[1]));
     for (register.items) |a| {
-        try a.move(0, y_dest - a.pos.y, next_t);
+        try a.move(0, y_dest - a.pos.y, t.*);
     }
-    next_t += 1;
+    t.* += 1;
 
     // Manhattan step 3: move all atoms to the compute zone row.
     for (register.items) |a| {
-        try a.move(-d, 0, next_t);
+        try a.move(-d, 0, t.*);
     }
 
     // Flush pickup + compute-zone move ops to the global ops list.
@@ -438,30 +438,109 @@ pub fn addRamanOp(
 
 pub fn moveSlmStorage(
     allocator: std.mem.Allocator,
+    cfg: arch.ArchConfig,
     slm_qubits: []const ?usize,
-    init_placement: []Point,
-    placement: *[]Point,
+    init_placement: []const Atom,
+    placement: *[]Atom,
     ops: *std.ArrayList(Op),
-    t: u32,
+    t: *u32,
 ) !void {
-    for (slm_qubits) |maybe_slm| {
-        if (maybe_slm) |qubit_id| {
-            const src = placement.*[qubit_id];
-            const dest = init_placement[qubit_id];
+    const cslm = cfg.compute_zone.slms[0];
+    // Half compute zone site spacing — used as clearance from trap sites.
+    const d_c: i32 = @intCast(cslm.sep_nm[0] / 2);
+    // Inter-zone corridor: d_c above the compute zone SLM grid top.
+    // No trap sites here, so x-positions can be adjusted freely (compress step).
+    const y_corridor: i32 = cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - d_c;
 
-            const op = Op{ .t = t, .kind = .{
+    // Step 1: move DOWN by d_c to enter the inter-row lane.
+    // Atoms are on compute trap sites; d_c drops them into the gap between rows
+    // so the next horizontal move doesn't sweep through occupied/empty traps.
+    for (slm_qubits) |maybe_slm| {
+        if (maybe_slm) |q| {
+            const src = placement.*[q].pos;
+            const dest = Point{ .x = src.x, .y = src.y - d_c };
+            try ops.append(allocator, .{ .t = t.*, .kind = .{
                 .move = .{
-                    .qubit = @as(u32, @intCast(qubit_id)),
+                    .qubit = @intCast(q),
                     .src = src,
                     .dest = dest,
                 },
-            } };
-
-            try ops.append(allocator, op);
-
-            placement.*[qubit_id] = dest;
+            } });
+            placement.*[q].pos = dest;
         }
     }
+    t.* += 1;
+
+    // Step 2: move LEFT by d_c — rigid shift into the inter-column lane.
+    // Shifting by exactly d_c places every atom at an x midpoint between compute
+    // columns, so they won't cross a trap site x-column when rising in step 3.
+    for (slm_qubits) |maybe_slm| {
+        if (maybe_slm) |q| {
+            const src = placement.*[q].pos;
+            const dest = Point{ .x = src.x + d_c, .y = src.y };
+            try ops.append(allocator, .{ .t = t.*, .kind = .{
+                .move = .{
+                    .qubit = @intCast(q),
+                    .src = src,
+                    .dest = dest,
+                },
+            } });
+            placement.*[q].pos = dest;
+        }
+    }
+    t.* += 1;
+
+    // Step 3: move UP to the inter-zone corridor.
+    // Atoms travel vertically at inter-column x positions, clearing all compute
+    // zone trap rows without crossing any trap site.
+    for (slm_qubits) |maybe_slm| {
+        if (maybe_slm) |q| {
+            const src = placement.*[q].pos;
+            if (src.y == y_corridor) continue;
+            try ops.append(allocator, .{ .t = t.*, .kind = .{
+                .move = .{
+                    .qubit = @intCast(q),
+                    .src = src,
+                    .dest = .{ .x = src.x, .y = y_corridor },
+                },
+            } });
+            placement.*[q].pos.y = y_corridor;
+        }
+    }
+    t.* += 1;
+
+    // Step 4: compress — each atom independently moves to its storage column x.
+    // Safe here because the corridor is trap-free.
+    for (slm_qubits) |maybe_slm| {
+        if (maybe_slm) |q| {
+            const src = placement.*[q].pos;
+            const dest_x = init_placement[q].pos.x;
+            if (src.x == dest_x) continue;
+            try ops.append(allocator, .{ .t = t.*, .kind = .{
+                .move = .{
+                    .qubit = @intCast(q),
+                    .src = src,
+                    .dest = .{ .x = dest_x, .y = src.y },
+                },
+            } });
+            placement.*[q].pos.x = dest_x;
+        }
+    }
+    t.* += 1;
+
+    // Step 5: place into storage — each atom drops to its storage row y.
+    for (slm_qubits) |maybe_slm| {
+        if (maybe_slm) |q| {
+            const src = placement.*[q].pos;
+            const dest_y = init_placement[q].pos.y;
+            if (src.y == dest_y) continue;
+            try ops.append(allocator, .{ .t = t.*, .kind = .{
+                .move = .{ .qubit = @intCast(q), .src = src, .dest = .{ .x = src.x, .y = dest_y } },
+            } });
+            placement.*[q].pos.y = dest_y;
+        }
+    }
+    t.* += 1;
 }
 
 pub fn moveAodStorage(
@@ -572,7 +651,7 @@ pub fn qubitPlacement(
 
     const placement = try allocator.alloc(Atom, num_qubits);
     for (placement, 0..) |*p, i| {
-        p.* = try Atom.init(allocator, i, sites.items[i]);
+        p.* = try Atom.place(allocator, i, sites.items[i]);
     }
 
     return placement;
