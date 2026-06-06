@@ -299,6 +299,18 @@ fn pickUpAtom(
     try register.append(allocator, atom);
 }
 
+// Returns true if an unregistered atom occupies (x, y).
+fn siteOccupied(register: Register, placement: []const Atom, x: i32, y: i32) bool {
+    outer: for (placement) |atom| {
+        if (atom.pos.x != x or atom.pos.y != y) continue;
+        for (register.items) |r| {
+            if (r.id == atom.id) continue :outer;
+        }
+        return true;
+    }
+    return false;
+}
+
 pub fn pickup(
     allocator: std.mem.Allocator,
     cfg: arch.ArchConfig,
@@ -329,6 +341,18 @@ pub fn pickup(
             t.* += 1;
             for (register.items) |*atom| try atom.*.moveLeft(@intCast(dx + d), t.*);
             t.* += 1;
+            // Before descending, shift any atom that would land on an occupied site.
+            var conflict = true;
+            while (conflict) {
+                conflict = false;
+                for (register.items) |*atom| {
+                    if (siteOccupied(register, plc.*, atom.*.pos.x, atom.*.pos.y + d)) {
+                        try atom.*.moveLeft(@intCast(d), t.*);
+                        conflict = true;
+                    }
+                }
+                if (conflict) t.* += 1;
+            }
             for (register.items) |*atom| try atom.*.moveDown(@intCast(d), t.*);
             t.* += 1;
         }
