@@ -414,9 +414,12 @@ pub fn moveSlmCompute(
     }
     t.* += 1;
 
-    // Manhattan step 3: move all atoms to the compute zone row.
+    // Manhattan step 3: x correction to target column, then place atom into compute SLM.
     for (register.items) |a| {
         try a.move(-d, 0, t.*);
+        try a.ops.append(a.allocator, .{ .t = t.*, .kind = .{
+            .store = .{ .qubit = a.id, .position = a.pos },
+        } });
     }
 
     // Flush pickup + compute-zone move ops to the global ops list.
@@ -560,15 +563,20 @@ pub fn moveSlmStorage(
     }
     t.* += 1;
 
-    // Step 5: drop to the bottom storage row (closest to compute zone).
+    // Step 5: drop to the bottom storage row and emit a Store op to mark the atom
+    // as back in the SLM (no longer in the AOD).
     for (slm_qubits) |maybe_slm| {
         if (maybe_slm) |q| {
             const src = placement.*[q].pos;
-            if (src.y == y_storage_bottom) continue;
+            if (src.y != y_storage_bottom) {
+                try ops.append(allocator, .{ .t = t.*, .kind = .{
+                    .move = .{ .qubit = @intCast(q), .src = src, .dest = .{ .x = src.x, .y = y_storage_bottom } },
+                } });
+                placement.*[q].pos.y = y_storage_bottom;
+            }
             try ops.append(allocator, .{ .t = t.*, .kind = .{
-                .move = .{ .qubit = @intCast(q), .src = src, .dest = .{ .x = src.x, .y = y_storage_bottom } },
+                .store = .{ .qubit = @intCast(q), .position = placement.*[q].pos },
             } });
-            placement.*[q].pos.y = y_storage_bottom;
         }
     }
     t.* += 1;
@@ -668,14 +676,19 @@ pub fn moveAodStorage(
     }
     t.* += 1;
 
-    // Step 5: drop to the bottom storage row (closest to compute zone).
+    // Step 5: drop to the bottom storage row and emit a Store op to mark the atom
+    // as back in the SLM (no longer in the AOD).
     for (unique.items) |q| {
         const src = placement.*[q].pos;
-        if (src.y == y_storage_bottom) continue;
+        if (src.y != y_storage_bottom) {
+            try ops.append(allocator, .{ .t = t.*, .kind = .{
+                .move = .{ .qubit = @intCast(q), .src = src, .dest = .{ .x = src.x, .y = y_storage_bottom } },
+            } });
+            placement.*[q].pos.y = y_storage_bottom;
+        }
         try ops.append(allocator, .{ .t = t.*, .kind = .{
-            .move = .{ .qubit = @intCast(q), .src = src, .dest = .{ .x = src.x, .y = y_storage_bottom } },
+            .store = .{ .qubit = @intCast(q), .position = placement.*[q].pos },
         } });
-        placement.*[q].pos.y = y_storage_bottom;
     }
     t.* += 1;
 }
@@ -728,9 +741,12 @@ pub fn moveAodCompute(
     }
     t.* += 1;
 
-    // Step 3: slide left d to land on column x.
+    // Step 3: slide left d to land on column x, then place into compute SLM.
     for (register.items) |a| {
         try a.move(-d, 0, t.*);
+        try a.ops.append(a.allocator, .{ .t = t.*, .kind = .{
+            .store = .{ .qubit = a.id, .position = a.pos },
+        } });
     }
     t.* += 1;
 
@@ -741,7 +757,7 @@ pub fn moveAodCompute(
         }
     }
 
-    // Sweep left-to-right: for each timeframe, move atoms to their column positions.
+    // Sweep: for each timeframe, lift atoms into AOD, slide to column, deposit back into SLM.
     for (aod_qubits) |row| {
         for (row, 0..) |maybe_q, i| {
             if (maybe_q) |q| {
@@ -749,9 +765,15 @@ pub fn moveAodCompute(
                 const src = placement.*[q].pos;
                 if (src.x == dest_x) continue;
                 try ops.append(allocator, .{ .t = t.*, .kind = .{
+                    .load = .{ .qubit = @intCast(q), .position = src },
+                } });
+                try ops.append(allocator, .{ .t = t.*, .kind = .{
                     .move = .{ .qubit = @intCast(q), .src = src, .dest = .{ .x = dest_x, .y = src.y } },
                 } });
                 placement.*[q].pos.x = dest_x;
+                try ops.append(allocator, .{ .t = t.*, .kind = .{
+                    .store = .{ .qubit = @intCast(q), .position = placement.*[q].pos },
+                } });
             }
         }
         t.* += 1;

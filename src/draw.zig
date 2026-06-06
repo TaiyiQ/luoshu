@@ -29,6 +29,8 @@ const palette = struct {
     pub const zone_border = rl.Color{ .r = 115, .g = 121, .b = 148, .a = 100 };
     pub const qload_fill = rl.Color{ .r = 147, .g = 154, .b = 183, .a = 255 };
     pub const qload_stroke = rl.Color{ .r = 184, .g = 192, .b = 224, .a = 255 };
+    pub const qstore_fill = rl.Color{ .r = 231, .g = 130, .b = 132, .a = 255 };
+    pub const qstore_stroke = rl.Color{ .r = 243, .g = 139, .b = 168, .a = 255 };
 };
 
 const ATOM_R: f32 = 300.0;
@@ -118,9 +120,13 @@ fn computeBoundingBox(slots: []const Point) BBox {
 // -----------------------------------------------------------------------
 fn opColors(op: Op) struct { fill: rl.Color, stroke: rl.Color } {
     return switch (op.kind) {
-        .move, .store => .{
+        .move => .{
             .fill = palette.qact_fill,
             .stroke = palette.qact_stroke,
+        },
+        .store => .{
+            .fill = palette.qstore_fill,
+            .stroke = palette.qstore_stroke,
         },
         .load => .{
             .fill = palette.qload_fill,
@@ -184,6 +190,15 @@ fn drawArrivalRipple(cam: Camera, pos: Point, settle_t: f32, fill: rl.Color) voi
     rl.drawCircleLinesV(screen, r - 1.5, c);
     rl.drawCircleLinesV(screen, r, c);
     rl.drawCircleLinesV(screen, r + 1.5, c);
+}
+
+fn drawStoreFlash(cam: Camera, pos: Point, fill: rl.Color) void {
+    const screen = cam.worldToScreen(toVec(pos));
+    const r = ATOM_R * cam.zoom;
+    rl.drawCircleV(screen, r * 2.2, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 25 });
+    rl.drawCircleLinesV(screen, r * 1.8, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 200 });
+    rl.drawCircleLinesV(screen, r * 2.2, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 100 });
+    rl.drawCircleLinesV(screen, r * 2.8, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 35 });
 }
 
 fn drawPairHalo(cam: Camera, a: Point, b: Point, color: rl.Color) void {
@@ -252,7 +267,7 @@ fn drawAodHighlight(cam: Camera, positions: []const Point, loaded: []const bool,
         if (id >= loaded.len or !loaded[id]) continue;
         const s = cam.worldToScreen(toVec(pos));
 
-        // Horizontal row — always visible while the atom is in the AOD.
+        // Horizontal row — visible while the atom is in the AOD (disappears on store).
         rl.drawRectangleV(.{ .x = 0, .y = s.y - hw }, .{ .x = sw, .y = 2.0 * hw }, fill);
         rl.drawLineEx(.{ .x = 0, .y = s.y }, .{ .x = sw, .y = s.y }, 1.0, edge);
 
@@ -997,7 +1012,24 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         const colors = opColors(primary_op);
         for (draw_positions, 0..) |pos, id| {
             const is_loaded = id < frame_loaded[frame].len and frame_loaded[frame][id];
-            drawQubit(camera, font, pos, id, active[id], is_loaded, colors.fill, colors.stroke);
+            // Atoms being stored this frame render red, not with the generic op color.
+            var fill = colors.fill;
+            var stroke = colors.stroke;
+            for (s.ops) |op| {
+                if (op.t == op_t and op.kind == .store and op.kind.store.qubit == @as(u32, @intCast(id))) {
+                    fill = palette.qstore_fill;
+                    stroke = palette.qstore_stroke;
+                    break;
+                }
+            }
+            drawQubit(camera, font, pos, id, active[id], is_loaded, fill, stroke);
+        }
+
+        // Red glow overlay for every atom deposited into SLM at this timestep.
+        for (s.ops) |op| {
+            if (op.t == op_t and op.kind == .store) {
+                drawStoreFlash(camera, op.kind.store.position, palette.qstore_fill);
+            }
         }
 
         if (any_raman) {
