@@ -120,16 +120,15 @@ pub const Pipeline = struct {
             );
             t_slm += 1;
 
-            //            // Rydberg after each move.
-            //            try schedule.moveAodCompute(
-            //                s.allocator,
-            //                cfg.compute_zone,
-            //                sequence.moveable,
-            //                &placement,
-            //                &ops,
-            //                t_aod_base,
-            //            );
-            //
+            try schedule.moveAodCompute(
+                s.allocator,
+                cfg,
+                sequence.moveable,
+                &placement,
+                &ops,
+                &t_slm,
+            );
+
             //            try schedule.moveAodStorage(
             //                s.allocator,
             //                sequence.moveable,

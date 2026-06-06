@@ -583,46 +583,79 @@ pub fn moveAodStorage(
 
 pub fn moveAodCompute(
     allocator: std.mem.Allocator,
-    cz: arch.ComputeZone,
+    cfg: arch.ArchConfig,
     aod_qubits: [][]?usize,
-    placement: *[]Point,
+    placement: *[]Atom,
     ops: *std.ArrayList(Op),
-    t_base: u32,
+    t: *u32,
 ) !void {
-    const target = cz.slms[1];
-    const x_aod_orig = cz.offset_nm[0] + target.offset_nm[0];
-    const y_aod_orig = cz.offset_nm[1] + target.offset_nm[1];
-    const x_aod_sep = target.sep_nm[0];
-
-    for (aod_qubits, 0..) |aod_row, t| {
-        for (aod_row, 0..) |maybe_aod, i| {
-            const x = x_aod_orig + @as(i32, @intCast(i)) * @as(i32, @intCast(x_aod_sep));
-            const y = y_aod_orig + @as(i32, @intCast(target.sep_nm[1]));
-
-            if (maybe_aod) |qubit_id| {
-                const src = placement.*[qubit_id];
-                const dest = Point{ .x = x, .y = y };
-
-                const op_t = t_base + @as(u32, @intCast(t));
-                const op = Op{ .t = op_t, .kind = .{
-                    .move = .{
-                        .qubit = @as(u32, @intCast(qubit_id)),
-                        .src = src,
-                        .dest = dest,
-                    },
-                } };
-
-                try ops.append(allocator, op);
-
-                // Update new qubit location.
-                placement.*[qubit_id] = dest;
+    // Collect all unique qubit IDs across all timeframes.
+    var ordered: std.ArrayList(usize) = .empty;
+    defer ordered.deinit(allocator);
+    var seen = std.AutoHashMap(usize, void).init(allocator);
+    defer seen.deinit();
+    for (aod_qubits) |row| {
+        for (row) |maybe_q| {
+            if (maybe_q) |q| {
+                const gop = try seen.getOrPut(q);
+                if (!gop.found_existing) try ordered.append(allocator, q);
             }
         }
+    }
+    if (ordered.items.len == 0) return;
 
-        //        try ops.append(allocator, Op{
-        //            .t = op_t,
-        //            .kind = .{ .rydberg = .{ .zone = Zone.compute } },
-        //        });
+    // Pick up atoms from storage, traversing without crossing occupied sites.
+    var register = try pickup(allocator, cfg, ordered.items, placement, t);
+    defer register.deinit(allocator);
+
+    // Manhattan entry into SLM[1] — mirrors moveSlmCompute for SLM[0].
+    const target = cfg.compute_zone.slms[1];
+    const x_orig = cfg.compute_zone.offset_nm[0] + target.offset_nm[0];
+    const y_orig = cfg.compute_zone.offset_nm[1] + target.offset_nm[1];
+    const x_sep = @as(i32, @intCast(target.sep_nm[0]));
+    const d = @as(i32, @intCast(target.sep_nm[0] / 2));
+
+    // Step 1: move each atom to its column x + d (inter-column offset avoids crossings).
+    for (register.items, 0..) |a, i| {
+        const x_dest = x_orig + @as(i32, @intCast(i)) * x_sep;
+        try a.move(x_dest - a.pos.x + d, 0, t.*);
+    }
+    t.* += 1;
+
+    // Step 2: drop all atoms to SLM[1] row y.
+    const y_dest = y_orig + @as(i32, @intCast(target.sep_nm[1]));
+    for (register.items) |a| {
+        try a.move(0, y_dest - a.pos.y, t.*);
+    }
+    t.* += 1;
+
+    // Step 3: slide left d to land on column x.
+    for (register.items) |a| {
+        try a.move(-d, 0, t.*);
+    }
+    t.* += 1;
+
+    // Flush buffered ops (pickup + compute entry) to global ops list.
+    for (register.items) |a| {
+        for (a.ops.items) |o| {
+            try ops.append(allocator, o);
+        }
+    }
+
+    // Sweep left-to-right: for each timeframe, move atoms to their column positions.
+    for (aod_qubits) |row| {
+        for (row, 0..) |maybe_q, i| {
+            if (maybe_q) |q| {
+                const dest_x = x_orig + @as(i32, @intCast(i)) * x_sep;
+                const src = placement.*[q].pos;
+                if (src.x == dest_x) continue;
+                try ops.append(allocator, .{ .t = t.*, .kind = .{
+                    .move = .{ .qubit = @intCast(q), .src = src, .dest = .{ .x = dest_x, .y = src.y } },
+                } });
+                placement.*[q].pos.x = dest_x;
+            }
+        }
+        t.* += 1;
     }
 }
 
