@@ -499,6 +499,16 @@ pub fn moveSlmStorage(
     const half_sep: i32 = @divTrunc(cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - y_storage_bottom, 2);
     const y_corridor: i32 = y_compute_upper - half_sep;
 
+    // Load each atom into the AOD so the horizontal highlight shows during the return trip.
+    for (slm_qubits) |maybe_slm| {
+        if (maybe_slm) |q| {
+            try ops.append(allocator, .{ .t = t.*, .kind = .{
+                .load = .{ .qubit = @intCast(q), .position = placement.*[q].pos },
+            } });
+        }
+    }
+    t.* += 1;
+
     // Step 2: move LEFT by d_c — rigid shift into the inter-column lane.
     // Shifting by exactly d_c places every atom at an x midpoint between compute
     // columns, so they won't cross a trap site x-column when rising in step 3.
@@ -612,6 +622,14 @@ pub fn moveAodStorage(
             return p[a].pos.x < p[b].pos.x;
         }
     }.lt);
+
+    // Load each atom into the AOD so the horizontal highlight shows during the return trip.
+    for (unique.items) |q| {
+        try ops.append(allocator, .{ .t = t.*, .kind = .{
+            .load = .{ .qubit = @intCast(q), .position = placement.*[q].pos },
+        } });
+    }
+    t.* += 1;
 
     const cslm = cfg.compute_zone.slms[0];
     const d_c: i32 = @intCast(cslm.sep_nm[0] / 2);
@@ -757,8 +775,12 @@ pub fn moveAodCompute(
         }
     }
 
-    // Sweep: for each timeframe, lift atoms into AOD, slide to column, deposit back into SLM.
+    // Sweep: for each timeframe, lift atoms into AOD (t), slide to column (t),
+    // then deposit back into SLM (t+1, red flash). Store only fires when atoms moved.
     for (aod_qubits) |row| {
+        var moved_q: std.ArrayList(usize) = .empty;
+        defer moved_q.deinit(allocator);
+
         for (row, 0..) |maybe_q, i| {
             if (maybe_q) |q| {
                 const dest_x = x_orig + @as(i32, @intCast(i)) * x_sep;
@@ -771,12 +793,17 @@ pub fn moveAodCompute(
                     .move = .{ .qubit = @intCast(q), .src = src, .dest = .{ .x = dest_x, .y = src.y } },
                 } });
                 placement.*[q].pos.x = dest_x;
-                try ops.append(allocator, .{ .t = t.*, .kind = .{
-                    .store = .{ .qubit = @intCast(q), .position = placement.*[q].pos },
-                } });
+                try moved_q.append(allocator, q);
             }
         }
         t.* += 1;
+
+        for (moved_q.items) |q| {
+            try ops.append(allocator, .{ .t = t.*, .kind = .{
+                .store = .{ .qubit = @intCast(q), .position = placement.*[q].pos },
+            } });
+        }
+        if (moved_q.items.len > 0) t.* += 1;
     }
 }
 
