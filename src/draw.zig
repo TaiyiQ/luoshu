@@ -155,16 +155,19 @@ fn drawMoveTail(cam: Camera, src: Point, dest: Point, tail_alpha: f32, fill: rl.
 
     if (@sqrt(dx * dx + dy * dy) < 1.0) return;
 
-    const n: usize = 14;
+    const n: usize = 24;
     for (0..n) |i| {
-        // fi=0 near src (old, faint, small), fi=1 near dest (recent, bright, large)
-        const fi = @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(n));
-        const alpha: u8 = @intFromFloat(fi * fi * tail_alpha * 210.0);
-        rl.drawCircleV(
-            .{ .x = ss.x + dx * fi, .y = ss.y + dy * fi },
-            2.0 + 5.0 * fi,
-            rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = alpha },
-        );
+        const f0 = @as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(n));
+        const f1 = @as(f32, @floatFromInt(i + 1)) / @as(f32, @floatFromInt(n));
+        const t = (f0 + f1) * 0.5;
+        const p0 = rl.Vector2{ .x = ss.x + dx * f0, .y = ss.y + dy * f0 };
+        const p1 = rl.Vector2{ .x = ss.x + dx * f1, .y = ss.y + dy * f1 };
+        // Soft outer glow.
+        const a_glow: u8 = @intFromFloat(t * t * tail_alpha * 28.0);
+        rl.drawLineEx(p0, p1, 5.0, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = a_glow });
+        // Thin bright core.
+        const a_core: u8 = @intFromFloat(t * t * tail_alpha * 170.0);
+        rl.drawLineEx(p0, p1, 1.0, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = a_core });
     }
 }
 
@@ -808,7 +811,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     const screen_w = rl.getScreenWidth();
     const screen_h = rl.getScreenHeight();
 
-    const bbox = computeBoundingBox(s.slots);
+    const bbox = computeBoundingBox(s.sites);
     var camera = Camera{};
     camera.fitToRect(bbox, @floatFromInt(screen_w), @floatFromInt(screen_h));
 
@@ -964,7 +967,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         const sh: f32 = @floatFromInt(rl.getScreenHeight());
         drawAodHighlight(camera, draw_positions, frame_loaded[frame], s.ops, op_t, sw, sh);
 
-        for (s.slots) |slot| drawSlot(camera, slot, draw_positions, frame_loaded[frame]);
+        for (s.sites) |slot| drawSlot(camera, slot, draw_positions, frame_loaded[frame]);
 
         // Ghost, tail, and ripple for every move at this timestep.
         for (s.ops) |op| {

@@ -129,7 +129,7 @@ pub const Physical = struct {
     allocator: std.mem.Allocator,
     ops: []const Op,
     placement: []Atom, // Initial storage-zone position of each qubit (index = qubit id).
-    slots: []const Point, // All SLM trap sites across storage and compute zones.
+    sites: []const Point, // All SLM trap sites across storage and compute zones.
 
     pub fn deinit(s: *Physical) void {
         for (s.ops) |op| {
@@ -142,7 +142,7 @@ pub const Physical = struct {
         s.allocator.free(s.ops);
         for (s.placement) |*p| p.deinit();
         s.allocator.free(s.placement);
-        s.allocator.free(s.slots);
+        s.allocator.free(s.sites);
     }
 
     pub fn writeToFile(self: *const Physical, allocator: std.mem.Allocator, io: std.Io, filename: []const u8) !void {
@@ -252,8 +252,8 @@ fn zoneName(z: Zone) []const u8 {
 
 // Enumerate every SLM trap site across storage and compute zones. These are drawn
 // as background indicators in the visualization.
-pub fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const Point {
-    var slots: std.ArrayList(Point) = .empty;
+pub fn allSlmSites(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const Point {
+    var sites: std.ArrayList(Point) = .empty;
 
     {
         const slm = layout.storage_zone.slm;
@@ -262,7 +262,7 @@ pub fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]con
         const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
         const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
         for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try slots.append(allocator, .{
+            try sites.append(allocator, .{
                 .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
                 .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
             });
@@ -275,14 +275,14 @@ pub fn allSlmSlots(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]con
         const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
         const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
         for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try slots.append(allocator, .{
+            try sites.append(allocator, .{
                 .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
                 .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
             });
         };
     }
 
-    return try slots.toOwnedSlice(allocator);
+    return try sites.toOwnedSlice(allocator);
 }
 
 /// Indexed by qubit id; null means the atom hasn't been picked up.
@@ -355,54 +355,49 @@ pub fn moveSlmCompute(
     ops: *std.ArrayList(Op),
     t: u32,
 ) !void {
-    // FIXME: mayube we dont need a register, since we will always pickup the current set?
     var ordered: std.ArrayList(usize) = .empty;
     defer ordered.deinit(allocator);
     for (fixed_qubits) |maybe_qubit| {
         if (maybe_qubit) |q| try ordered.append(allocator, q);
     }
-    std.debug.print("order:{any}\n", .{ordered});
 
     var register = try pickup(allocator, cfg, ordered.items, placement);
     defer register.deinit(allocator);
 
-    std.debug.print("t:{}\n", .{t});
+    // Find the next timestep after the pickup sequence ends.
+    var next_t: u32 = t;
+    for (register.items) |a| {
+        if (a.ops.items.len > 0) {
+            const last_t = a.ops.items[a.ops.items.len - 1].t;
+            if (last_t >= next_t) next_t = last_t + 1;
+        }
+    }
 
+    // Move each atom to its destination slot in compute zone slms[0].
+    const control = cfg.compute_zone.slms[0];
+    const x_orig = cfg.compute_zone.offset_nm[0] + control.offset_nm[0];
+    const y_orig = cfg.compute_zone.offset_nm[1] + control.offset_nm[1];
+    const x_sep = @as(i32, @intCast(control.sep_nm[0]));
+
+    // Manhattan step 1: move each atom to its target x column.
+    for (register.items, 0..) |a, i| {
+        const x_dest = x_orig + @as(i32, @intCast(i)) * x_sep;
+        try a.move(x_dest - a.pos.x, 0, next_t);
+    }
+    next_t += 1;
+
+    // Manhattan step 2: move all atoms to the compute zone row.
+    const y_dest = y_orig + @as(i32, @intCast(control.sep_nm[1]));
+    for (register.items) |a| {
+        try a.move(0, y_dest - a.pos.y, next_t);
+    }
+
+    // Flush pickup + compute-zone move ops to the global ops list.
     for (register.items) |a| {
         for (a.ops.items) |o| {
             try ops.append(allocator, o);
         }
     }
-
-    // Calculate movements to the compure zone.
-
-    //    const cz = cfg.compute_zone;
-    //    const control = cz.slms[0];
-    //    const x_slm_orig = cz.offset_nm[0] + control.offset_nm[0];
-    //    const y_slm_orig = cz.offset_nm[1] + control.offset_nm[1];
-    //    const x_sep = control.sep_nm[0];
-
-    //    for (register, 0..) |maybe_qubit, i| {
-    //        const x = x_slm_orig + @as(i32, @intCast(i)) * @as(i32, @intCast(x_sep));
-    //        const y = y_slm_orig + @as(i32, @intCast(control.sep_nm[1]));
-    //
-    //        if (maybe_qubit) |atom| {
-    //            const src = placement.*[atom.id];
-    //            const dest = Point{ .x = x, .y = y };
-    //
-    //            const op = Op{ .t = t, .kind = .{
-    //                .move = .{
-    //                    .qubit = @as(u32, @intCast(qubit_id)),
-    //                    .src = src,
-    //                    .dest = dest,
-    //                },
-    //            } };
-    //            try ops.append(allocator, op);
-    //
-    //            // Update to qubit location.
-    //            placement.*[qubit_id] = dest;
-    //        }
-    //    }
 }
 
 pub fn addRamanOp(

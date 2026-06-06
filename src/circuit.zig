@@ -160,13 +160,13 @@ pub const Pipeline = struct {
         for (placement) |*a| a.deinit();
         s.allocator.free(placement);
 
-        const slots = try schedule.allSlmSlots(s.allocator, cfg);
+        const sites = try schedule.allSlmSites(s.allocator, cfg);
 
         return .{
             .allocator = s.allocator,
             .ops = try ops.toOwnedSlice(s.allocator),
             .placement = initial_placement,
-            .slots = slots,
+            .sites = sites,
         };
     }
 };
