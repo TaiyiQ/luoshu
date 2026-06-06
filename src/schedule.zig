@@ -551,34 +551,93 @@ pub fn moveSlmStorage(
 
 pub fn moveAodStorage(
     allocator: std.mem.Allocator,
+    cfg: arch.ArchConfig,
     aod_qubits: [][]?usize,
-    init_placement: []Point,
-    placement: *[]Point,
+    init_placement: []const Atom,
+    placement: *[]Atom,
     ops: *std.ArrayList(Op),
-    t_base: u32,
+    t: *u32,
 ) !void {
-    for (aod_qubits, 0..) |aod_row, t| {
-        for (aod_row) |maybe_aod| {
-            if (maybe_aod) |qubit_id| {
-                const src = placement.*[qubit_id];
-                const dest = init_placement[qubit_id];
-
-                const op_t = t_base + @as(u32, @intCast(t));
-                const op = Op{ .t = op_t, .kind = .{
-                    .move = .{
-                        .qubit = @as(u32, @intCast(qubit_id)),
-                        .src = src,
-                        .dest = dest,
-                    },
-                } };
-
-                try ops.append(allocator, op);
-
-                // Update new qubit location.
-                placement.*[qubit_id] = dest;
+    // Collect all unique qubit IDs across all timeframes.
+    var seen = std.AutoHashMap(usize, void).init(allocator);
+    defer seen.deinit();
+    var unique: std.ArrayList(usize) = .empty;
+    defer unique.deinit(allocator);
+    for (aod_qubits) |row| {
+        for (row) |maybe_q| {
+            if (maybe_q) |q| {
+                const gop = try seen.getOrPut(q);
+                if (!gop.found_existing) try unique.append(allocator, q);
             }
         }
     }
+    if (unique.items.len == 0) return;
+
+    const cslm = cfg.compute_zone.slms[0];
+    const d_c: i32 = @intCast(cslm.sep_nm[0] / 2);
+    const y_compute_upper: i32 = cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - d_c;
+    const sslm = cfg.storage_zone.slm;
+    const y_storage_bottom: i32 = cfg.storage_zone.offset_nm[1] + sslm.offset_nm[1] +
+        @as(i32, @intCast((sslm.num_row - 1) * sslm.sep_nm[1]));
+    const half_sep: i32 = @divTrunc(cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - y_storage_bottom, 2);
+    const y_corridor: i32 = y_compute_upper - half_sep;
+
+    // Step 1: move DOWN by d_c — exit compute row into inter-row lane.
+    for (unique.items) |q| {
+        const src = placement.*[q].pos;
+        const dest = Point{ .x = src.x, .y = src.y + d_c };
+        try ops.append(allocator, .{ .t = t.*, .kind = .{
+            .move = .{ .qubit = @intCast(q), .src = src, .dest = dest },
+        } });
+        placement.*[q].pos = dest;
+    }
+    t.* += 1;
+
+    // Step 2: move RIGHT by d_c — shift into inter-column lane.
+    for (unique.items) |q| {
+        const src = placement.*[q].pos;
+        const dest = Point{ .x = src.x + d_c, .y = src.y };
+        try ops.append(allocator, .{ .t = t.*, .kind = .{
+            .move = .{ .qubit = @intCast(q), .src = src, .dest = dest },
+        } });
+        placement.*[q].pos = dest;
+    }
+    t.* += 1;
+
+    // Step 3: move UP to the inter-zone corridor.
+    for (unique.items) |q| {
+        const src = placement.*[q].pos;
+        if (src.y == y_corridor) continue;
+        try ops.append(allocator, .{ .t = t.*, .kind = .{
+            .move = .{ .qubit = @intCast(q), .src = src, .dest = .{ .x = src.x, .y = y_corridor } },
+        } });
+        placement.*[q].pos.y = y_corridor;
+    }
+    t.* += 1;
+
+    // Step 4: compress — each atom moves to its storage column x.
+    for (unique.items) |q| {
+        const dest_x = init_placement[q].pos.x;
+        const src = placement.*[q].pos;
+        if (src.x == dest_x) continue;
+        try ops.append(allocator, .{ .t = t.*, .kind = .{
+            .move = .{ .qubit = @intCast(q), .src = src, .dest = .{ .x = dest_x, .y = src.y } },
+        } });
+        placement.*[q].pos.x = dest_x;
+    }
+    t.* += 1;
+
+    // Step 5: place into storage — each atom drops to its storage row y.
+    for (unique.items) |q| {
+        const dest_y = init_placement[q].pos.y;
+        const src = placement.*[q].pos;
+        if (src.y == dest_y) continue;
+        try ops.append(allocator, .{ .t = t.*, .kind = .{
+            .move = .{ .qubit = @intCast(q), .src = src, .dest = .{ .x = src.x, .y = dest_y } },
+        } });
+        placement.*[q].pos.y = dest_y;
+    }
+    t.* += 1;
 }
 
 pub fn moveAodCompute(

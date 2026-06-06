@@ -129,16 +129,16 @@ pub const Pipeline = struct {
                 &t_slm,
             );
 
-            //            try schedule.moveAodStorage(
-            //                s.allocator,
-            //                sequence.moveable,
-            //                initial_placement,
-            //                &placement,
-            //                &ops,
-            //                t_aod_base + 1,
-            //            );
+            try schedule.moveAodStorage(
+                s.allocator,
+                cfg,
+                sequence.moveable,
+                initial_placement,
+                &placement,
+                &ops,
+                &t_slm,
+            );
 
-            //            const t_slm_back = t_aod_base + 1 + @as(u32, @intCast(sequence.moveable.len));
             try schedule.moveSlmStorage(
                 s.allocator,
                 cfg,
