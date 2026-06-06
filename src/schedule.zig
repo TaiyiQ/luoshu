@@ -357,21 +357,17 @@ pub fn moveSlmCompute(
 ) !void {
     var ordered: std.ArrayList(usize) = .empty;
     defer ordered.deinit(allocator);
-    for (fixed_qubits) |maybe_qubit| {
-        if (maybe_qubit) |q| try ordered.append(allocator, q);
+    var cols: std.ArrayList(usize) = .empty;
+    defer cols.deinit(allocator);
+    for (fixed_qubits, 0..) |maybe_qubit, col| {
+        if (maybe_qubit) |q| {
+            try ordered.append(allocator, q);
+            try cols.append(allocator, col);
+        }
     }
 
     var register = try pickup(allocator, cfg, ordered.items, placement, t);
     defer register.deinit(allocator);
-
-    //    // Find the next timestep after the pickup sequence ends.
-    //    var next_t: u32 = t;
-    //    for (register.items) |a| {
-    //        if (a.ops.items.len > 0) {
-    //            const last_t = a.ops.items[a.ops.items.len - 1].t;
-    //            if (last_t >= next_t) next_t = last_t + 1;
-    //        }
-    //    }
 
     // Move each atom to its destination slot in compute zone slms[0].
     const control = cfg.compute_zone.slms[0];
@@ -379,10 +375,10 @@ pub fn moveSlmCompute(
     const y_orig = cfg.compute_zone.offset_nm[1] + control.offset_nm[1];
     const x_sep = @as(i32, @intCast(control.sep_nm[0]));
 
-    // Manhattan step 1: move each atom to its target x column.
+    // Manhattan step 1: move each atom to its target x column (null slots skipped).
     const d = @as(i32, @intCast(cfg.compute_zone.slms[0].sep_nm[0] / 2));
-    for (register.items, 0..) |a, i| {
-        const x_dest = x_orig + @as(i32, @intCast(i)) * x_sep;
+    for (register.items, cols.items) |a, col| {
+        const x_dest = x_orig + @as(i32, @intCast(col)) * x_sep;
         try a.move(x_dest - a.pos.x + d, 0, t.*);
     }
     t.* += 1;
