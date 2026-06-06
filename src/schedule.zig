@@ -448,9 +448,15 @@ pub fn moveSlmStorage(
     const cslm = cfg.compute_zone.slms[0];
     // Half compute zone site spacing — used as clearance from trap sites.
     const d_c: i32 = @intCast(cslm.sep_nm[0] / 2);
-    // Inter-zone corridor: d_c above the compute zone SLM grid top.
-    // No trap sites here, so x-positions can be adjusted freely (compress step).
-    const y_corridor: i32 = cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - d_c;
+    // Upper edge of the compute zone (top SLM row y, with d_c clearance).
+    const y_compute_upper: i32 = cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - d_c;
+    // Bottom edge of the storage zone (bottom SLM row y, closest to compute).
+    const sslm = cfg.storage_zone.slm;
+    const y_storage_bottom: i32 = cfg.storage_zone.offset_nm[1] + sslm.offset_nm[1] +
+        @as(i32, @intCast((sslm.num_row - 1) * sslm.sep_nm[1]));
+    // Corridor: upper compute edge plus half the inter-zone gap — trap-free, safe for x alignment.
+    const half_sep: i32 = @divTrunc(cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - y_storage_bottom, 2);
+    const y_corridor: i32 = y_compute_upper - half_sep;
 
     // Step 1: move DOWN by d_c to enter the inter-row lane.
     // Atoms are on compute trap sites; d_c drops them into the gap between rows
