@@ -836,10 +836,15 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     var frame: usize = 0;
     var playing = false;
     var timer: f32 = 0.0;
-    const step_sec: f32 = 1.5;
+    const step_sec: f32 = 0.4;
     var panel_visible = false;
     var panel_scroll: f32 = 0;
     var panel_content_h: f32 = 0;
+
+    const hold_delay: f32 = 0.3;  // seconds before repeat starts
+    const hold_rate: f32 = 0.06;  // seconds between repeat steps
+    var hold_k: f32 = 0.0;
+    var hold_j: f32 = 0.0;
 
     var active = try allocator.alloc(bool, s.placement.len);
     defer allocator.free(active);
@@ -848,14 +853,43 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     defer allocator.free(draw_positions);
 
     while (!rl.windowShouldClose()) {
+        const dt = rl.getFrameTime();
         // ── Input ──────────────────────────────────────────────────
         if (rl.isKeyPressed(.k)) {
             playing = false;
             frame = @min(frame + 1, frame_count - 1);
+            hold_k = 0.0;
+        } else if (rl.isKeyDown(.k)) {
+            hold_k += dt;
+            if (hold_k >= hold_delay) {
+                const excess = hold_k - hold_delay;
+                const steps: usize = @intFromFloat(excess / hold_rate);
+                if (steps > 0) {
+                    playing = false;
+                    frame = @min(frame + steps, frame_count - 1);
+                    hold_k -= @as(f32, @floatFromInt(steps)) * hold_rate;
+                }
+            }
+        } else {
+            hold_k = 0.0;
         }
         if (rl.isKeyPressed(.j)) {
             playing = false;
             if (frame > 0) frame -= 1;
+            hold_j = 0.0;
+        } else if (rl.isKeyDown(.j)) {
+            hold_j += dt;
+            if (hold_j >= hold_delay) {
+                const excess = hold_j - hold_delay;
+                const steps: usize = @intFromFloat(excess / hold_rate);
+                if (steps > 0) {
+                    playing = false;
+                    if (frame >= steps) frame -= steps else frame = 0;
+                    hold_j -= @as(f32, @floatFromInt(steps)) * hold_rate;
+                }
+            }
+        } else {
+            hold_j = 0.0;
         }
         if (rl.isKeyPressed(.space)) {
             playing = !playing;
@@ -895,7 +929,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         }
 
         if (playing) {
-            timer += rl.getFrameTime();
+            timer += dt;
             if (timer >= step_sec) {
                 timer = 0;
                 if (frame + 1 < frame_count) frame += 1 else playing = false;
@@ -988,7 +1022,10 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         for (s.ops) |op| {
             if (op.t != op_t or op.kind != .move) continue;
             const a = op.kind.move;
-            drawGhostQubit(camera, a.src, opColors(primary_op).fill);
+            const src_is_site = for (s.sites) |site| {
+                if (site.x == a.src.x and site.y == a.src.y) break true;
+            } else false;
+            if (src_is_site) drawGhostQubit(camera, a.src, opColors(primary_op).fill);
             drawMoveTail(camera, a.src, draw_positions[a.qubit], 1.0, opColors(primary_op).fill);
             drawArrivalRipple(camera, a.dest, settle_t, opColors(primary_op).fill);
         }
