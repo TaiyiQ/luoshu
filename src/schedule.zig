@@ -380,9 +380,10 @@ pub fn moveSlmCompute(
     const x_sep = @as(i32, @intCast(control.sep_nm[0]));
 
     // Manhattan step 1: move each atom to its target x column.
+    const d = @as(i32, @intCast(cfg.compute_zone.slms[0].sep_nm[0] / 2));
     for (register.items, 0..) |a, i| {
         const x_dest = x_orig + @as(i32, @intCast(i)) * x_sep;
-        try a.move(x_dest - a.pos.x, 0, next_t);
+        try a.move(x_dest - a.pos.x + d, 0, next_t);
     }
     next_t += 1;
 
@@ -390,6 +391,12 @@ pub fn moveSlmCompute(
     const y_dest = y_orig + @as(i32, @intCast(control.sep_nm[1]));
     for (register.items) |a| {
         try a.move(0, y_dest - a.pos.y, next_t);
+    }
+    next_t += 1;
+
+    // Manhattan step 3: move all atoms to the compute zone row.
+    for (register.items) |a| {
+        try a.move(-d, 0, next_t);
     }
 
     // Flush pickup + compute-zone move ops to the global ops list.
