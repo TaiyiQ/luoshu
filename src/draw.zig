@@ -805,13 +805,13 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     }
 
     rl.setConfigFlags(.{
-        .fullscreen_mode = true,
+        .fullscreen_mode = false,
         .window_resizable = true,
         .msaa_4x_hint = true,
         .window_highdpi = true,
     });
     rl.setTraceLogLevel(.err);
-    rl.initWindow(0, 0, "Physical schedule");
+    rl.initWindow(1280, 800, "Physical schedule");
     defer rl.closeWindow();
     rl.setTargetFPS(60);
 
