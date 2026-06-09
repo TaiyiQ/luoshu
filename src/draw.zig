@@ -7,6 +7,41 @@ const circuit = @import("circuit");
 const Point = schedule.Point;
 const Op = schedule.Op;
 
+// Enumerate every SLM trap site across storage and compute zones. These are drawn
+// as background indicators in the visualization.
+pub fn allSlmSites(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig) ![]const Point {
+    var sites: std.ArrayList(Point) = .empty;
+
+    {
+        const slm = layout.storage_zone.slm;
+        const x0 = layout.storage_zone.offset_nm[0] + slm.offset_nm[0];
+        const y0 = layout.storage_zone.offset_nm[1] + slm.offset_nm[1];
+        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
+        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
+        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
+            try sites.append(allocator, .{
+                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
+                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
+            });
+        };
+    }
+
+    for (layout.compute_zone.slms) |slm| {
+        const x0 = layout.compute_zone.offset_nm[0] + slm.offset_nm[0];
+        const y0 = layout.compute_zone.offset_nm[1] + slm.offset_nm[1];
+        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
+        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
+        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
+            try sites.append(allocator, .{
+                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
+                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
+            });
+        };
+    }
+
+    return try sites.toOwnedSlice(allocator);
+}
+
 const palette = struct {
     pub const bg = rl.Color{ .r = 48, .g = 52, .b = 70, .a = 255 };
     pub const panel_bg = rl.Color{ .r = 36, .g = 39, .b = 58, .a = 235 };
@@ -826,7 +861,9 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     const screen_w = rl.getScreenWidth();
     const screen_h = rl.getScreenHeight();
 
-    const bbox = computeBoundingBox(s.sites);
+    const sites = try allSlmSites(s.allocator, layout);
+
+    const bbox = computeBoundingBox(sites);
     var camera = Camera{};
     camera.fitToRect(bbox, @floatFromInt(screen_w), @floatFromInt(screen_h));
 
@@ -841,8 +878,8 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     var panel_scroll: f32 = 0;
     var panel_content_h: f32 = 0;
 
-    const hold_delay: f32 = 0.3;  // seconds before repeat starts
-    const hold_rate: f32 = 0.06;  // seconds between repeat steps
+    const hold_delay: f32 = 0.3; // seconds before repeat starts
+    const hold_rate: f32 = 0.06; // seconds between repeat steps
     var hold_k: f32 = 0.0;
     var hold_j: f32 = 0.0;
 
@@ -1016,13 +1053,13 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         const sh: f32 = @floatFromInt(rl.getScreenHeight());
         drawAodHighlight(camera, draw_positions, frame_loaded[frame], s.ops, op_t, sw, sh);
 
-        for (s.sites) |slot| drawSlot(camera, slot, draw_positions, frame_loaded[frame]);
+        for (sites) |slot| drawSlot(camera, slot, draw_positions, frame_loaded[frame]);
 
         // Ghost, tail, and ripple for every move at this timestep.
         for (s.ops) |op| {
             if (op.t != op_t or op.kind != .move) continue;
             const a = op.kind.move;
-            const src_is_site = for (s.sites) |site| {
+            const src_is_site = for (sites) |site| {
                 if (site.x == a.src.x and site.y == a.src.y) break true;
             } else false;
             if (src_is_site) drawGhostQubit(camera, a.src, opColors(primary_op).fill);

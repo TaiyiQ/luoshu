@@ -129,7 +129,6 @@ pub const Physical = struct {
     allocator: std.mem.Allocator,
     ops: []const Op,
     placement: []Atom, // Initial storage-zone position of each qubit (index = qubit id).
-    sites: []const Point, // All SLM trap sites across storage and compute zones.
 
     pub fn deinit(s: *Physical) void {
         for (s.ops) |op| {
@@ -142,7 +141,6 @@ pub const Physical = struct {
         s.allocator.free(s.ops);
         for (s.placement) |*p| p.deinit();
         s.allocator.free(s.placement);
-        s.allocator.free(s.sites);
     }
 
     pub fn writeToFile(self: *const Physical, allocator: std.mem.Allocator, io: std.Io, filename: []const u8) !void {
@@ -248,41 +246,6 @@ fn zoneName(z: Zone) []const u8 {
         .compute => "compute",
         .readout => "readout_zone",
     };
-}
-
-// Enumerate every SLM trap site across storage and compute zones. These are drawn
-// as background indicators in the visualization.
-pub fn allSlmSites(allocator: std.mem.Allocator, layout: arch.ArchConfig) ![]const Point {
-    var sites: std.ArrayList(Point) = .empty;
-
-    {
-        const slm = layout.storage_zone.slm;
-        const x0 = layout.storage_zone.offset_nm[0] + slm.offset_nm[0];
-        const y0 = layout.storage_zone.offset_nm[1] + slm.offset_nm[1];
-        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
-        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
-        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try sites.append(allocator, .{
-                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
-                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
-            });
-        };
-    }
-
-    for (layout.compute_zone.slms) |slm| {
-        const x0 = layout.compute_zone.offset_nm[0] + slm.offset_nm[0];
-        const y0 = layout.compute_zone.offset_nm[1] + slm.offset_nm[1];
-        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
-        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
-        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try sites.append(allocator, .{
-                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
-                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
-            });
-        };
-    }
-
-    return try sites.toOwnedSlice(allocator);
 }
 
 /// Indexed by qubit id; null means the atom hasn't been picked up.
@@ -417,9 +380,15 @@ pub fn moveSlmCompute(
     // Manhattan step 3: x correction to target column, then place atom into compute SLM.
     for (register.items) |a| {
         try a.move(-d, 0, t.*);
-        try a.ops.append(a.allocator, .{ .t = t.*, .kind = .{
-            .store = .{ .qubit = a.id, .position = a.pos },
-        } });
+        try a.ops.append(a.allocator, .{
+            .t = t.*,
+            .kind = .{
+                .store = .{
+                    .qubit = a.id,
+                    .position = a.pos,
+                },
+            },
+        });
     }
 
     // Flush pickup + compute-zone move ops to the global ops list.
@@ -481,7 +450,7 @@ fn occupiedStorageX(
 pub fn moveSlmStorage(
     allocator: std.mem.Allocator,
     cfg: arch.ArchConfig,
-    slm_qubits: []const ?usize,
+    fixed: []const ?usize,
     placement: *[]Atom,
     ops: *std.ArrayList(Op),
     t: *u32,
@@ -500,7 +469,7 @@ pub fn moveSlmStorage(
     const y_corridor: i32 = y_compute_upper - half_sep;
 
     // Load each atom into the AOD so the horizontal highlight shows during the return trip.
-    for (slm_qubits) |maybe_slm| {
+    for (fixed) |maybe_slm| {
         if (maybe_slm) |q| {
             try ops.append(allocator, .{ .t = t.*, .kind = .{
                 .load = .{ .qubit = @intCast(q), .position = placement.*[q].pos },
@@ -512,7 +481,7 @@ pub fn moveSlmStorage(
     // Step 2: move LEFT by d_c — rigid shift into the inter-column lane.
     // Shifting by exactly d_c places every atom at an x midpoint between compute
     // columns, so they won't cross a trap site x-column when rising in step 3.
-    for (slm_qubits) |maybe_slm| {
+    for (fixed) |maybe_slm| {
         if (maybe_slm) |q| {
             const src = placement.*[q].pos;
             const dest = Point{ .x = src.x + d_c, .y = src.y };
@@ -531,7 +500,7 @@ pub fn moveSlmStorage(
     // Step 3: move UP to the inter-zone corridor.
     // Atoms travel vertically at inter-column x positions, clearing all compute
     // zone trap rows without crossing any trap site.
-    for (slm_qubits) |maybe_slm| {
+    for (fixed) |maybe_slm| {
         if (maybe_slm) |q| {
             const src = placement.*[q].pos;
             if (src.y == y_corridor) continue;
@@ -553,7 +522,7 @@ pub fn moveSlmStorage(
     const x_s_sep: i32 = @intCast(sslm.sep_nm[0]);
     var returning: std.ArrayList(usize) = .empty;
     defer returning.deinit(allocator);
-    for (slm_qubits) |maybe_slm| {
+    for (fixed) |maybe_slm| {
         if (maybe_slm) |q| try returning.append(allocator, q);
     }
     var occ = try occupiedStorageX(allocator, returning.items, placement.*, y_storage_bottom);
@@ -575,7 +544,7 @@ pub fn moveSlmStorage(
 
     // Step 5: drop to the bottom storage row and emit a Store op to mark the atom
     // as back in the SLM (no longer in the AOD).
-    for (slm_qubits) |maybe_slm| {
+    for (fixed) |maybe_slm| {
         if (maybe_slm) |q| {
             const src = placement.*[q].pos;
             if (src.y != y_storage_bottom) {
