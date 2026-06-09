@@ -97,6 +97,100 @@ pub const Graph = struct {
     }
 };
 
+pub const Sequence = struct {
+    arena: std.heap.ArenaAllocator,
+
+    // List of qubit IDs that will be fixed in the SLM in compute zone.
+    fixed: []const ?usize,
+
+    // Key is the timeframe, and value if a list of qubit IDs that
+    // will move across the fixed SLM qubits in the compute zone.
+    moveable: [][]?usize,
+
+    pub fn deinit(s: *Sequence) void {
+        s.arena.deinit();
+    }
+
+    pub fn print(s: Sequence) void {
+        const n_slots = s.fixed.len;
+
+        std.debug.print("\n", .{});
+
+        std.debug.print("     +", .{});
+        for (0..n_slots) |_| std.debug.print("-----+", .{});
+        std.debug.print("\n", .{});
+
+        std.debug.print(" SLM |", .{});
+        for (s.fixed) |v| {
+            if (v) |id| std.debug.print("{d:^5}|", .{id}) else std.debug.print("  ·  |", .{});
+        }
+        std.debug.print("\n", .{});
+
+        std.debug.print("     +", .{});
+        for (0..n_slots) |_| std.debug.print("-----+", .{});
+        std.debug.print("\n", .{});
+
+        for (s.moveable, 0..) |aod_slot, t| {
+            std.debug.print("  t{d} |", .{t});
+            for (aod_slot, 0..) |v, i| {
+                const has_slm = s.fixed[i] != null;
+                if (v) |id| {
+                    if (has_slm) std.debug.print(" {d:^3} |", .{id}) else std.debug.print("{d:^5}|", .{id});
+                } else {
+                    std.debug.print("  ·  |", .{});
+                }
+            }
+            std.debug.print("\n", .{});
+        }
+
+        std.debug.print("     +", .{});
+        for (0..n_slots) |_| std.debug.print("-----+", .{});
+        std.debug.print("\n", .{});
+        std.debug.print("\n", .{});
+    }
+
+    pub fn toJson(s: *const Sequence, allocator: std.mem.Allocator) ![]u8 {
+        var buf: std.Io.Writer.Allocating = .init(allocator);
+        defer buf.deinit();
+        const w = &buf.writer;
+
+        try w.writeAll("{\n");
+
+        try w.writeAll("  \"slm_slots\": [");
+        for (s.fixed, 0..) |v, i| {
+            if (i > 0) try w.writeAll(", ");
+            if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
+        }
+        try w.writeAll("],\n");
+
+        try w.writeAll("  \"aod_slots_per_color\": [\n");
+        for (s.moveable, 0..) |row, ci| {
+            try w.writeAll("    [");
+            for (row, 0..) |v, i| {
+                if (i > 0) try w.writeAll(", ");
+                if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
+            }
+            const last = ci == s.moveable.len - 1;
+            try w.writeAll(if (last) "]\n" else "],\n");
+        }
+        try w.writeAll("  ],\n");
+
+        try w.print("  \"max_color\": {d}\n", .{@as(i32, @intCast(s.moveable.len)) - 1});
+        try w.writeAll("}");
+
+        return allocator.dupe(u8, buf.written());
+    }
+
+    pub fn writeToFile(self: *const Sequence, allocator: std.mem.Allocator, io: std.Io, filename: []const u8) !void {
+        const json = try self.toJson(allocator);
+        defer allocator.free(json);
+
+        const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
+        defer file.close(io);
+        try file.writePositionalAll(io, json, 0);
+    }
+};
+
 const Aod = struct {
     set: []bool,
     nodes: std.ArrayList(usize), // ordered nodes
@@ -742,7 +836,7 @@ fn computeRestingPositions(
     return positions.toOwnedSlice(allocator);
 }
 
-pub fn compile(allocator: std.mem.Allocator, g: *Graph) !schedule.Logical {
+pub fn compile(allocator: std.mem.Allocator, g: *Graph) !Sequence {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const arena_alloc = arena.allocator();
@@ -768,13 +862,13 @@ pub fn compile(allocator: std.mem.Allocator, g: *Graph) !schedule.Logical {
     defer allocator.free(resting_xs);
     std.debug.print("resting_xs: {any}\n", .{resting_xs});
 
-    const slm_slots = try placeSlmWithResting(arena_alloc, slm_order, resting_xs, aod.nodes.items.len);
-    const aod_slots_per_color = try logicalSchedule(arena_alloc, g, aod, slm_slots);
+    const fixed = try placeSlmWithResting(arena_alloc, slm_order, resting_xs, aod.nodes.items.len);
+    const moveable = try logicalSchedule(arena_alloc, g, aod, fixed);
 
-    return schedule.Logical{
+    return .{
         .arena = arena,
-        .slm_slots = slm_slots,
-        .aod_slots_per_color = aod_slots_per_color,
+        .fixed = fixed,
+        .moveable = moveable,
     };
 }
 
