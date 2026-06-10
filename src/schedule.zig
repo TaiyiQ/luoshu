@@ -149,21 +149,17 @@ pub const Physical = struct {
         defer register.deinit(gpa);
 
         // Move each atom to its destination slot in compute zone slms[0].
-        const control = cfg.compute_zone.slms[0];
-        const x_orig = cfg.compute_zone.offset_nm[0] + control.offset_nm[0];
-        const y_orig = cfg.compute_zone.offset_nm[1] + control.offset_nm[1];
-        const x_sep = @as(i32, @intCast(control.sep_nm[0]));
+        const grid = cfg.compute_zone.grid(0);
+        const d = grid.halfSepX();
 
         // Manhattan step 1: move each atom to its target x column (null slots skipped).
-        const d = @as(i32, @intCast(cfg.compute_zone.slms[0].sep_nm[0] / 2));
         for (register.items, cols.items) |a, col| {
-            const x_dest = x_orig + @as(i32, @intCast(col)) * x_sep;
-            try a.move(x_dest - a.pos.x + d, 0, s.t);
+            try a.move(grid.x(col) - a.pos.x + d, 0, s.t);
         }
         s.t += 1;
 
         // Manhattan step 2: move all atoms to the compute zone row.
-        const y_dest = y_orig + @as(i32, @intCast(control.sep_nm[1]));
+        const y_dest = grid.y(1);
         for (register.items) |a| {
             try a.move(0, y_dest - a.pos.y, s.t);
         }
@@ -197,18 +193,12 @@ pub const Physical = struct {
         cfg: arch.ArchConfig,
         fixed: []const ?usize,
     ) !void {
-        const cslm = cfg.compute_zone.slms[0];
         // Half compute zone site spacing — used as clearance from trap sites.
-        const d_c: i32 = @intCast(cslm.sep_nm[0] / 2);
-        // Upper edge of the compute zone (top SLM row y, with d_c clearance).
-        const y_compute_upper: i32 = cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - d_c;
+        const d_c = cfg.compute_zone.grid(0).halfSepX();
+        const sgrid = cfg.storage_zone.grid();
         // Bottom edge of the storage zone (bottom SLM row y, closest to compute).
-        const sslm = cfg.storage_zone.slm;
-        const y_storage_bottom: i32 = cfg.storage_zone.offset_nm[1] + sslm.offset_nm[1] +
-            @as(i32, @intCast((sslm.num_row - 1) * sslm.sep_nm[1]));
-        // Corridor: upper compute edge plus half the inter-zone gap — trap-free, safe for x alignment.
-        const half_sep: i32 = @divTrunc(cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - y_storage_bottom, 2);
-        const y_corridor: i32 = y_compute_upper - half_sep;
+        const y_storage_bottom = sgrid.bottomRowY();
+        const y_corridor = cfg.corridorY();
 
         // Load each atom into the AOD so the horizontal highlight shows during the return trip.
         for (fixed) |maybe_slm| {
@@ -272,8 +262,6 @@ pub const Physical = struct {
 
         // Step 4: compress — atoms move to sequential storage columns in left-to-right order,
         // skipping columns already occupied by atoms that stayed in the storage zone.
-        const x_s_orig: i32 = cfg.storage_zone.offset_nm[0] + sslm.offset_nm[0];
-        const x_s_sep: i32 = @intCast(sslm.sep_nm[0]);
         var returning: std.ArrayList(usize) = .empty;
         defer returning.deinit(gpa);
         for (fixed) |maybe_slm| {
@@ -285,9 +273,11 @@ pub const Physical = struct {
 
         var col: usize = 0;
         for (returning.items) |q| {
-            while (occ.contains(x_s_orig + @as(i32, @intCast(col)) * x_s_sep)) col += 1;
-            const dest_x = x_s_orig + @as(i32, @intCast(col)) * x_s_sep;
+            while (occ.contains(sgrid.x(col))) col += 1;
+
+            const dest_x = sgrid.x(col);
             const src = s.placement[q].pos;
+
             if (src.x != dest_x) {
                 try s.ops.append(gpa, .{
                     .t = s.t,
@@ -382,14 +372,10 @@ pub const Physical = struct {
         }
         s.t += 1;
 
-        const cslm = cfg.compute_zone.slms[0];
-        const d_c: i32 = @intCast(cslm.sep_nm[0] / 2);
-        const y_compute_upper: i32 = cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - d_c;
-        const sslm = cfg.storage_zone.slm;
-        const y_storage_bottom: i32 = cfg.storage_zone.offset_nm[1] + sslm.offset_nm[1] +
-            @as(i32, @intCast((sslm.num_row - 1) * sslm.sep_nm[1]));
-        const half_sep: i32 = @divTrunc(cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - y_storage_bottom, 2);
-        const y_corridor: i32 = y_compute_upper - half_sep;
+        const d_c = cfg.compute_zone.grid(0).halfSepX();
+        const sgrid = cfg.storage_zone.grid();
+        const y_storage_bottom = sgrid.bottomRowY();
+        const y_corridor = cfg.corridorY();
 
         // Step 1: move RIGHT by d_c — shift into inter-column lane.
         for (unique.items) |q| {
@@ -432,17 +418,16 @@ pub const Physical = struct {
 
         // Step 3: compress — sequential storage columns in left-to-right order,
         // skipping columns already occupied by atoms that stayed in the storage zone.
-        const x_s_orig: i32 = cfg.storage_zone.offset_nm[0] + sslm.offset_nm[0];
-        const x_s_sep: i32 = @intCast(sslm.sep_nm[0]);
-
         var occ = try occupiedStorageX(gpa, unique.items, s.placement, y_storage_bottom);
         defer occ.deinit();
 
         var col: usize = 0;
         for (unique.items) |q| {
-            while (occ.contains(x_s_orig + @as(i32, @intCast(col)) * x_s_sep)) col += 1;
-            const dest_x = x_s_orig + @as(i32, @intCast(col)) * x_s_sep;
+            while (occ.contains(sgrid.x(col))) col += 1;
+
+            const dest_x = sgrid.x(col);
             const src = s.placement[q].pos;
+
             if (src.x != dest_x) {
                 try s.ops.append(gpa, .{
                     .t = s.t,
@@ -524,21 +509,17 @@ pub const Physical = struct {
         defer register.deinit(gpa);
 
         // Manhattan entry into SLM[1] — mirrors moveSlmCompute for SLM[0].
-        const target = cfg.compute_zone.slms[1];
-        const x_orig = cfg.compute_zone.offset_nm[0] + target.offset_nm[0];
-        const y_orig = cfg.compute_zone.offset_nm[1] + target.offset_nm[1];
-        const x_sep = @as(i32, @intCast(target.sep_nm[0]));
-        const d = @as(i32, @intCast(target.sep_nm[0] / 2));
+        const grid = cfg.compute_zone.grid(1);
+        const d = grid.halfSepX();
 
         // Step 1: move each atom to its column x + d (inter-column offset avoids crossings).
         for (register.items, 0..) |a, i| {
-            const x_dest = x_orig + @as(i32, @intCast(i)) * x_sep;
-            try a.move(x_dest - a.pos.x + d, 0, s.t);
+            try a.move(grid.x(i) - a.pos.x + d, 0, s.t);
         }
         s.t += 1;
 
         // Step 2: drop all atoms to SLM[1] row y.
-        const y_dest = y_orig + @as(i32, @intCast(target.sep_nm[1]));
+        const y_dest = grid.y(1);
         for (register.items) |a| {
             try a.move(0, y_dest - a.pos.y, s.t);
         }
@@ -574,9 +555,11 @@ pub const Physical = struct {
 
             for (row, 0..) |maybe_q, i| {
                 if (maybe_q) |q| {
-                    const dest_x = x_orig + @as(i32, @intCast(i)) * x_sep;
+                    const dest_x = grid.x(i);
                     const src = s.placement[q].pos;
+
                     if (src.x == dest_x) continue;
+
                     try s.ops.append(gpa, .{
                         .t = s.t,
                         .kind = .{
@@ -586,6 +569,7 @@ pub const Physical = struct {
                             },
                         },
                     });
+
                     try s.ops.append(gpa, .{
                         .t = s.t,
                         .kind = .{
@@ -599,6 +583,7 @@ pub const Physical = struct {
                             },
                         },
                     });
+
                     s.placement[q].pos.x = dest_x;
                     try moved_q.append(gpa, q);
                 }
@@ -758,7 +743,7 @@ pub fn pickup(
     plc: *[]Atom,
     t: *u32,
 ) !Register {
-    const d = @as(i32, @intCast(cfg.storage_zone.slm.sep_nm[0] / 2));
+    const d = cfg.storage_zone.grid().halfSepX();
 
     var register: Register = .empty;
     errdefer register.deinit(gpa);
@@ -866,13 +851,9 @@ pub fn assemble(
     sz: arch.StorageZone,
     num_qubits: usize,
 ) !Physical {
-    const x_orig = sz.offset_nm[0] + sz.slm.offset_nm[0];
-    const y_orig = sz.offset_nm[1] + sz.slm.offset_nm[1];
-    const x_sep = @as(i32, @intCast(sz.slm.sep_nm[0]));
-    const y_sep = @as(i32, @intCast(sz.slm.sep_nm[1]));
-
-    const num_col = sz.slm.num_col;
-    const num_row = sz.slm.num_row;
+    const grid = sz.grid();
+    const num_col = grid.num_col;
+    const num_row = grid.num_row;
 
     // Center half: columns from 25% to 75% of the grid width.
     const col_start = num_col / 4;
@@ -885,8 +866,8 @@ pub fn assemble(
         const i = num_row - 1 - row;
         for (col_start..col_end) |j| {
             try sites.append(gpa, Point{
-                .x = x_orig + @as(i32, @intCast(j)) * x_sep,
-                .y = y_orig + @as(i32, @intCast(i)) * y_sep,
+                .x = grid.x(j),
+                .y = grid.y(i),
             });
         }
     }

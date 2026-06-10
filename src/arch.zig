@@ -79,11 +79,57 @@ pub const HardwareAod = struct {
     max_num_col: u32,
 };
 
+/// Absolute-coordinate view of an SLM trap grid: zone offset and SLM offset
+/// folded into a single origin, separations as signed nm.
+pub const Grid = struct {
+    origin_nm: [2]i32,
+    sep_nm: [2]i32,
+    num_row: u32,
+    num_col: u32,
+
+    /// Absolute x of trap column `col`.
+    pub fn x(g: Grid, col: usize) i32 {
+        return g.origin_nm[0] + @as(i32, @intCast(col)) * g.sep_nm[0];
+    }
+
+    /// Absolute y of trap row `row`.
+    pub fn y(g: Grid, row: usize) i32 {
+        return g.origin_nm[1] + @as(i32, @intCast(row)) * g.sep_nm[1];
+    }
+
+    /// Half the column separation — clearance offset that places an atom in
+    /// the trap-free lane between columns.
+    pub fn halfSepX(g: Grid) i32 {
+        return @divTrunc(g.sep_nm[0], 2);
+    }
+
+    /// Absolute y of the last (bottom) trap row.
+    pub fn bottomRowY(g: Grid) i32 {
+        return g.y(g.num_row - 1);
+    }
+};
+
+fn slmGrid(zone_offset_nm: [2]i32, slm: Slm) Grid {
+    return .{
+        .origin_nm = .{
+            zone_offset_nm[0] + slm.offset_nm[0],
+            zone_offset_nm[1] + slm.offset_nm[1],
+        },
+        .sep_nm = .{ @intCast(slm.sep_nm[0]), @intCast(slm.sep_nm[1]) },
+        .num_row = slm.num_row,
+        .num_col = slm.num_col,
+    };
+}
+
 pub const StorageZone = struct {
     zone_id: u32,
     offset_nm: [2]i32,
     dimension_nm: [2]u32,
     slm: Slm,
+
+    pub fn grid(z: StorageZone) Grid {
+        return slmGrid(z.offset_nm, z.slm);
+    }
 };
 
 pub const ComputeZone = struct {
@@ -93,6 +139,10 @@ pub const ComputeZone = struct {
     dr_nm: u32,
     dw_nm: u32,
     slms: []Slm,
+
+    pub fn grid(z: ComputeZone, slm_idx: usize) Grid {
+        return slmGrid(z.offset_nm, z.slms[slm_idx]);
+    }
 };
 
 pub const ReadoutZone = struct {
@@ -116,6 +166,15 @@ pub const ArchConfig = struct {
     compute_zone: ComputeZone,
     readout_zone: ReadoutZone,
     constraints: Constraints,
+
+    /// Trap-free y lane between the storage and compute zones: half the
+    /// inter-zone gap above the compute zone's top SLM row, with half-sep
+    /// clearance from the trap sites. Safe for x alignment moves.
+    pub fn corridorY(s: ArchConfig) i32 {
+        const cg = s.compute_zone.grid(0);
+        const gap = @divTrunc(cg.y(0) - s.storage_zone.grid().bottomRowY(), 2);
+        return cg.y(0) - cg.halfSepX() - gap;
+    }
 
     pub fn deinit(self: ArchConfig, allocator: std.mem.Allocator) void {
         allocator.free(self.platform.name);

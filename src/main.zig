@@ -16,14 +16,14 @@ pub fn main(init: std.process.Init) !void {
     const cfg = try loadArch(init.gpa, init.io);
     defer cfg.deinit(init.gpa);
 
-    var sched = try pipeline.compile(cfg);
-    defer sched.deinit();
+    var sch = try pipeline.compile(cfg);
+    defer sch.deinit();
     //try sched.writeToFile(init.gpa, init.io, "./zig-out/physical.json");
 
     //try draw.pipeline(circ, null); // Draw original circuit.
     //try draw.pipeline(circ, pipeline);
     //try draw.stageGraph(circ, pipeline);
-    try draw.physical(init.gpa, cfg, sched);
+    try draw.physical(init.gpa, cfg, sch);
 
     std.debug.print(">> Gate compilation completed\n", .{});
 }
