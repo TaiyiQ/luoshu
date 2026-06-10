@@ -7,9 +7,9 @@ const draw = @import("draw");
 const serialize = @import("serialize");
 
 pub fn main(init: std.process.Init) !void {
-    var circ = try circuit.load(init.gpa, init.io, "../qasm/mvp.qasm");
+    //var circ = try circuit.load(init.gpa, init.io, "../qasm/mvp.qasm");
     //var circ = try circuit.load(init.gpa, init.io, "../qasm/ghz-test.qasm");
-    //var circ = try circuit.load(init.gpa, init.io, "../qasm/mvp-v2.qasm");
+    var circ = try circuit.load(init.gpa, init.io, "../qasm/mvp-v2.qasm");
     defer circ.deinit();
 
     var pipeline = try circuit.decompose(init.gpa, circ);

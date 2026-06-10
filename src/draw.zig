@@ -748,7 +748,7 @@ fn drawPanel(
 // -----------------------------------------------------------------------
 // Main interactive slideshow
 // -----------------------------------------------------------------------
-pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Physical) !void {
+pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Hardware) !void {
     if (s.placement.len == 0 or s.ops.items.len == 0) return;
 
     var max_t: u32 = 0;
@@ -846,7 +846,7 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
         .window_highdpi = true,
     });
     rl.setTraceLogLevel(.err);
-    rl.initWindow(1280, 800, "Physical schedule");
+    rl.initWindow(1280, 800, "Hardware schedule");
     defer rl.closeWindow();
     rl.setTargetFPS(60);
 

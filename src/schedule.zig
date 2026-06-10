@@ -105,7 +105,7 @@ pub const Op = struct {
     kind: OpKind,
 };
 
-pub const Physical = struct {
+pub const Hardware = struct {
     gpa: std.mem.Allocator,
     cfg: arch.ArchConfig,
     ops: std.ArrayList(Op) = .empty,
@@ -115,7 +115,7 @@ pub const Physical = struct {
 
     // Place qubits in storage zone as defined by the
     // upstream Atom Assembly (Atom Rearrangement).
-    pub fn init(gpa: std.mem.Allocator, cfg: arch.ArchConfig, num_qubits: usize) !Physical {
+    pub fn init(gpa: std.mem.Allocator, cfg: arch.ArchConfig, num_qubits: usize) !Hardware {
         const grid = cfg.storage_zone.grid();
         const num_col = grid.num_col;
         const num_row = grid.num_row;
@@ -142,7 +142,7 @@ pub const Physical = struct {
             p.* = try Atom.place(gpa, i, sites.items[i]);
         }
 
-        var physical = Physical{ .gpa = gpa, .cfg = cfg };
+        var physical = Hardware{ .gpa = gpa, .cfg = cfg };
         physical.placement = plc;
         physical.initial = try gpa.alloc(Point, physical.placement.len);
         for (physical.placement, physical.initial) |atom, *p| p.* = atom.pos;
@@ -150,7 +150,7 @@ pub const Physical = struct {
         return physical;
     }
 
-    pub fn deinit(s: *Physical) void {
+    pub fn deinit(s: *Hardware) void {
         for (s.ops.items) |op| {
             switch (op.kind) {
                 .raman => |r| s.gpa.free(r.targets),
@@ -164,7 +164,7 @@ pub const Physical = struct {
         s.gpa.free(s.initial);
     }
 
-    pub fn moveSlmCompute(s: *Physical, fixed: []const ?usize) !void {
+    pub fn moveSlmCompute(s: *Hardware, fixed: []const ?usize) !void {
         var ordered: std.ArrayList(usize) = .empty;
         defer ordered.deinit(s.gpa);
 
@@ -220,7 +220,7 @@ pub const Physical = struct {
         }
     }
 
-    pub fn moveSlmStorage(s: *Physical, fixed: []const ?usize) !void {
+    pub fn moveSlmStorage(s: *Hardware, fixed: []const ?usize) !void {
         // Half compute zone site spacing — used as clearance from trap sites.
         const d_c = s.cfg.compute_zone.grid(0).halfSepX();
         const sgrid = s.cfg.storage_zone.grid();
@@ -355,7 +355,7 @@ pub const Physical = struct {
         s.t += 1;
     }
 
-    pub fn moveAodStorage(s: *Physical, aod_qubits: [][]?usize) !void {
+    pub fn moveAodStorage(s: *Hardware, aod_qubits: [][]?usize) !void {
         // Collect all unique qubit IDs across all timeframes.
         var seen = std.AutoHashMap(usize, void).init(s.gpa);
         defer seen.deinit();
@@ -504,7 +504,7 @@ pub const Physical = struct {
         s.t += 1;
     }
 
-    pub fn moveAodCompute(s: *Physical, moveable: [][]?usize) !void {
+    pub fn moveAodCompute(s: *Hardware, moveable: [][]?usize) !void {
         // Collect all unique qubit IDs across all timeframes.
         var ordered: std.ArrayList(usize) = .empty;
         defer ordered.deinit(s.gpa);
@@ -625,7 +625,7 @@ pub const Physical = struct {
 
     // Apply single-qubit U gates as Raman pulses at the atoms' current
     // storage-zone positions. All gates of the batch fire in one timestep.
-    pub fn raman(s: *Physical, u_gates: []const circuit.U) !void {
+    pub fn raman(s: *Hardware, u_gates: []const circuit.U) !void {
         if (u_gates.len == 0) return;
         // FIXME, do we need a list of targets?
         for (u_gates) |gate| {
@@ -652,7 +652,7 @@ pub const Physical = struct {
 
     // Pick up atoms from storage in `ord` order, traversing without
     // crossing occupied sites.
-    fn pickup(s: *Physical, ord: []const usize) !Register {
+    fn pickup(s: *Hardware, ord: []const usize) !Register {
         const d = s.cfg.storage_zone.grid().halfSepX();
 
         var register: Register = .empty;

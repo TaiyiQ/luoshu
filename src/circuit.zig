@@ -77,25 +77,25 @@ pub const Pipeline = struct {
         }
     }
 
-    pub fn compile(s: *Pipeline, cfg: arch.ArchConfig) !schedule.Physical {
-        var physical = try schedule.Physical.init(s.gpa, cfg, s.num_qubits);
+    pub fn compile(s: *Pipeline, cfg: arch.ArchConfig) !schedule.Hardware {
+        var hw = try schedule.Hardware.init(s.gpa, cfg, s.num_qubits);
 
         for (s.stages.items) |*stage| {
             var sequence = try stage.computeSequence(s.gpa, s.num_qubits);
             sequence.print();
             defer sequence.deinit();
 
-            try physical.moveSlmCompute(sequence.fixed);
-            try physical.moveAodCompute(sequence.moveable);
-            try physical.moveAodStorage(sequence.moveable);
-            try physical.moveSlmStorage(sequence.fixed);
+            try hw.moveSlmCompute(sequence.fixed);
+            try hw.moveAodCompute(sequence.moveable);
+            try hw.moveAodStorage(sequence.moveable);
+            try hw.moveSlmStorage(sequence.fixed);
 
             // U gates fire last: within a stage CZs precede the U barrier,
             // and by now all atoms are back at their storage positions.
-            try physical.raman(stage.u_gates.items);
+            try hw.raman(stage.u_gates.items);
         }
 
-        return physical;
+        return hw;
     }
 };
 
