@@ -148,47 +148,6 @@ pub const Sequence = struct {
         std.debug.print("\n", .{});
         std.debug.print("\n", .{});
     }
-
-    pub fn toJson(s: *const Sequence, allocator: std.mem.Allocator) ![]u8 {
-        var buf: std.Io.Writer.Allocating = .init(allocator);
-        defer buf.deinit();
-        const w = &buf.writer;
-
-        try w.writeAll("{\n");
-
-        try w.writeAll("  \"slm_slots\": [");
-        for (s.fixed, 0..) |v, i| {
-            if (i > 0) try w.writeAll(", ");
-            if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
-        }
-        try w.writeAll("],\n");
-
-        try w.writeAll("  \"aod_slots_per_color\": [\n");
-        for (s.moveable, 0..) |row, ci| {
-            try w.writeAll("    [");
-            for (row, 0..) |v, i| {
-                if (i > 0) try w.writeAll(", ");
-                if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
-            }
-            const last = ci == s.moveable.len - 1;
-            try w.writeAll(if (last) "]\n" else "],\n");
-        }
-        try w.writeAll("  ],\n");
-
-        try w.print("  \"max_color\": {d}\n", .{@as(i32, @intCast(s.moveable.len)) - 1});
-        try w.writeAll("}");
-
-        return allocator.dupe(u8, buf.written());
-    }
-
-    pub fn writeToFile(self: *const Sequence, allocator: std.mem.Allocator, io: std.Io, filename: []const u8) !void {
-        const json = try self.toJson(allocator);
-        defer allocator.free(json);
-
-        const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
-        defer file.close(io);
-        try file.writePositionalAll(io, json, 0);
-    }
 };
 
 const Aod = struct {

@@ -1,45 +1,14 @@
 const std = @import("std");
-const route = @import("route");
+// This file is only ever reached via route.zig's tests, so it compiles as
+// part of the route module: route.zig is imported by file path (a module
+// cannot name-import itself), serialize via the route module's imports.
+const route = @import("route.zig");
+const serialize = @import("serialize");
 
 const Graph = route.Graph;
-const Schedule = route.Schedule;
 const compile = route.compile;
 
 pub const GraphBuilder = *const fn (std.mem.Allocator) anyerror!Graph;
-
-/// Serialises a Schedule to an owned JSON string.
-/// Uses ArrayList so it works in tests (no std.Io needed).
-pub fn scheduleToJson(allocator: std.mem.Allocator, schedule: *const Schedule) ![]u8 {
-    var buf: std.Io.Writer.Allocating = .init(allocator);
-    defer buf.deinit();
-    const w = &buf.writer;
-
-    try w.writeAll("{\n");
-
-    try w.writeAll("  \"slm_slots\": [");
-    for (schedule.slm_slots, 0..) |v, i| {
-        if (i > 0) try w.writeAll(", ");
-        if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
-    }
-    try w.writeAll("],\n");
-
-    try w.writeAll("  \"aod_slots_per_color\": [\n");
-    for (schedule.aod_slots_per_color, 0..) |row, ci| {
-        try w.writeAll("    [");
-        for (row, 0..) |v, i| {
-            if (i > 0) try w.writeAll(", ");
-            if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
-        }
-        const last = ci == schedule.aod_slots_per_color.len - 1;
-        try w.writeAll(if (last) "]\n" else "],\n");
-    }
-    try w.writeAll("  ],\n");
-
-    try w.print("  \"max_color\": {d}\n", .{@as(i32, @intCast(schedule.aod_slots_per_color.len)) - 1});
-    try w.writeAll("}");
-
-    return allocator.dupe(u8, buf.written());
-}
 
 /// Runs compile() on the graph produced by `build`, serialises the
 /// result, and compares it byte-for-byte against `snapshot_path`.
@@ -53,10 +22,10 @@ pub fn snapshotTest(
     var g = try build(allocator);
     defer g.deinit();
 
-    var schedule = try compile(allocator, &g);
-    defer schedule.deinit(allocator);
+    var sequence = try compile(allocator, &g);
+    defer sequence.deinit();
 
-    const actual = try scheduleToJson(allocator, &schedule);
+    const actual = try serialize.sequenceToJson(allocator, sequence.fixed, sequence.moveable);
     defer allocator.free(actual);
 
     const file = std.Io.Dir.cwd().openFile(io, snapshot_path, .{}) catch |err| {

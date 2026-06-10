@@ -42,7 +42,7 @@ const Stage = struct {
         for (s.cz_gates.items) |gate| try g.addEdge(gate.control, gate.target);
 
         const sequence = try route.compile(gpa, &g);
-        //try sequence.writeToFile(s.gpa, init.io, "./zig-out/logical.json");
+        //try serialize.writeSequence(gpa, io, "./zig-out/logical.json", sequence.fixed, sequence.moveable);
         return sequence;
     }
 };
@@ -78,17 +78,17 @@ pub const Pipeline = struct {
     }
 
     pub fn compile(s: *Pipeline, cfg: arch.ArchConfig) !schedule.Physical {
-        var physical = try schedule.assemble(s.gpa, cfg.storage_zone, s.num_qubits);
+        var physical = try schedule.Physical.init(s.gpa, cfg, s.num_qubits);
 
         for (s.stages.items) |*stage| {
             var sequence = try stage.computeSequence(s.gpa, s.num_qubits);
             sequence.print();
             defer sequence.deinit();
 
-            try physical.moveSlmCompute(s.gpa, cfg, sequence.fixed);
-            try physical.moveAodCompute(s.gpa, cfg, sequence.moveable);
-            try physical.moveAodStorage(s.gpa, cfg, sequence.moveable);
-            try physical.moveSlmStorage(s.gpa, cfg, sequence.fixed);
+            try physical.moveSlmCompute(sequence.fixed);
+            try physical.moveAodCompute(sequence.moveable);
+            try physical.moveAodStorage(sequence.moveable);
+            try physical.moveSlmStorage(sequence.fixed);
 
             //            try schedule.addRamanOp(
             //                s.gpa,

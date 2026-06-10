@@ -40,6 +40,14 @@ pub fn build(b: *std.Build) void {
     circuit_mod.addImport("schedule", schedule_mod);
     circuit_mod.addImport("route", route_mod);
 
+    const serialize_mod = b.addModule("serialize", .{
+        .root_source_file = b.path("src/serialize.zig"),
+    });
+    serialize_mod.addImport("schedule", schedule_mod);
+    exe.root_module.addImport("serialize", serialize_mod);
+    circuit_mod.addImport("serialize", serialize_mod);
+    route_mod.addImport("serialize", serialize_mod); // for snapshot.zig (route's test helper)
+
     const draw_mod = b.addModule("draw", .{
         .root_source_file = b.path("src/draw.zig"),
     });

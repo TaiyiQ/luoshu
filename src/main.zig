@@ -5,6 +5,7 @@ const circuit = @import("circuit");
 const route = @import("route");
 const schedule = @import("schedule");
 const draw = @import("draw");
+const serialize = @import("serialize");
 
 pub fn main(init: std.process.Init) !void {
     var circ = try loadCircuit(init.gpa, init.io);
@@ -18,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
 
     var sch = try pipeline.compile(cfg);
     defer sch.deinit();
-    //try sched.writeToFile(init.gpa, init.io, "./zig-out/physical.json");
+    //try serialize.writePhysical(init.gpa, init.io, "./zig-out/physical.json", &sch);
 
     //try draw.pipeline(circ, null); // Draw original circuit.
     //try draw.pipeline(circ, pipeline);

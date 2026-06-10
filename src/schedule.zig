@@ -107,10 +107,48 @@ pub const Op = struct {
 
 pub const Physical = struct {
     gpa: std.mem.Allocator,
+    cfg: arch.ArchConfig,
     ops: std.ArrayList(Op) = .empty,
     placement: []Atom = &.{}, // Working position of each qubit (index = qubit id); mutated as atoms move.
     initial: []Point = &.{}, // Starting storage-zone position of each qubit, frozen at placement time.
     t: u32 = 0,
+
+    // Place qubits in storage zone as defined by the
+    // upstream Atom Assembly (Atom Rearrangement).
+    pub fn init(gpa: std.mem.Allocator, cfg: arch.ArchConfig, num_qubits: usize) !Physical {
+        const grid = cfg.storage_zone.grid();
+        const num_col = grid.num_col;
+        const num_row = grid.num_row;
+
+        // Center half: columns from 25% to 75% of the grid width.
+        const col_start = num_col / 4;
+        const col_end = num_col - num_col / 4;
+
+        var sites: std.ArrayList(Point) = .empty;
+        defer sites.deinit(gpa);
+
+        for (0..num_row) |row| {
+            const i = num_row - 1 - row;
+            for (col_start..col_end) |j| {
+                try sites.append(gpa, Point{
+                    .x = grid.x(j),
+                    .y = grid.y(i),
+                });
+            }
+        }
+
+        const plc = try gpa.alloc(Atom, num_qubits);
+        for (plc, 0..) |*p, i| {
+            p.* = try Atom.place(gpa, i, sites.items[i]);
+        }
+
+        var physical = Physical{ .gpa = gpa, .cfg = cfg };
+        physical.placement = plc;
+        physical.initial = try gpa.alloc(Point, physical.placement.len);
+        for (physical.placement, physical.initial) |atom, *p| p.* = atom.pos;
+
+        return physical;
+    }
 
     pub fn deinit(s: *Physical) void {
         for (s.ops.items) |op| {
@@ -126,30 +164,25 @@ pub const Physical = struct {
         s.gpa.free(s.initial);
     }
 
-    pub fn moveSlmCompute(
-        s: *Physical,
-        gpa: std.mem.Allocator,
-        cfg: arch.ArchConfig,
-        fixed: []const ?usize,
-    ) !void {
+    pub fn moveSlmCompute(s: *Physical, fixed: []const ?usize) !void {
         var ordered: std.ArrayList(usize) = .empty;
-        defer ordered.deinit(gpa);
+        defer ordered.deinit(s.gpa);
 
         var cols: std.ArrayList(usize) = .empty;
-        defer cols.deinit(gpa);
+        defer cols.deinit(s.gpa);
 
         for (fixed, 0..) |maybe_qubit, col| {
             if (maybe_qubit) |q| {
-                try ordered.append(gpa, q);
-                try cols.append(gpa, col);
+                try ordered.append(s.gpa, q);
+                try cols.append(s.gpa, col);
             }
         }
 
-        var register = try pickup(gpa, cfg, ordered.items, &s.placement, &s.t);
-        defer register.deinit(gpa);
+        var register = try s.pickup(ordered.items);
+        defer register.deinit(s.gpa);
 
         // Move each atom to its destination slot in compute zone slms[0].
-        const grid = cfg.compute_zone.grid(0);
+        const grid = s.cfg.compute_zone.grid(0);
         const d = grid.halfSepX();
 
         // Manhattan step 1: move each atom to its target x column (null slots skipped).
@@ -182,28 +215,23 @@ pub const Physical = struct {
         // Flush pickup + compute-zone move ops to the global ops list.
         for (register.items) |a| {
             for (a.ops.items) |o| {
-                try s.ops.append(gpa, o);
+                try s.ops.append(s.gpa, o);
             }
         }
     }
 
-    pub fn moveSlmStorage(
-        s: *Physical,
-        gpa: std.mem.Allocator,
-        cfg: arch.ArchConfig,
-        fixed: []const ?usize,
-    ) !void {
+    pub fn moveSlmStorage(s: *Physical, fixed: []const ?usize) !void {
         // Half compute zone site spacing — used as clearance from trap sites.
-        const d_c = cfg.compute_zone.grid(0).halfSepX();
-        const sgrid = cfg.storage_zone.grid();
+        const d_c = s.cfg.compute_zone.grid(0).halfSepX();
+        const sgrid = s.cfg.storage_zone.grid();
         // Bottom edge of the storage zone (bottom SLM row y, closest to compute).
         const y_storage_bottom = sgrid.bottomRowY();
-        const y_corridor = cfg.corridorY();
+        const y_corridor = s.cfg.corridorY();
 
         // Load each atom into the AOD so the horizontal highlight shows during the return trip.
         for (fixed) |maybe_slm| {
             if (maybe_slm) |q| {
-                try s.ops.append(gpa, .{
+                try s.ops.append(s.gpa, .{
                     .t = s.t,
                     .kind = .{
                         .load = .{
@@ -223,7 +251,7 @@ pub const Physical = struct {
             if (maybe_slm) |q| {
                 const src = s.placement[q].pos;
                 const dest = Point{ .x = src.x + d_c, .y = src.y };
-                try s.ops.append(gpa, .{
+                try s.ops.append(s.gpa, .{
                     .t = s.t,
                     .kind = .{
                         .move = .{
@@ -245,7 +273,7 @@ pub const Physical = struct {
             if (maybe_slm) |q| {
                 const src = s.placement[q].pos;
                 if (src.y == y_corridor) continue;
-                try s.ops.append(gpa, .{
+                try s.ops.append(s.gpa, .{
                     .t = s.t,
                     .kind = .{
                         .move = .{
@@ -263,12 +291,12 @@ pub const Physical = struct {
         // Step 4: compress — atoms move to sequential storage columns in left-to-right order,
         // skipping columns already occupied by atoms that stayed in the storage zone.
         var returning: std.ArrayList(usize) = .empty;
-        defer returning.deinit(gpa);
+        defer returning.deinit(s.gpa);
         for (fixed) |maybe_slm| {
-            if (maybe_slm) |q| try returning.append(gpa, q);
+            if (maybe_slm) |q| try returning.append(s.gpa, q);
         }
 
-        var occ = try occupiedStorageX(gpa, returning.items, s.placement, y_storage_bottom);
+        var occ = try occupiedStorageX(s.gpa, returning.items, s.placement, y_storage_bottom);
         defer occ.deinit();
 
         var col: usize = 0;
@@ -279,7 +307,7 @@ pub const Physical = struct {
             const src = s.placement[q].pos;
 
             if (src.x != dest_x) {
-                try s.ops.append(gpa, .{
+                try s.ops.append(s.gpa, .{
                     .t = s.t,
                     .kind = .{
                         .move = .{
@@ -301,7 +329,7 @@ pub const Physical = struct {
             if (maybe_slm) |q| {
                 const src = s.placement[q].pos;
                 if (src.y != y_storage_bottom) {
-                    try s.ops.append(gpa, .{
+                    try s.ops.append(s.gpa, .{
                         .t = s.t,
                         .kind = .{
                             .move = .{
@@ -313,7 +341,7 @@ pub const Physical = struct {
                     });
                     s.placement[q].pos.y = y_storage_bottom;
                 }
-                try s.ops.append(gpa, .{
+                try s.ops.append(s.gpa, .{
                     .t = s.t,
                     .kind = .{
                         .store = .{
@@ -327,24 +355,19 @@ pub const Physical = struct {
         s.t += 1;
     }
 
-    pub fn moveAodStorage(
-        s: *Physical,
-        gpa: std.mem.Allocator,
-        cfg: arch.ArchConfig,
-        aod_qubits: [][]?usize,
-    ) !void {
+    pub fn moveAodStorage(s: *Physical, aod_qubits: [][]?usize) !void {
         // Collect all unique qubit IDs across all timeframes.
-        var seen = std.AutoHashMap(usize, void).init(gpa);
+        var seen = std.AutoHashMap(usize, void).init(s.gpa);
         defer seen.deinit();
 
         var unique: std.ArrayList(usize) = .empty;
-        defer unique.deinit(gpa);
+        defer unique.deinit(s.gpa);
 
         for (aod_qubits) |row| {
             for (row) |maybe_q| {
                 if (maybe_q) |q| {
                     const gop = try seen.getOrPut(q);
-                    if (!gop.found_existing) try unique.append(gpa, q);
+                    if (!gop.found_existing) try unique.append(s.gpa, q);
                 }
             }
         }
@@ -360,7 +383,7 @@ pub const Physical = struct {
 
         // Load each atom into the AOD so the horizontal highlight shows during the return trip.
         for (unique.items) |q| {
-            try s.ops.append(gpa, .{
+            try s.ops.append(s.gpa, .{
                 .t = s.t,
                 .kind = .{
                     .load = .{
@@ -372,16 +395,16 @@ pub const Physical = struct {
         }
         s.t += 1;
 
-        const d_c = cfg.compute_zone.grid(0).halfSepX();
-        const sgrid = cfg.storage_zone.grid();
+        const d_c = s.cfg.compute_zone.grid(0).halfSepX();
+        const sgrid = s.cfg.storage_zone.grid();
         const y_storage_bottom = sgrid.bottomRowY();
-        const y_corridor = cfg.corridorY();
+        const y_corridor = s.cfg.corridorY();
 
         // Step 1: move RIGHT by d_c — shift into inter-column lane.
         for (unique.items) |q| {
             const src = s.placement[q].pos;
             const dest = Point{ .x = src.x + d_c, .y = src.y };
-            try s.ops.append(gpa, .{
+            try s.ops.append(s.gpa, .{
                 .t = s.t,
                 .kind = .{
                     .move = .{
@@ -399,7 +422,7 @@ pub const Physical = struct {
         for (unique.items) |q| {
             const src = s.placement[q].pos;
             if (src.y == y_corridor) continue;
-            try s.ops.append(gpa, .{
+            try s.ops.append(s.gpa, .{
                 .t = s.t,
                 .kind = .{
                     .move = .{
@@ -418,7 +441,7 @@ pub const Physical = struct {
 
         // Step 3: compress — sequential storage columns in left-to-right order,
         // skipping columns already occupied by atoms that stayed in the storage zone.
-        var occ = try occupiedStorageX(gpa, unique.items, s.placement, y_storage_bottom);
+        var occ = try occupiedStorageX(s.gpa, unique.items, s.placement, y_storage_bottom);
         defer occ.deinit();
 
         var col: usize = 0;
@@ -429,7 +452,7 @@ pub const Physical = struct {
             const src = s.placement[q].pos;
 
             if (src.x != dest_x) {
-                try s.ops.append(gpa, .{
+                try s.ops.append(s.gpa, .{
                     .t = s.t,
                     .kind = .{
                         .move = .{
@@ -453,7 +476,7 @@ pub const Physical = struct {
         for (unique.items) |q| {
             const src = s.placement[q].pos;
             if (src.y != y_storage_bottom) {
-                try s.ops.append(gpa, .{
+                try s.ops.append(s.gpa, .{
                     .t = s.t,
                     .kind = .{
                         .move = .{
@@ -468,7 +491,7 @@ pub const Physical = struct {
                 });
                 s.placement[q].pos.y = y_storage_bottom;
             }
-            try s.ops.append(gpa, .{
+            try s.ops.append(s.gpa, .{
                 .t = s.t,
                 .kind = .{
                     .store = .{
@@ -481,35 +504,30 @@ pub const Physical = struct {
         s.t += 1;
     }
 
-    pub fn moveAodCompute(
-        s: *Physical,
-        gpa: std.mem.Allocator,
-        cfg: arch.ArchConfig,
-        moveable: [][]?usize,
-    ) !void {
+    pub fn moveAodCompute(s: *Physical, moveable: [][]?usize) !void {
         // Collect all unique qubit IDs across all timeframes.
         var ordered: std.ArrayList(usize) = .empty;
-        defer ordered.deinit(gpa);
+        defer ordered.deinit(s.gpa);
 
-        var seen = std.AutoHashMap(usize, void).init(gpa);
+        var seen = std.AutoHashMap(usize, void).init(s.gpa);
         defer seen.deinit();
 
         for (moveable) |row| {
             for (row) |maybe_q| {
                 if (maybe_q) |q| {
                     const gop = try seen.getOrPut(q);
-                    if (!gop.found_existing) try ordered.append(gpa, q);
+                    if (!gop.found_existing) try ordered.append(s.gpa, q);
                 }
             }
         }
         if (ordered.items.len == 0) return;
 
         // Pick up atoms from storage, traversing without crossing occupied sites.
-        var register = try pickup(gpa, cfg, ordered.items, &s.placement, &s.t);
-        defer register.deinit(gpa);
+        var register = try s.pickup(ordered.items);
+        defer register.deinit(s.gpa);
 
         // Manhattan entry into SLM[1] — mirrors moveSlmCompute for SLM[0].
-        const grid = cfg.compute_zone.grid(1);
+        const grid = s.cfg.compute_zone.grid(1);
         const d = grid.halfSepX();
 
         // Step 1: move each atom to its column x + d (inter-column offset avoids crossings).
@@ -543,7 +561,7 @@ pub const Physical = struct {
         // Flush buffered ops (pickup + compute entry) to global ops list.
         for (register.items) |a| {
             for (a.ops.items) |o| {
-                try s.ops.append(gpa, o);
+                try s.ops.append(s.gpa, o);
             }
         }
 
@@ -551,7 +569,7 @@ pub const Physical = struct {
         // then deposit back into SLM (t+1, red flash). Store only fires when atoms moved.
         for (moveable) |row| {
             var moved_q: std.ArrayList(usize) = .empty;
-            defer moved_q.deinit(gpa);
+            defer moved_q.deinit(s.gpa);
 
             for (row, 0..) |maybe_q, i| {
                 if (maybe_q) |q| {
@@ -560,7 +578,7 @@ pub const Physical = struct {
 
                     if (src.x == dest_x) continue;
 
-                    try s.ops.append(gpa, .{
+                    try s.ops.append(s.gpa, .{
                         .t = s.t,
                         .kind = .{
                             .load = .{
@@ -570,7 +588,7 @@ pub const Physical = struct {
                         },
                     });
 
-                    try s.ops.append(gpa, .{
+                    try s.ops.append(s.gpa, .{
                         .t = s.t,
                         .kind = .{
                             .move = .{
@@ -585,13 +603,13 @@ pub const Physical = struct {
                     });
 
                     s.placement[q].pos.x = dest_x;
-                    try moved_q.append(gpa, q);
+                    try moved_q.append(s.gpa, q);
                 }
             }
             s.t += 1;
 
             for (moved_q.items) |q| {
-                try s.ops.append(gpa, .{
+                try s.ops.append(s.gpa, .{
                     .t = s.t,
                     .kind = .{
                         .store = .{
@@ -605,110 +623,62 @@ pub const Physical = struct {
         }
     }
 
-    pub fn writeToFile(self: *const Physical, gpa: std.mem.Allocator, io: std.Io, filename: []const u8) !void {
-        const json = try self.toJson(gpa);
-        defer gpa.free(json);
+    // Pick up atoms from storage in `ord` order, traversing without
+    // crossing occupied sites.
+    fn pickup(s: *Physical, ord: []const usize) !Register {
+        const d = s.cfg.storage_zone.grid().halfSepX();
 
-        const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
-        defer file.close(io);
-        try file.writePositionalAll(io, json, 0);
-    }
+        var register: Register = .empty;
+        errdefer register.deinit(s.gpa);
 
-    pub fn toJson(self: *const Physical, gpa: std.mem.Allocator) ![]u8 {
-        var buf: std.Io.Writer.Allocating = .init(gpa);
-        defer buf.deinit();
-        const w = &buf.writer;
+        if (ord.len == 0) return register;
 
-        try w.writeAll("{\n");
-        try w.writeAll("  \"version\": \"1.1\",\n");
-        try w.writeAll("  \"platform\": \"taiyi-v1\",\n");
-        try w.print("  \"num_qubits\": {d},\n", .{self.placement.len});
-        try w.writeAll("  \"ops\": [\n");
+        // Pick up first atom.
+        try pickUpAtom(&register, s.gpa, &s.placement[ord[0]], s.t);
+        s.t += 1;
+        var front = s.placement[ord[0]];
 
-        for (self.ops, 0..) |op, i| {
-            const last_op = i == self.ops.len - 1;
-            try w.writeAll("    {\n");
-            switch (op.kind) {
-                .raman => |r| {
-                    try w.writeAll("      \"op\": \"raman\",\n");
-                    try w.print("      \"angle\": {d:.4},\n", .{r.angle});
-                    try w.print("      \"phase\": {d:.4},\n", .{r.phase});
-                    try w.print("      \"t\": {d},\n", .{op.t});
-                    try w.writeAll("      \"targets\": [\n");
-                    for (r.targets, 0..) |target, j| {
-                        const last = j == r.targets.len - 1;
-                        try w.print("        {{ \"qubit\": {d}, \"x\": {d}, \"y\": {d} }}", .{ target.qubit, target.pos.x, target.pos.y });
-                        try w.writeAll(if (last) "\n" else ",\n");
+        // Move the registered atoms to always make the
+        // next qubit the front of the row.
+        for (ord[1..]) |q| {
+            const next = s.placement[q];
+
+            if (next.isLeftOf(front)) {
+                const dx: i32 = front.pos.x - next.pos.x;
+                for (register.items) |*atom| try atom.*.moveUp(@intCast(d), s.t);
+                s.t += 1;
+                for (register.items) |*atom| try atom.*.moveLeft(@intCast(dx + d), s.t);
+                s.t += 1;
+                // Before descending, shift any atom that would land on an occupied site.
+                var conflict = true;
+                while (conflict) {
+                    conflict = false;
+                    for (register.items) |*atom| {
+                        if (siteOccupied(register, s.placement, atom.*.pos.x, atom.*.pos.y + d)) {
+                            try atom.*.moveLeft(@intCast(d), s.t);
+                            conflict = true;
+                        }
                     }
-                    try w.writeAll("      ]\n");
-                },
-                .move => |m| {
-                    try w.writeAll("      \"op\": \"move\",\n");
-                    try w.print("      \"aod\": {d},\n", .{m.aod});
-                    try w.print("      \"translate\": \"{s}\",\n", .{@tagName(m.translate)});
-                    try w.print("      \"from_zone\": \"{s}\",\n", .{zoneName(m.src_zone)});
-                    try w.print("      \"to_zone\": \"{s}\",\n", .{zoneName(m.dest_zone)});
-                    try w.print("      \"t\": {d},\n", .{op.t});
-                    try w.writeAll("      \"atoms\": [\n");
-                    for (m.atoms, 0..) |atom, j| {
-                        const last = j == m.atoms.len - 1;
-                        try w.writeAll("        {\n");
-                        try w.print("          \"qubit\": {d},\n", .{atom.qubit});
-                        try w.print("          \"from\": {{ \"x\": {d}, \"y\": {d} }},\n", .{ atom.src.x, atom.src.y });
-                        try w.print("          \"to\": {{ \"x\": {d}, \"y\": {d} }}\n", .{ atom.dest.x, atom.dest.y });
-                        try w.writeAll(if (last) "        }\n" else "        },\n");
-                    }
-                    try w.writeAll("      ]\n");
-                },
-                .rydberg => |r| {
-                    try w.writeAll("      \"op\": \"rydberg\",\n");
-                    try w.print("      \"zone\": \"{s}\",\n", .{zoneName(r.zone)});
-                    try w.print("      \"t\": {d}\n", .{op.t});
-                },
-                .measure => |m| {
-                    try w.writeAll("      \"op\": \"measure\",\n");
-                    try w.print("      \"zone\": \"{s}\",\n", .{zoneName(m.zone)});
-                    try w.writeAll("      \"basis\": \"Z\",\n");
-                    try w.print("      \"t\": {d},\n", .{op.t});
-                    try w.writeAll("      \"qubits\": [");
-                    for (m.qubits, 0..) |q, j| {
-                        if (j > 0) try w.writeAll(", ");
-                        try w.print("{d}", .{q});
-                    }
-                    try w.writeAll("]\n");
-                },
-                .load => |ld| {
-                    try w.writeAll("      \"op\": \"load\",\n");
-                    try w.print("      \"qubit\": {d},\n", .{ld.qubit});
-                    try w.print("      \"x\": {d},\n", .{ld.position.x});
-                    try w.print("      \"y\": {d},\n", .{ld.position.y});
-                    try w.print("      \"t\": {d}\n", .{op.t});
-                },
-                .store => |st| {
-                    try w.writeAll("      \"op\": \"store\",\n");
-                    try w.print("      \"qubit\": {d},\n", .{st.qubit});
-                    try w.print("      \"x\": {d},\n", .{st.position.x});
-                    try w.print("      \"y\": {d},\n", .{st.position.y});
-                    try w.print("      \"t\": {d}\n", .{op.t});
-                },
+                    if (conflict) s.t += 1;
+                }
+                for (register.items) |*atom| try atom.*.moveDown(@intCast(d), s.t);
+                s.t += 1;
             }
-            try w.writeAll(if (last_op) "    }\n" else "    },\n");
+
+            try pickUpAtom(&register, s.gpa, &s.placement[q], s.t);
+            s.t += 1;
+            front = next;
         }
 
-        try w.writeAll("  ]\n");
-        try w.writeAll("}");
+        // Move all loaded atoms down together at the same timestep.
+        for (register.items) |*a| {
+            try a.*.moveDown(@intCast(4 * d), s.t);
+        }
+        s.t += 1;
 
-        return gpa.dupe(u8, buf.written());
+        return register;
     }
 };
-
-fn zoneName(z: Zone) []const u8 {
-    return switch (z) {
-        .storage => "storage",
-        .compute => "compute",
-        .readout => "readout_zone",
-    };
-}
 
 /// Indexed by qubit id; null means the atom hasn't been picked up.
 /// Backed by a single allocation sized to the number of sites.
@@ -734,66 +704,6 @@ fn siteOccupied(register: Register, placement: []const Atom, x: i32, y: i32) boo
         return true;
     }
     return false;
-}
-
-pub fn pickup(
-    gpa: std.mem.Allocator,
-    cfg: arch.ArchConfig,
-    ord: []const usize,
-    plc: *[]Atom,
-    t: *u32,
-) !Register {
-    const d = cfg.storage_zone.grid().halfSepX();
-
-    var register: Register = .empty;
-    errdefer register.deinit(gpa);
-
-    if (ord.len == 0) return register;
-
-    // Pick up first atom.
-    try pickUpAtom(&register, gpa, &plc.*[ord[0]], t.*);
-    t.* += 1;
-    var front = plc.*[ord[0]];
-
-    // Move the registered atoms to always make the
-    // next qubit the front of the row.
-    for (ord[1..]) |q| {
-        const next = plc.*[q];
-
-        if (next.isLeftOf(front)) {
-            const dx: i32 = front.pos.x - next.pos.x;
-            for (register.items) |*atom| try atom.*.moveUp(@intCast(d), t.*);
-            t.* += 1;
-            for (register.items) |*atom| try atom.*.moveLeft(@intCast(dx + d), t.*);
-            t.* += 1;
-            // Before descending, shift any atom that would land on an occupied site.
-            var conflict = true;
-            while (conflict) {
-                conflict = false;
-                for (register.items) |*atom| {
-                    if (siteOccupied(register, plc.*, atom.*.pos.x, atom.*.pos.y + d)) {
-                        try atom.*.moveLeft(@intCast(d), t.*);
-                        conflict = true;
-                    }
-                }
-                if (conflict) t.* += 1;
-            }
-            for (register.items) |*atom| try atom.*.moveDown(@intCast(d), t.*);
-            t.* += 1;
-        }
-
-        try pickUpAtom(&register, gpa, &plc.*[q], t.*);
-        t.* += 1;
-        front = next;
-    }
-
-    // Move all loaded atoms down together at the same timestep.
-    for (register.items) |*a| {
-        try a.*.moveDown(@intCast(4 * d), t.*);
-    }
-    t.* += 1;
-
-    return register;
 }
 
 pub fn addRamanOp(
@@ -842,45 +752,4 @@ fn occupiedStorageX(
         if (atom.pos.y == y_target) try occ.put(atom.pos.x, {});
     }
     return occ;
-}
-
-// Place qubits in storage zone as defined by the
-// upstream Atom Assembly (Atom Rearrangement).
-pub fn assemble(
-    gpa: std.mem.Allocator,
-    sz: arch.StorageZone,
-    num_qubits: usize,
-) !Physical {
-    const grid = sz.grid();
-    const num_col = grid.num_col;
-    const num_row = grid.num_row;
-
-    // Center half: columns from 25% to 75% of the grid width.
-    const col_start = num_col / 4;
-    const col_end = num_col - num_col / 4;
-
-    var sites: std.ArrayList(Point) = .empty;
-    defer sites.deinit(gpa);
-
-    for (0..num_row) |row| {
-        const i = num_row - 1 - row;
-        for (col_start..col_end) |j| {
-            try sites.append(gpa, Point{
-                .x = grid.x(j),
-                .y = grid.y(i),
-            });
-        }
-    }
-
-    const plc = try gpa.alloc(Atom, num_qubits);
-    for (plc, 0..) |*p, i| {
-        p.* = try Atom.place(gpa, i, sites.items[i]);
-    }
-
-    var physical = Physical{ .gpa = gpa };
-    physical.placement = plc;
-    physical.initial = try gpa.alloc(Point, physical.placement.len);
-    for (physical.placement, physical.initial) |atom, *p| p.* = atom.pos;
-
-    return physical;
 }
