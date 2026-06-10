@@ -36,12 +36,6 @@ const Stage = struct {
     // The stage owns the graph. Therefore, it compiles a logical sequence from
     // the CZ gates using a graph.
     pub fn computeSequence(s: *Stage, gpa: std.mem.Allocator, num_qubit: usize) !route.Sequence {
-        std.debug.print(">> Stage: compiling\n", .{});
-
-        for (s.cz_gates.items) |gate| {
-            std.debug.print("{any}\nn", .{gate});
-        }
-
         var g = try route.Graph.init(gpa, num_qubit, false);
         defer g.deinit();
 
@@ -49,8 +43,6 @@ const Stage = struct {
 
         const sequence = try route.compile(gpa, &g);
         //try sequence.writeToFile(s.gpa, init.io, "./zig-out/logical.json");
-        sequence.print();
-
         return sequence;
     }
 };
@@ -86,22 +78,12 @@ pub const Pipeline = struct {
     }
 
     pub fn compile(s: *Pipeline, cfg: arch.ArchConfig) !schedule.Physical {
-        var physical = schedule.Physical{ .gpa = s.gpa };
-        errdefer physical.deinit();
+        var physical = try schedule.assemble(s.gpa, cfg.storage_zone, s.num_qubits);
 
-        for (s.stages.items, 0..) |*stage, stage_idx| {
+        for (s.stages.items) |*stage| {
             var sequence = try stage.computeSequence(s.gpa, s.num_qubits);
+            sequence.print();
             defer sequence.deinit();
-
-            if (stage_idx == 0) {
-                physical.placement = try schedule.qubitPlacement(
-                    s.gpa,
-                    cfg.storage_zone,
-                    s.num_qubits,
-                );
-                physical.initial = try s.gpa.alloc(schedule.Point, physical.placement.len);
-                for (physical.placement, physical.initial) |atom, *p| p.* = atom.pos;
-            }
 
             try physical.moveSlmCompute(s.gpa, cfg, sequence.fixed);
             try physical.moveAodCompute(s.gpa, cfg, sequence.moveable);

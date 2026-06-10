@@ -391,25 +391,7 @@ pub const Physical = struct {
         const half_sep: i32 = @divTrunc(cfg.compute_zone.offset_nm[1] + cslm.offset_nm[1] - y_storage_bottom, 2);
         const y_corridor: i32 = y_compute_upper - half_sep;
 
-        // Step 1: move DOWN by d_c — exit compute row into inter-row lane.
-        for (unique.items) |q| {
-            const src = s.placement[q].pos;
-            const dest = Point{ .x = src.x, .y = src.y + d_c };
-            try s.ops.append(gpa, .{
-                .t = s.t,
-                .kind = .{
-                    .move = .{
-                        .qubit = @intCast(q),
-                        .src = src,
-                        .dest = dest,
-                    },
-                },
-            });
-            s.placement[q].pos = dest;
-        }
-        s.t += 1;
-
-        // Step 2: move RIGHT by d_c — shift into inter-column lane.
+        // Step 1: move RIGHT by d_c — shift into inter-column lane.
         for (unique.items) |q| {
             const src = s.placement[q].pos;
             const dest = Point{ .x = src.x + d_c, .y = src.y };
@@ -427,7 +409,7 @@ pub const Physical = struct {
         }
         s.t += 1;
 
-        // Step 3: move UP to the inter-zone corridor.
+        // Step 2: move UP to the inter-zone corridor.
         for (unique.items) |q| {
             const src = s.placement[q].pos;
             if (src.y == y_corridor) continue;
@@ -448,7 +430,7 @@ pub const Physical = struct {
         }
         s.t += 1;
 
-        // Step 4: compress — sequential storage columns in left-to-right order,
+        // Step 3: compress — sequential storage columns in left-to-right order,
         // skipping columns already occupied by atoms that stayed in the storage zone.
         const x_s_orig: i32 = cfg.storage_zone.offset_nm[0] + sslm.offset_nm[0];
         const x_s_sep: i32 = @intCast(sslm.sep_nm[0]);
@@ -481,7 +463,7 @@ pub const Physical = struct {
         }
         s.t += 1;
 
-        // Step 5: drop to the bottom storage row and emit a Store op to mark the atom
+        // Step 4: drop to the bottom storage row and emit a Store op to mark the atom
         // as back in the SLM (no longer in the AOD).
         for (unique.items) |q| {
             const src = s.placement[q].pos;
@@ -877,11 +859,13 @@ fn occupiedStorageX(
     return occ;
 }
 
-pub fn qubitPlacement(
+// Place qubits in storage zone as defined by the
+// upstream Atom Assembly (Atom Rearrangement).
+pub fn assemble(
     gpa: std.mem.Allocator,
     sz: arch.StorageZone,
     num_qubits: usize,
-) ![]Atom {
+) !Physical {
     const x_orig = sz.offset_nm[0] + sz.slm.offset_nm[0];
     const y_orig = sz.offset_nm[1] + sz.slm.offset_nm[1];
     const x_sep = @as(i32, @intCast(sz.slm.sep_nm[0]));
@@ -896,6 +880,7 @@ pub fn qubitPlacement(
 
     var sites: std.ArrayList(Point) = .empty;
     defer sites.deinit(gpa);
+
     for (0..num_row) |row| {
         const i = num_row - 1 - row;
         for (col_start..col_end) |j| {
@@ -906,10 +891,15 @@ pub fn qubitPlacement(
         }
     }
 
-    const placement = try gpa.alloc(Atom, num_qubits);
-    for (placement, 0..) |*p, i| {
+    const plc = try gpa.alloc(Atom, num_qubits);
+    for (plc, 0..) |*p, i| {
         p.* = try Atom.place(gpa, i, sites.items[i]);
     }
 
-    return placement;
+    var physical = Physical{ .gpa = gpa };
+    physical.placement = plc;
+    physical.initial = try gpa.alloc(Point, physical.placement.len);
+    for (physical.placement, physical.initial) |atom, *p| p.* = atom.pos;
+
+    return physical;
 }
