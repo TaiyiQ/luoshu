@@ -43,9 +43,9 @@ pub fn sequenceToJson(
     return gpa.dupe(u8, buf.written());
 }
 
-/// Serializes a physical schedule (per-qubit load/move/store/raman/rydberg/
-/// measure ops) to an owned JSON string.
-pub fn physicalToJson(gpa: std.mem.Allocator, physical: *const schedule.Physical) ![]u8 {
+/// Serializes a hardware schedule (per-qubit load/move/store/raman/rydberg/
+/// measure ops, grouped by timestep) to an owned JSON string.
+pub fn hardwareToJson(gpa: std.mem.Allocator, hw: *const schedule.Hardware) ![]u8 {
     var buf: std.Io.Writer.Allocating = .init(gpa);
     defer buf.deinit();
     const w = &buf.writer;
@@ -53,67 +53,73 @@ pub fn physicalToJson(gpa: std.mem.Allocator, physical: *const schedule.Physical
     try w.writeAll("{\n");
     try w.writeAll("  \"version\": \"1.1\",\n");
     try w.writeAll("  \"platform\": \"taiyi-v1\",\n");
-    try w.print("  \"num_qubits\": {d},\n", .{physical.placement.len});
+    try w.print("  \"num_qubits\": {d},\n", .{hw.placement.len});
     try w.writeAll("  \"ops\": [\n");
 
-    const ops = physical.ops.items;
-    for (ops, 0..) |op, i| {
-        const last_op = i == ops.len - 1;
-        try w.writeAll("    {\n");
-        switch (op.kind) {
-            .raman => |r| {
-                try w.writeAll("      \"op\": \"raman\",\n");
-                try w.print("      \"angle\": {d:.4},\n", .{r.angle});
-                try w.print("      \"phase\": {d:.4},\n", .{r.phase});
-                try w.print("      \"t\": {d},\n", .{op.t});
-                try w.writeAll("      \"targets\": [\n");
-                for (r.targets, 0..) |target, j| {
-                    const last = j == r.targets.len - 1;
-                    try w.print("        {{ \"qubit\": {d}, \"x\": {d}, \"y\": {d} }}", .{ target.qubit, target.pos.x, target.pos.y });
-                    try w.writeAll(if (last) "\n" else ",\n");
-                }
-                try w.writeAll("      ]\n");
-            },
-            .move => |m| {
-                try w.writeAll("      \"op\": \"move\",\n");
-                try w.print("      \"qubit\": {d},\n", .{m.qubit});
-                try w.print("      \"from\": {{ \"x\": {d}, \"y\": {d} }},\n", .{ m.src.x, m.src.y });
-                try w.print("      \"to\": {{ \"x\": {d}, \"y\": {d} }},\n", .{ m.dest.x, m.dest.y });
-                try w.print("      \"t\": {d}\n", .{op.t});
-            },
-            .rydberg => |r| {
-                try w.writeAll("      \"op\": \"rydberg\",\n");
-                try w.print("      \"zone\": \"{s}\",\n", .{zoneName(r.zone)});
-                try w.print("      \"t\": {d}\n", .{op.t});
-            },
-            .measure => |m| {
-                try w.writeAll("      \"op\": \"measure\",\n");
-                try w.print("      \"zone\": \"{s}\",\n", .{zoneName(m.zone)});
-                try w.writeAll("      \"basis\": \"Z\",\n");
-                try w.print("      \"t\": {d},\n", .{op.t});
-                try w.writeAll("      \"qubits\": [");
-                for (m.qubits, 0..) |q, j| {
-                    if (j > 0) try w.writeAll(", ");
-                    try w.print("{d}", .{q});
-                }
-                try w.writeAll("]\n");
-            },
-            .load => |ld| {
-                try w.writeAll("      \"op\": \"load\",\n");
-                try w.print("      \"qubit\": {d},\n", .{ld.qubit});
-                try w.print("      \"x\": {d},\n", .{ld.position.x});
-                try w.print("      \"y\": {d},\n", .{ld.position.y});
-                try w.print("      \"t\": {d}\n", .{op.t});
-            },
-            .store => |st| {
-                try w.writeAll("      \"op\": \"store\",\n");
-                try w.print("      \"qubit\": {d},\n", .{st.qubit});
-                try w.print("      \"x\": {d},\n", .{st.position.x});
-                try w.print("      \"y\": {d},\n", .{st.position.y});
-                try w.print("      \"t\": {d}\n", .{op.t});
-            },
+    var total: usize = 0;
+    for (hw.frames.items) |frame| total += frame.items.len;
+
+    var i: usize = 0;
+    for (hw.frames.items) |frame| {
+        for (frame.items) |op| {
+            defer i += 1;
+            const last_op = i == total - 1;
+            try w.writeAll("    {\n");
+            switch (op.kind) {
+                .raman => |r| {
+                    try w.writeAll("      \"op\": \"raman\",\n");
+                    try w.print("      \"angle\": {d:.4},\n", .{r.angle});
+                    try w.print("      \"phase\": {d:.4},\n", .{r.phase});
+                    try w.print("      \"t\": {d},\n", .{op.t});
+                    try w.writeAll("      \"targets\": [\n");
+                    for (r.targets, 0..) |target, j| {
+                        const last = j == r.targets.len - 1;
+                        try w.print("        {{ \"qubit\": {d}, \"x\": {d}, \"y\": {d} }}", .{ target.qubit, target.pos.x, target.pos.y });
+                        try w.writeAll(if (last) "\n" else ",\n");
+                    }
+                    try w.writeAll("      ]\n");
+                },
+                .move => |m| {
+                    try w.writeAll("      \"op\": \"move\",\n");
+                    try w.print("      \"qubit\": {d},\n", .{m.qubit});
+                    try w.print("      \"from\": {{ \"x\": {d}, \"y\": {d} }},\n", .{ m.src.x, m.src.y });
+                    try w.print("      \"to\": {{ \"x\": {d}, \"y\": {d} }},\n", .{ m.dest.x, m.dest.y });
+                    try w.print("      \"t\": {d}\n", .{op.t});
+                },
+                .rydberg => |r| {
+                    try w.writeAll("      \"op\": \"rydberg\",\n");
+                    try w.print("      \"zone\": \"{s}\",\n", .{zoneName(r.zone)});
+                    try w.print("      \"t\": {d}\n", .{op.t});
+                },
+                .measure => |m| {
+                    try w.writeAll("      \"op\": \"measure\",\n");
+                    try w.print("      \"zone\": \"{s}\",\n", .{zoneName(m.zone)});
+                    try w.writeAll("      \"basis\": \"Z\",\n");
+                    try w.print("      \"t\": {d},\n", .{op.t});
+                    try w.writeAll("      \"qubits\": [");
+                    for (m.qubits, 0..) |q, j| {
+                        if (j > 0) try w.writeAll(", ");
+                        try w.print("{d}", .{q});
+                    }
+                    try w.writeAll("]\n");
+                },
+                .load => |ld| {
+                    try w.writeAll("      \"op\": \"load\",\n");
+                    try w.print("      \"qubit\": {d},\n", .{ld.qubit});
+                    try w.print("      \"x\": {d},\n", .{ld.position.x});
+                    try w.print("      \"y\": {d},\n", .{ld.position.y});
+                    try w.print("      \"t\": {d}\n", .{op.t});
+                },
+                .store => |st| {
+                    try w.writeAll("      \"op\": \"store\",\n");
+                    try w.print("      \"qubit\": {d},\n", .{st.qubit});
+                    try w.print("      \"x\": {d},\n", .{st.position.x});
+                    try w.print("      \"y\": {d},\n", .{st.position.y});
+                    try w.print("      \"t\": {d}\n", .{op.t});
+                },
+            }
+            try w.writeAll(if (last_op) "    }\n" else "    },\n");
         }
-        try w.writeAll(if (last_op) "    }\n" else "    },\n");
     }
 
     try w.writeAll("  ]\n");
@@ -140,13 +146,13 @@ pub fn writeSequence(
     try writeJsonFile(io, filename, json);
 }
 
-pub fn writePhysical(
+pub fn writeHardware(
     gpa: std.mem.Allocator,
     io: std.Io,
     filename: []const u8,
-    physical: *const schedule.Physical,
+    hw: *const schedule.Hardware,
 ) !void {
-    const json = try physicalToJson(gpa, physical);
+    const json = try hardwareToJson(gpa, hw);
     defer gpa.free(json);
     try writeJsonFile(io, filename, json);
 }
