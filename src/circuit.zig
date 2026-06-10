@@ -90,13 +90,9 @@ pub const Pipeline = struct {
             try physical.moveAodStorage(sequence.moveable);
             try physical.moveSlmStorage(sequence.fixed);
 
-            //            try schedule.addRamanOp(
-            //                s.gpa,
-            //                placement,
-            //                stage.u_gates.items,
-            //                t_aod_base,
-            //                &ops,
-            //            );
+            // U gates fire last: within a stage CZs precede the U barrier,
+            // and by now all atoms are back at their storage positions.
+            try physical.raman(stage.u_gates.items);
         }
 
         return physical;

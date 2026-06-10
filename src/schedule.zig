@@ -623,6 +623,33 @@ pub const Physical = struct {
         }
     }
 
+    // Apply single-qubit U gates as Raman pulses at the atoms' current
+    // storage-zone positions. All gates of the batch fire in one timestep.
+    pub fn raman(s: *Physical, u_gates: []const circuit.U) !void {
+        if (u_gates.len == 0) return;
+        // FIXME, do we need a list of targets?
+        for (u_gates) |gate| {
+            var targets: std.ArrayList(RamanTarget) = .empty;
+
+            try targets.append(s.gpa, .{
+                .qubit = @intCast(gate.qubit),
+                .pos = s.placement[gate.qubit].pos,
+            });
+
+            try s.ops.append(s.gpa, .{
+                .t = s.t,
+                .kind = .{
+                    .raman = .{
+                        .angle = gate.theta,
+                        .phase = gate.phi,
+                        .targets = try targets.toOwnedSlice(s.gpa),
+                    },
+                },
+            });
+        }
+        s.t += 1;
+    }
+
     // Pick up atoms from storage in `ord` order, traversing without
     // crossing occupied sites.
     fn pickup(s: *Physical, ord: []const usize) !Register {
@@ -704,35 +731,6 @@ fn siteOccupied(register: Register, placement: []const Atom, x: i32, y: i32) boo
         return true;
     }
     return false;
-}
-
-pub fn addRamanOp(
-    gpa: std.mem.Allocator,
-    placement: []const Point,
-    u_gates: []const circuit.U,
-    t: u32,
-    ops: *std.ArrayList(Op),
-) !void {
-    // FIXME, do we need a list of targets?
-    for (u_gates) |gate| {
-        var targets: std.ArrayList(RamanTarget) = .empty;
-
-        try targets.append(gpa, .{
-            .qubit = @intCast(gate.qubit),
-            .pos = placement[gate.qubit],
-        });
-
-        try ops.append(gpa, Op{
-            .t = t,
-            .kind = .{
-                .raman = .{
-                    .angle = gate.theta,
-                    .phase = gate.phi,
-                    .targets = try targets.toOwnedSlice(gpa),
-                },
-            },
-        });
-    }
 }
 
 // Returns a set of x coordinates at `y_target` occupied by atoms whose placement
