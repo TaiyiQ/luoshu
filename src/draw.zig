@@ -749,10 +749,10 @@ fn drawPanel(
 // Main interactive slideshow
 // -----------------------------------------------------------------------
 pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Physical) !void {
-    if (s.placement.len == 0 or s.ops.len == 0) return;
+    if (s.placement.len == 0 or s.ops.items.len == 0) return;
 
     var max_t: u32 = 0;
-    for (s.ops) |op| max_t = @max(max_t, op.t);
+    for (s.ops.items) |op| max_t = @max(max_t, op.t);
     const frame_count = @as(usize, max_t) + 1;
 
     var frame_positions = try allocator.alloc([]Point, frame_count);
@@ -765,7 +765,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         for (s.placement, 0..) |atom, i| cur[i] = atom.pos;
         defer allocator.free(cur);
         for (0..frame_count) |t| {
-            for (s.ops) |op| {
+            for (s.ops.items) |op| {
                 if (op.t == @as(u32, @intCast(t)) and op.kind == .move) {
                     cur[op.kind.move.qubit] = op.kind.move.dest;
                 }
@@ -784,7 +784,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         defer allocator.free(cur);
         @memset(cur, false);
         for (0..frame_count) |t| {
-            for (s.ops) |op| {
+            for (s.ops.items) |op| {
                 if (op.t != @as(u32, @intCast(t))) continue;
                 switch (op.kind) {
                     .load => |ld| cur[ld.qubit] = true,
@@ -799,7 +799,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     // Count logical qubits and op types across the full schedule.
     var num_qubits: usize = 0;
     var summary = Summary{ .move = 0, .raman = 0, .rydberg = 0, .measure = 0 };
-    for (s.ops) |op| {
+    for (s.ops.items) |op| {
         switch (op.kind) {
             .move => |m| {
                 summary.move += 1;
@@ -976,8 +976,8 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         const op_t: u32 = @intCast(frame);
 
         // First op at this timestep — used for badge/colors/panel display.
-        var primary_op: Op = s.ops[0];
-        for (s.ops) |op| {
+        var primary_op: Op = s.ops.items[0];
+        for (s.ops.items) |op| {
             if (op.t == op_t) {
                 primary_op = op;
                 break;
@@ -986,7 +986,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
 
         var any_move = false;
         var any_raman = false;
-        for (s.ops) |op| {
+        for (s.ops.items) |op| {
             if (op.t != op_t) continue;
             if (op.kind == .move) any_move = true;
             if (op.kind == .raman) any_raman = true;
@@ -1001,7 +1001,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
 
         // Active qubits = union across all ops at this timestep.
         @memset(active, false);
-        for (s.ops) |op| {
+        for (s.ops.items) |op| {
             if (op.t != op_t) continue;
             switch (op.kind) {
                 .move => |m| active[m.qubit] = true,
@@ -1038,7 +1038,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         };
 
         // Animate all moves at this timestep simultaneously.
-        for (s.ops) |op| {
+        for (s.ops.items) |op| {
             if (op.t != op_t or op.kind != .move) continue;
             const a = op.kind.move;
             const sv = toVec(a.src);
@@ -1051,12 +1051,12 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
 
         const sw: f32 = @floatFromInt(rl.getScreenWidth());
         const sh: f32 = @floatFromInt(rl.getScreenHeight());
-        drawAodHighlight(camera, draw_positions, frame_loaded[frame], s.ops, op_t, sw, sh);
+        drawAodHighlight(camera, draw_positions, frame_loaded[frame], s.ops.items, op_t, sw, sh);
 
         for (sites) |slot| drawSlot(camera, slot, draw_positions, frame_loaded[frame]);
 
         // Ghost, tail, and ripple for every move at this timestep.
-        for (s.ops) |op| {
+        for (s.ops.items) |op| {
             if (op.t != op_t or op.kind != .move) continue;
             const a = op.kind.move;
             const src_is_site = for (sites) |site| {
@@ -1089,7 +1089,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
             // Atoms being stored this frame render red, not with the generic op color.
             var fill = colors.fill;
             var stroke = colors.stroke;
-            for (s.ops) |op| {
+            for (s.ops.items) |op| {
                 if (op.t == op_t and op.kind == .store and op.kind.store.qubit == @as(u32, @intCast(id))) {
                     fill = palette.qstore_fill;
                     stroke = palette.qstore_stroke;
@@ -1100,7 +1100,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         }
 
         // Red glow overlay for every atom deposited into SLM at this timestep.
-        for (s.ops) |op| {
+        for (s.ops.items) |op| {
             if (op.t == op_t and op.kind == .store) {
                 drawStoreFlash(camera, op.kind.store.position, palette.qstore_fill);
             }

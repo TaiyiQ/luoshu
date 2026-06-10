@@ -86,15 +86,9 @@ pub const Pipeline = struct {
     }
 
     pub fn compile(s: *Pipeline, cfg: arch.ArchConfig) !schedule.Physical {
-        var ops: std.ArrayList(schedule.Op) = .empty;
+        var physical = schedule.Physical{ .allocator = s.allocator };
+        defer physical.deinit();
 
-        // t = 0: SLM bulk move (storage → compute).
-        var t_slm: u32 = 0;
-
-        // t ≥ 1: one AOD move + Rydberg pulse per logical color, in order.
-        //const t_aod_base: u32 = t_slm + 1;
-
-        var placement: []schedule.Atom = &.{};
         var initial_placement: []schedule.Atom = &.{};
 
         for (s.stages.items, 0..) |*stage, stage_idx| {
@@ -102,50 +96,19 @@ pub const Pipeline = struct {
             defer sequence.deinit();
 
             if (stage_idx == 0) {
-                placement = try schedule.qubitPlacement(
+                physical.placement = try schedule.qubitPlacement(
                     s.allocator,
                     cfg.storage_zone,
                     s.num_qubits,
                 );
-                initial_placement = try s.allocator.dupe(schedule.Atom, placement);
+                initial_placement = try s.allocator.dupe(schedule.Atom, physical.placement);
             }
 
-            try schedule.moveSlmCompute(
-                s.allocator,
-                cfg,
-                sequence.fixed,
-                &placement,
-                &ops,
-                &t_slm,
-            );
-            t_slm += 1;
-
-            try schedule.moveAodCompute(
-                s.allocator,
-                cfg,
-                sequence.moveable,
-                &placement,
-                &ops,
-                &t_slm,
-            );
-
-            try schedule.moveAodStorage(
-                s.allocator,
-                cfg,
-                sequence.moveable,
-                &placement,
-                &ops,
-                &t_slm,
-            );
-
-            try schedule.moveSlmStorage(
-                s.allocator,
-                cfg,
-                sequence.fixed,
-                &placement,
-                &ops,
-                &t_slm,
-            );
+            try physical.moveSlmCompute(s.allocator, cfg, sequence.fixed);
+            physical.t += 1;
+            try physical.moveAodCompute(s.allocator, cfg, sequence.moveable);
+            try physical.moveAodStorage(s.allocator, cfg, sequence.moveable);
+            try physical.moveSlmStorage(s.allocator, cfg, sequence.fixed);
 
             //            try schedule.addRamanOp(
             //                s.allocator,
@@ -156,14 +119,13 @@ pub const Pipeline = struct {
             //            );
         }
 
-        for (placement) |*a| a.deinit();
-        s.allocator.free(placement);
+        return physical;
 
-        return .{
-            .allocator = s.allocator,
-            .ops = try ops.toOwnedSlice(s.allocator),
-            .placement = initial_placement,
-        };
+        //        return .{
+        //            .allocator = s.allocator,
+        //            .ops = try ops.toOwnedSlice(s.allocator),
+        //            .placement = initial_placement,
+        //        };
     }
 };
 
