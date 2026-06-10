@@ -9,7 +9,7 @@ const Op = schedule.Op;
 
 // Enumerate every SLM trap site across storage and compute zones. These are drawn
 // as background indicators in the visualization.
-pub fn allSlmSites(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig) ![]const Point {
+pub fn allSlmSites(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig) ![]const Point {
     var sites: std.ArrayList(Point) = .empty;
 
     {
@@ -19,7 +19,7 @@ pub fn allSlmSites(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig) ![
         const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
         const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
         for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try sites.append(allocator, .{
+            try sites.append(gpa, .{
                 .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
                 .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
             });
@@ -32,14 +32,14 @@ pub fn allSlmSites(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig) ![
         const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
         const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
         for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try sites.append(allocator, .{
+            try sites.append(gpa, .{
                 .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
                 .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
             });
         };
     }
 
-    return try sites.toOwnedSlice(allocator);
+    return try sites.toOwnedSlice(gpa);
 }
 
 const palette = struct {
@@ -748,40 +748,40 @@ fn drawPanel(
 // -----------------------------------------------------------------------
 // Main interactive slideshow
 // -----------------------------------------------------------------------
-pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Physical) !void {
+pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Physical) !void {
     if (s.placement.len == 0 or s.ops.items.len == 0) return;
 
     var max_t: u32 = 0;
     for (s.ops.items) |op| max_t = @max(max_t, op.t);
     const frame_count = @as(usize, max_t) + 1;
 
-    var frame_positions = try allocator.alloc([]Point, frame_count);
+    var frame_positions = try gpa.alloc([]Point, frame_count);
     defer {
-        for (frame_positions) |fp| allocator.free(fp);
-        allocator.free(frame_positions);
+        for (frame_positions) |fp| gpa.free(fp);
+        gpa.free(frame_positions);
     }
     {
-        const cur = try allocator.alloc(Point, s.initial.len);
+        const cur = try gpa.alloc(Point, s.initial.len);
         for (s.initial, 0..) |pos, i| cur[i] = pos;
-        defer allocator.free(cur);
+        defer gpa.free(cur);
         for (0..frame_count) |t| {
             for (s.ops.items) |op| {
                 if (op.t == @as(u32, @intCast(t)) and op.kind == .move) {
                     cur[op.kind.move.qubit] = op.kind.move.dest;
                 }
             }
-            frame_positions[t] = try allocator.dupe(Point, cur);
+            frame_positions[t] = try gpa.dupe(Point, cur);
         }
     }
 
-    var frame_loaded = try allocator.alloc([]bool, frame_count);
+    var frame_loaded = try gpa.alloc([]bool, frame_count);
     defer {
-        for (frame_loaded) |fl| allocator.free(fl);
-        allocator.free(frame_loaded);
+        for (frame_loaded) |fl| gpa.free(fl);
+        gpa.free(frame_loaded);
     }
     {
-        const cur = try allocator.alloc(bool, s.placement.len);
-        defer allocator.free(cur);
+        const cur = try gpa.alloc(bool, s.placement.len);
+        defer gpa.free(cur);
         @memset(cur, false);
         for (0..frame_count) |t| {
             for (s.ops.items) |op| {
@@ -792,7 +792,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
                     else => {},
                 }
             }
-            frame_loaded[t] = try allocator.dupe(bool, cur);
+            frame_loaded[t] = try gpa.dupe(bool, cur);
         }
     }
 
@@ -861,8 +861,8 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     const screen_w = rl.getScreenWidth();
     const screen_h = rl.getScreenHeight();
 
-    const sites = try allSlmSites(s.allocator, layout);
-    defer s.allocator.free(sites);
+    const sites = try allSlmSites(s.gpa, layout);
+    defer s.gpa.free(sites);
 
     const bbox = computeBoundingBox(sites);
     var camera = Camera{};
@@ -884,11 +884,11 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     var hold_k: f32 = 0.0;
     var hold_j: f32 = 0.0;
 
-    var active = try allocator.alloc(bool, s.placement.len);
-    defer allocator.free(active);
+    var active = try gpa.alloc(bool, s.placement.len);
+    defer gpa.free(active);
 
-    var draw_positions = try allocator.alloc(Point, s.placement.len);
-    defer allocator.free(draw_positions);
+    var draw_positions = try gpa.alloc(Point, s.placement.len);
+    defer gpa.free(draw_positions);
 
     while (!rl.windowShouldClose()) {
         const dt = rl.getFrameTime();

@@ -27,28 +27,28 @@ const Stage = struct {
     u_gates: std.ArrayList(U) = .empty,
     cz_gates: std.ArrayList(Cz) = .empty,
 
-    fn deinit(s: *Stage, allocator: std.mem.Allocator) void {
-        s.u_gates.deinit(allocator);
-        s.cz_gates.deinit(allocator);
+    fn deinit(s: *Stage, gpa: std.mem.Allocator) void {
+        s.u_gates.deinit(gpa);
+        s.cz_gates.deinit(gpa);
     }
 
     // Generate a graph connecting CZ qubits, to move them into the compute zone.
     // The stage owns the graph. Therefore, it compiles a logical sequence from
     // the CZ gates using a graph.
-    pub fn computeSequence(s: *Stage, allocator: std.mem.Allocator, num_qubit: usize) !route.Sequence {
+    pub fn computeSequence(s: *Stage, gpa: std.mem.Allocator, num_qubit: usize) !route.Sequence {
         std.debug.print(">> Stage: compiling\n", .{});
 
         for (s.cz_gates.items) |gate| {
             std.debug.print("{any}\nn", .{gate});
         }
 
-        var g = try route.Graph.init(allocator, num_qubit, false);
+        var g = try route.Graph.init(gpa, num_qubit, false);
         defer g.deinit();
 
         for (s.cz_gates.items) |gate| try g.addEdge(gate.control, gate.target);
 
-        const sequence = try route.compile(allocator, &g);
-        //try sequence.writeToFile(s.allocator, init.io, "./zig-out/logical.json");
+        const sequence = try route.compile(gpa, &g);
+        //try sequence.writeToFile(s.gpa, init.io, "./zig-out/logical.json");
         sequence.print();
 
         return sequence;
@@ -56,60 +56,60 @@ const Stage = struct {
 };
 
 pub const Pipeline = struct {
-    allocator: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     stages: std.ArrayList(Stage),
     num_qubits: usize,
 
-    fn init(allocator: std.mem.Allocator, n: usize) !Pipeline {
+    fn init(gpa: std.mem.Allocator, n: usize) !Pipeline {
         return .{
-            .allocator = allocator,
+            .gpa = gpa,
             .stages = .empty,
             .num_qubits = n,
         };
     }
 
     pub fn deinit(s: *Pipeline) void {
-        for (s.stages.items) |*stage| stage.deinit(s.allocator);
-        s.stages.deinit(s.allocator);
+        for (s.stages.items) |*stage| stage.deinit(s.gpa);
+        s.stages.deinit(s.gpa);
     }
 
     // Place a `gate` into stage `n`, creating intervening stages as needed.
     fn place(s: *Pipeline, n: usize, gate: Native) !void {
         while (s.stages.items.len <= n) {
-            try s.stages.append(s.allocator, .{});
+            try s.stages.append(s.gpa, .{});
         }
         const stage = &s.stages.items[n];
         switch (gate) {
-            .u => |g| try stage.u_gates.append(s.allocator, g),
-            .cz => |g| try stage.cz_gates.append(s.allocator, g),
+            .u => |g| try stage.u_gates.append(s.gpa, g),
+            .cz => |g| try stage.cz_gates.append(s.gpa, g),
         }
     }
 
     pub fn compile(s: *Pipeline, cfg: arch.ArchConfig) !schedule.Physical {
-        var physical = schedule.Physical{ .allocator = s.allocator };
+        var physical = schedule.Physical{ .gpa = s.gpa };
         errdefer physical.deinit();
 
         for (s.stages.items, 0..) |*stage, stage_idx| {
-            var sequence = try stage.computeSequence(s.allocator, s.num_qubits);
+            var sequence = try stage.computeSequence(s.gpa, s.num_qubits);
             defer sequence.deinit();
 
             if (stage_idx == 0) {
                 physical.placement = try schedule.qubitPlacement(
-                    s.allocator,
+                    s.gpa,
                     cfg.storage_zone,
                     s.num_qubits,
                 );
-                physical.initial = try s.allocator.alloc(schedule.Point, physical.placement.len);
+                physical.initial = try s.gpa.alloc(schedule.Point, physical.placement.len);
                 for (physical.placement, physical.initial) |atom, *p| p.* = atom.pos;
             }
 
-            try physical.moveSlmCompute(s.allocator, cfg, sequence.fixed);
-            try physical.moveAodCompute(s.allocator, cfg, sequence.moveable);
-            try physical.moveAodStorage(s.allocator, cfg, sequence.moveable);
-            try physical.moveSlmStorage(s.allocator, cfg, sequence.fixed);
+            try physical.moveSlmCompute(s.gpa, cfg, sequence.fixed);
+            try physical.moveAodCompute(s.gpa, cfg, sequence.moveable);
+            try physical.moveAodStorage(s.gpa, cfg, sequence.moveable);
+            try physical.moveSlmStorage(s.gpa, cfg, sequence.fixed);
 
             //            try schedule.addRamanOp(
-            //                s.allocator,
+            //                s.gpa,
             //                placement,
             //                stage.u_gates.items,
             //                t_aod_base,
@@ -144,24 +144,24 @@ pub const Pipeline = struct {
 /// later of its two qubits' current stages.
 ///
 /// Caller owns the result and must free it with `freeStages`.
-pub fn decompose(allocator: std.mem.Allocator, c: Circuit) !Pipeline {
-    //    var pipe: Pipeline = .{ .allocator = allocator };
-    var pipe = try Pipeline.init(allocator, c.n);
+pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
+    //    var pipe: Pipeline = .{ .gpa = gpa };
+    var pipe = try Pipeline.init(gpa, c.n);
     errdefer pipe.deinit();
 
-    var map = std.AutoHashMap(usize, usize).init(allocator);
+    var map = std.AutoHashMap(usize, usize).init(gpa);
     defer map.deinit();
     for (0..c.n) |q| try map.put(q, 0);
 
     const Pending = struct { stage: usize, gate: Native };
     var pending: std.ArrayList(Pending) = .empty;
-    defer pending.deinit(allocator);
+    defer pending.deinit(gpa);
 
     for (c.gates.items) |gate| {
         switch (gate) {
             .u => |g| {
                 const stage = map.get(g.qubit).?;
-                try pending.append(allocator, .{ .stage = stage, .gate = gate });
+                try pending.append(gpa, .{ .stage = stage, .gate = gate });
                 try map.put(g.qubit, stage + 1);
             },
             .cz => |g| {
@@ -177,25 +177,25 @@ pub fn decompose(allocator: std.mem.Allocator, c: Circuit) !Pipeline {
 }
 
 pub const Circuit = struct {
-    allocator: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     gates: std.ArrayList(Native),
     n: usize,
 
-    pub fn init(allocator: std.mem.Allocator, n_qubits: usize) Circuit {
+    pub fn init(gpa: std.mem.Allocator, n_qubits: usize) Circuit {
         const gates: std.ArrayList(Native) = .empty;
         return .{
-            .allocator = allocator,
+            .gpa = gpa,
             .gates = gates,
             .n = n_qubits,
         };
     }
 
     pub fn deinit(s: *Circuit) void {
-        s.gates.deinit(s.allocator);
+        s.gates.deinit(s.gpa);
     }
 
     pub fn h(s: *Circuit, q: usize) !void {
-        try s.gates.append(s.allocator, .{ .u = .{
+        try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = PI / 2.0,
             .phi = 0.0,
@@ -204,7 +204,7 @@ pub const Circuit = struct {
     }
 
     pub fn x(s: *Circuit, q: usize) !void {
-        try s.gates.append(s.allocator, .{ .u = .{
+        try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = PI,
             .phi = 0.0,
@@ -213,7 +213,7 @@ pub const Circuit = struct {
     }
 
     pub fn y(s: *Circuit, q: usize) !void {
-        try s.gates.append(s.allocator, .{ .u = .{
+        try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = PI,
             .phi = PI / 2.0,
@@ -222,7 +222,7 @@ pub const Circuit = struct {
     }
 
     pub fn z(s: *Circuit, q: usize) !void {
-        try s.gates.append(s.allocator, .{ .u = .{
+        try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = 0.0,
             .phi = 0.0,
@@ -231,7 +231,7 @@ pub const Circuit = struct {
     }
 
     pub fn rx(s: *Circuit, q: usize, theta: f64) !void {
-        try s.gates.append(s.allocator, .{ .u = .{
+        try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = theta,
             .phi = -PI / 2.0,
@@ -240,7 +240,7 @@ pub const Circuit = struct {
     }
 
     pub fn ry(s: *Circuit, q: usize, theta: f64) !void {
-        try s.gates.append(s.allocator, .{ .u = .{
+        try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = theta,
             .phi = 0.0,
@@ -249,7 +249,7 @@ pub const Circuit = struct {
     }
 
     pub fn rz(s: *Circuit, q: usize, angle: f64) !void {
-        try s.gates.append(s.allocator, .{ .u = .{
+        try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = 0.0,
             .phi = 0.0,
@@ -258,7 +258,7 @@ pub const Circuit = struct {
     }
 
     pub fn u(s: *Circuit, q: usize, theta: f64, phi: f64, lambda: f64) !void {
-        try s.gates.append(s.allocator, .{ .u = .{
+        try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = theta,
             .phi = phi,
@@ -267,7 +267,7 @@ pub const Circuit = struct {
     }
 
     pub fn cz(s: *Circuit, control: usize, target: usize) !void {
-        try s.gates.append(s.allocator, .{ .cz = .{
+        try s.gates.append(s.gpa, .{ .cz = .{
             .control = control,
             .target = target,
         } });
@@ -280,7 +280,7 @@ pub const Circuit = struct {
     }
 
     pub fn sx(s: *Circuit, q: usize) !void {
-        try s.gates.append(s.allocator, .{ .u = .{
+        try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = PI / 2.0,
             .phi = -PI / 2.0,
@@ -292,15 +292,15 @@ pub const Circuit = struct {
 pub const QasmParser = struct {
     const Register = struct { name: []const u8, base: usize };
 
-    allocator: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     src: []const u8,
     pos: usize,
     registers: std.ArrayList(Register),
     total_qubits: usize,
 
-    pub fn init(allocator: std.mem.Allocator, src: []const u8) QasmParser {
+    pub fn init(gpa: std.mem.Allocator, src: []const u8) QasmParser {
         return .{
-            .allocator = allocator,
+            .gpa = gpa,
             .src = src,
             .pos = 0,
             .registers = .empty,
@@ -309,10 +309,10 @@ pub const QasmParser = struct {
     }
 
     pub fn parse(s: *QasmParser) !Circuit {
-        defer s.registers.deinit(s.allocator);
+        defer s.registers.deinit(s.gpa);
         try s.collectDeclarations();
         s.pos = 0;
-        var circ = Circuit.init(s.allocator, s.total_qubits);
+        var circ = Circuit.init(s.gpa, s.total_qubits);
         errdefer circ.deinit();
         try s.parseGates(&circ);
         return circ;
@@ -414,7 +414,7 @@ pub const QasmParser = struct {
                 try s.consume(']');
                 s.skipWs();
                 const name = s.readIdent();
-                try s.registers.append(s.allocator, .{ .name = name, .base = s.total_qubits });
+                try s.registers.append(s.gpa, .{ .name = name, .base = s.total_qubits });
                 s.total_qubits += n;
             }
             s.skipToSemicolon();

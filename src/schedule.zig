@@ -6,18 +6,18 @@ pub const Zone = enum { storage, compute, readout };
 const Axis = enum { x, y };
 
 pub const Atom = struct {
-    allocator: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     id: u32,
     pos: Point,
     ops: std.ArrayList(Op),
 
     pub fn deinit(s: *Atom) void {
-        s.ops.deinit(s.allocator);
+        s.ops.deinit(s.gpa);
     }
 
-    fn place(allocator: std.mem.Allocator, id: usize, pos: Point) !Atom {
+    fn place(gpa: std.mem.Allocator, id: usize, pos: Point) !Atom {
         return .{
-            .allocator = allocator,
+            .gpa = gpa,
             .id = @as(u32, @intCast(id)),
             .pos = pos,
             .ops = .empty,
@@ -25,7 +25,7 @@ pub const Atom = struct {
     }
 
     fn load(s: *Atom, t: u32) !void {
-        try s.ops.append(s.allocator, .{ .t = t, .kind = .{
+        try s.ops.append(s.gpa, .{ .t = t, .kind = .{
             .load = .{
                 .qubit = s.id,
                 .position = s.pos,
@@ -37,7 +37,7 @@ pub const Atom = struct {
         const src = s.pos;
         s.pos.x += dx;
         s.pos.y += dy;
-        try s.ops.append(s.allocator, .{ .t = t, .kind = .{
+        try s.ops.append(s.gpa, .{ .t = t, .kind = .{
             .move = .{
                 .qubit = s.id,
                 .src = src,
@@ -106,7 +106,7 @@ pub const Op = struct {
 };
 
 pub const Physical = struct {
-    allocator: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     ops: std.ArrayList(Op) = .empty,
     placement: []Atom = &.{}, // Working position of each qubit (index = qubit id); mutated as atoms move.
     initial: []Point = &.{}, // Starting storage-zone position of each qubit, frozen at placement time.
@@ -115,38 +115,38 @@ pub const Physical = struct {
     pub fn deinit(s: *Physical) void {
         for (s.ops.items) |op| {
             switch (op.kind) {
-                .raman => |r| s.allocator.free(r.targets),
-                .measure => |m| s.allocator.free(m.qubits),
+                .raman => |r| s.gpa.free(r.targets),
+                .measure => |m| s.gpa.free(m.qubits),
                 .rydberg, .load, .move, .store => {},
             }
         }
-        s.ops.deinit(s.allocator);
+        s.ops.deinit(s.gpa);
         for (s.placement) |*p| p.deinit();
-        s.allocator.free(s.placement);
-        s.allocator.free(s.initial);
+        s.gpa.free(s.placement);
+        s.gpa.free(s.initial);
     }
 
     pub fn moveSlmCompute(
         s: *Physical,
-        allocator: std.mem.Allocator,
+        gpa: std.mem.Allocator,
         cfg: arch.ArchConfig,
         fixed: []const ?usize,
     ) !void {
         var ordered: std.ArrayList(usize) = .empty;
-        defer ordered.deinit(allocator);
+        defer ordered.deinit(gpa);
 
         var cols: std.ArrayList(usize) = .empty;
-        defer cols.deinit(allocator);
+        defer cols.deinit(gpa);
 
         for (fixed, 0..) |maybe_qubit, col| {
             if (maybe_qubit) |q| {
-                try ordered.append(allocator, q);
-                try cols.append(allocator, col);
+                try ordered.append(gpa, q);
+                try cols.append(gpa, col);
             }
         }
 
-        var register = try pickup(allocator, cfg, ordered.items, &s.placement, &s.t);
-        defer register.deinit(allocator);
+        var register = try pickup(gpa, cfg, ordered.items, &s.placement, &s.t);
+        defer register.deinit(gpa);
 
         // Move each atom to its destination slot in compute zone slms[0].
         const control = cfg.compute_zone.slms[0];
@@ -172,7 +172,7 @@ pub const Physical = struct {
         // Manhattan step 3: x correction to target column, then place atom into compute SLM.
         for (register.items) |a| {
             try a.move(-d, 0, s.t);
-            try a.ops.append(a.allocator, .{
+            try a.ops.append(a.gpa, .{
                 .t = s.t,
                 .kind = .{
                     .store = .{
@@ -186,14 +186,14 @@ pub const Physical = struct {
         // Flush pickup + compute-zone move ops to the global ops list.
         for (register.items) |a| {
             for (a.ops.items) |o| {
-                try s.ops.append(allocator, o);
+                try s.ops.append(gpa, o);
             }
         }
     }
 
     pub fn moveSlmStorage(
         s: *Physical,
-        allocator: std.mem.Allocator,
+        gpa: std.mem.Allocator,
         cfg: arch.ArchConfig,
         fixed: []const ?usize,
     ) !void {
@@ -213,7 +213,7 @@ pub const Physical = struct {
         // Load each atom into the AOD so the horizontal highlight shows during the return trip.
         for (fixed) |maybe_slm| {
             if (maybe_slm) |q| {
-                try s.ops.append(allocator, .{
+                try s.ops.append(gpa, .{
                     .t = s.t,
                     .kind = .{
                         .load = .{
@@ -233,7 +233,7 @@ pub const Physical = struct {
             if (maybe_slm) |q| {
                 const src = s.placement[q].pos;
                 const dest = Point{ .x = src.x + d_c, .y = src.y };
-                try s.ops.append(allocator, .{
+                try s.ops.append(gpa, .{
                     .t = s.t,
                     .kind = .{
                         .move = .{
@@ -255,7 +255,7 @@ pub const Physical = struct {
             if (maybe_slm) |q| {
                 const src = s.placement[q].pos;
                 if (src.y == y_corridor) continue;
-                try s.ops.append(allocator, .{
+                try s.ops.append(gpa, .{
                     .t = s.t,
                     .kind = .{
                         .move = .{
@@ -275,12 +275,12 @@ pub const Physical = struct {
         const x_s_orig: i32 = cfg.storage_zone.offset_nm[0] + sslm.offset_nm[0];
         const x_s_sep: i32 = @intCast(sslm.sep_nm[0]);
         var returning: std.ArrayList(usize) = .empty;
-        defer returning.deinit(allocator);
+        defer returning.deinit(gpa);
         for (fixed) |maybe_slm| {
-            if (maybe_slm) |q| try returning.append(allocator, q);
+            if (maybe_slm) |q| try returning.append(gpa, q);
         }
 
-        var occ = try occupiedStorageX(allocator, returning.items, s.placement, y_storage_bottom);
+        var occ = try occupiedStorageX(gpa, returning.items, s.placement, y_storage_bottom);
         defer occ.deinit();
 
         var col: usize = 0;
@@ -289,7 +289,7 @@ pub const Physical = struct {
             const dest_x = x_s_orig + @as(i32, @intCast(col)) * x_s_sep;
             const src = s.placement[q].pos;
             if (src.x != dest_x) {
-                try s.ops.append(allocator, .{
+                try s.ops.append(gpa, .{
                     .t = s.t,
                     .kind = .{
                         .move = .{
@@ -311,7 +311,7 @@ pub const Physical = struct {
             if (maybe_slm) |q| {
                 const src = s.placement[q].pos;
                 if (src.y != y_storage_bottom) {
-                    try s.ops.append(allocator, .{
+                    try s.ops.append(gpa, .{
                         .t = s.t,
                         .kind = .{
                             .move = .{
@@ -323,7 +323,7 @@ pub const Physical = struct {
                     });
                     s.placement[q].pos.y = y_storage_bottom;
                 }
-                try s.ops.append(allocator, .{
+                try s.ops.append(gpa, .{
                     .t = s.t,
                     .kind = .{
                         .store = .{
@@ -339,22 +339,22 @@ pub const Physical = struct {
 
     pub fn moveAodStorage(
         s: *Physical,
-        allocator: std.mem.Allocator,
+        gpa: std.mem.Allocator,
         cfg: arch.ArchConfig,
         aod_qubits: [][]?usize,
     ) !void {
         // Collect all unique qubit IDs across all timeframes.
-        var seen = std.AutoHashMap(usize, void).init(allocator);
+        var seen = std.AutoHashMap(usize, void).init(gpa);
         defer seen.deinit();
 
         var unique: std.ArrayList(usize) = .empty;
-        defer unique.deinit(allocator);
+        defer unique.deinit(gpa);
 
         for (aod_qubits) |row| {
             for (row) |maybe_q| {
                 if (maybe_q) |q| {
                     const gop = try seen.getOrPut(q);
-                    if (!gop.found_existing) try unique.append(allocator, q);
+                    if (!gop.found_existing) try unique.append(gpa, q);
                 }
             }
         }
@@ -370,7 +370,7 @@ pub const Physical = struct {
 
         // Load each atom into the AOD so the horizontal highlight shows during the return trip.
         for (unique.items) |q| {
-            try s.ops.append(allocator, .{
+            try s.ops.append(gpa, .{
                 .t = s.t,
                 .kind = .{
                     .load = .{
@@ -395,7 +395,7 @@ pub const Physical = struct {
         for (unique.items) |q| {
             const src = s.placement[q].pos;
             const dest = Point{ .x = src.x, .y = src.y + d_c };
-            try s.ops.append(allocator, .{
+            try s.ops.append(gpa, .{
                 .t = s.t,
                 .kind = .{
                     .move = .{
@@ -413,7 +413,7 @@ pub const Physical = struct {
         for (unique.items) |q| {
             const src = s.placement[q].pos;
             const dest = Point{ .x = src.x + d_c, .y = src.y };
-            try s.ops.append(allocator, .{
+            try s.ops.append(gpa, .{
                 .t = s.t,
                 .kind = .{
                     .move = .{
@@ -431,7 +431,7 @@ pub const Physical = struct {
         for (unique.items) |q| {
             const src = s.placement[q].pos;
             if (src.y == y_corridor) continue;
-            try s.ops.append(allocator, .{
+            try s.ops.append(gpa, .{
                 .t = s.t,
                 .kind = .{
                     .move = .{
@@ -453,7 +453,7 @@ pub const Physical = struct {
         const x_s_orig: i32 = cfg.storage_zone.offset_nm[0] + sslm.offset_nm[0];
         const x_s_sep: i32 = @intCast(sslm.sep_nm[0]);
 
-        var occ = try occupiedStorageX(allocator, unique.items, s.placement, y_storage_bottom);
+        var occ = try occupiedStorageX(gpa, unique.items, s.placement, y_storage_bottom);
         defer occ.deinit();
 
         var col: usize = 0;
@@ -462,7 +462,7 @@ pub const Physical = struct {
             const dest_x = x_s_orig + @as(i32, @intCast(col)) * x_s_sep;
             const src = s.placement[q].pos;
             if (src.x != dest_x) {
-                try s.ops.append(allocator, .{
+                try s.ops.append(gpa, .{
                     .t = s.t,
                     .kind = .{
                         .move = .{
@@ -486,7 +486,7 @@ pub const Physical = struct {
         for (unique.items) |q| {
             const src = s.placement[q].pos;
             if (src.y != y_storage_bottom) {
-                try s.ops.append(allocator, .{
+                try s.ops.append(gpa, .{
                     .t = s.t,
                     .kind = .{
                         .move = .{
@@ -501,7 +501,7 @@ pub const Physical = struct {
                 });
                 s.placement[q].pos.y = y_storage_bottom;
             }
-            try s.ops.append(allocator, .{
+            try s.ops.append(gpa, .{
                 .t = s.t,
                 .kind = .{
                     .store = .{
@@ -516,30 +516,30 @@ pub const Physical = struct {
 
     pub fn moveAodCompute(
         s: *Physical,
-        allocator: std.mem.Allocator,
+        gpa: std.mem.Allocator,
         cfg: arch.ArchConfig,
         moveable: [][]?usize,
     ) !void {
         // Collect all unique qubit IDs across all timeframes.
         var ordered: std.ArrayList(usize) = .empty;
-        defer ordered.deinit(allocator);
+        defer ordered.deinit(gpa);
 
-        var seen = std.AutoHashMap(usize, void).init(allocator);
+        var seen = std.AutoHashMap(usize, void).init(gpa);
         defer seen.deinit();
 
         for (moveable) |row| {
             for (row) |maybe_q| {
                 if (maybe_q) |q| {
                     const gop = try seen.getOrPut(q);
-                    if (!gop.found_existing) try ordered.append(allocator, q);
+                    if (!gop.found_existing) try ordered.append(gpa, q);
                 }
             }
         }
         if (ordered.items.len == 0) return;
 
         // Pick up atoms from storage, traversing without crossing occupied sites.
-        var register = try pickup(allocator, cfg, ordered.items, &s.placement, &s.t);
-        defer register.deinit(allocator);
+        var register = try pickup(gpa, cfg, ordered.items, &s.placement, &s.t);
+        defer register.deinit(gpa);
 
         // Manhattan entry into SLM[1] — mirrors moveSlmCompute for SLM[0].
         const target = cfg.compute_zone.slms[1];
@@ -565,7 +565,7 @@ pub const Physical = struct {
         // Step 3: slide left d to land on column x, then place into compute SLM.
         for (register.items) |a| {
             try a.move(-d, 0, s.t);
-            try a.ops.append(a.allocator, .{
+            try a.ops.append(a.gpa, .{
                 .t = s.t,
                 .kind = .{
                     .store = .{
@@ -580,7 +580,7 @@ pub const Physical = struct {
         // Flush buffered ops (pickup + compute entry) to global ops list.
         for (register.items) |a| {
             for (a.ops.items) |o| {
-                try s.ops.append(allocator, o);
+                try s.ops.append(gpa, o);
             }
         }
 
@@ -588,14 +588,14 @@ pub const Physical = struct {
         // then deposit back into SLM (t+1, red flash). Store only fires when atoms moved.
         for (moveable) |row| {
             var moved_q: std.ArrayList(usize) = .empty;
-            defer moved_q.deinit(allocator);
+            defer moved_q.deinit(gpa);
 
             for (row, 0..) |maybe_q, i| {
                 if (maybe_q) |q| {
                     const dest_x = x_orig + @as(i32, @intCast(i)) * x_sep;
                     const src = s.placement[q].pos;
                     if (src.x == dest_x) continue;
-                    try s.ops.append(allocator, .{
+                    try s.ops.append(gpa, .{
                         .t = s.t,
                         .kind = .{
                             .load = .{
@@ -604,7 +604,7 @@ pub const Physical = struct {
                             },
                         },
                     });
-                    try s.ops.append(allocator, .{
+                    try s.ops.append(gpa, .{
                         .t = s.t,
                         .kind = .{
                             .move = .{
@@ -618,13 +618,13 @@ pub const Physical = struct {
                         },
                     });
                     s.placement[q].pos.x = dest_x;
-                    try moved_q.append(allocator, q);
+                    try moved_q.append(gpa, q);
                 }
             }
             s.t += 1;
 
             for (moved_q.items) |q| {
-                try s.ops.append(allocator, .{
+                try s.ops.append(gpa, .{
                     .t = s.t,
                     .kind = .{
                         .store = .{
@@ -638,17 +638,17 @@ pub const Physical = struct {
         }
     }
 
-    pub fn writeToFile(self: *const Physical, allocator: std.mem.Allocator, io: std.Io, filename: []const u8) !void {
-        const json = try self.toJson(allocator);
-        defer allocator.free(json);
+    pub fn writeToFile(self: *const Physical, gpa: std.mem.Allocator, io: std.Io, filename: []const u8) !void {
+        const json = try self.toJson(gpa);
+        defer gpa.free(json);
 
         const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
         defer file.close(io);
         try file.writePositionalAll(io, json, 0);
     }
 
-    pub fn toJson(self: *const Physical, allocator: std.mem.Allocator) ![]u8 {
-        var buf: std.Io.Writer.Allocating = .init(allocator);
+    pub fn toJson(self: *const Physical, gpa: std.mem.Allocator) ![]u8 {
+        var buf: std.Io.Writer.Allocating = .init(gpa);
         defer buf.deinit();
         const w = &buf.writer;
 
@@ -731,7 +731,7 @@ pub const Physical = struct {
         try w.writeAll("  ]\n");
         try w.writeAll("}");
 
-        return allocator.dupe(u8, buf.written());
+        return gpa.dupe(u8, buf.written());
     }
 };
 
@@ -749,12 +749,12 @@ pub const Register = std.ArrayList(*Atom);
 
 fn pickUpAtom(
     register: *Register,
-    allocator: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     atom: *Atom,
     t: u32,
 ) !void {
     try atom.load(t);
-    try register.append(allocator, atom);
+    try register.append(gpa, atom);
 }
 
 // Returns true if an unregistered atom occupies (x, y).
@@ -770,7 +770,7 @@ fn siteOccupied(register: Register, placement: []const Atom, x: i32, y: i32) boo
 }
 
 pub fn pickup(
-    allocator: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     cfg: arch.ArchConfig,
     ord: []const usize,
     plc: *[]Atom,
@@ -779,12 +779,12 @@ pub fn pickup(
     const d = @as(i32, @intCast(cfg.storage_zone.slm.sep_nm[0] / 2));
 
     var register: Register = .empty;
-    errdefer register.deinit(allocator);
+    errdefer register.deinit(gpa);
 
     if (ord.len == 0) return register;
 
     // Pick up first atom.
-    try pickUpAtom(&register, allocator, &plc.*[ord[0]], t.*);
+    try pickUpAtom(&register, gpa, &plc.*[ord[0]], t.*);
     t.* += 1;
     var front = plc.*[ord[0]];
 
@@ -815,7 +815,7 @@ pub fn pickup(
             t.* += 1;
         }
 
-        try pickUpAtom(&register, allocator, &plc.*[q], t.*);
+        try pickUpAtom(&register, gpa, &plc.*[q], t.*);
         t.* += 1;
         front = next;
     }
@@ -830,7 +830,7 @@ pub fn pickup(
 }
 
 pub fn addRamanOp(
-    allocator: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     placement: []const Point,
     u_gates: []const circuit.U,
     t: u32,
@@ -840,18 +840,18 @@ pub fn addRamanOp(
     for (u_gates) |gate| {
         var targets: std.ArrayList(RamanTarget) = .empty;
 
-        try targets.append(allocator, .{
+        try targets.append(gpa, .{
             .qubit = @intCast(gate.qubit),
             .pos = placement[gate.qubit],
         });
 
-        try ops.append(allocator, Op{
+        try ops.append(gpa, Op{
             .t = t,
             .kind = .{
                 .raman = .{
                     .angle = gate.theta,
                     .phase = gate.phi,
-                    .targets = try targets.toOwnedSlice(allocator),
+                    .targets = try targets.toOwnedSlice(gpa),
                 },
             },
         });
@@ -861,15 +861,15 @@ pub fn addRamanOp(
 // Returns a set of x coordinates at `y_target` occupied by atoms whose placement
 // index is NOT in `returning`. Caller must deinit the returned map.
 fn occupiedStorageX(
-    allocator: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     returning: []const usize,
     placement: []const Atom,
     y_target: i32,
 ) !std.AutoHashMap(i32, void) {
-    var ret_set = std.AutoHashMap(usize, void).init(allocator);
+    var ret_set = std.AutoHashMap(usize, void).init(gpa);
     defer ret_set.deinit();
     for (returning) |q| try ret_set.put(q, {});
-    var occ = std.AutoHashMap(i32, void).init(allocator);
+    var occ = std.AutoHashMap(i32, void).init(gpa);
     for (placement, 0..) |atom, i| {
         if (ret_set.contains(i)) continue;
         if (atom.pos.y == y_target) try occ.put(atom.pos.x, {});
@@ -878,7 +878,7 @@ fn occupiedStorageX(
 }
 
 pub fn qubitPlacement(
-    allocator: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     sz: arch.StorageZone,
     num_qubits: usize,
 ) ![]Atom {
@@ -895,20 +895,20 @@ pub fn qubitPlacement(
     const col_end = num_col - num_col / 4;
 
     var sites: std.ArrayList(Point) = .empty;
-    defer sites.deinit(allocator);
+    defer sites.deinit(gpa);
     for (0..num_row) |row| {
         const i = num_row - 1 - row;
         for (col_start..col_end) |j| {
-            try sites.append(allocator, Point{
+            try sites.append(gpa, Point{
                 .x = x_orig + @as(i32, @intCast(j)) * x_sep,
                 .y = y_orig + @as(i32, @intCast(i)) * y_sep,
             });
         }
     }
 
-    const placement = try allocator.alloc(Atom, num_qubits);
+    const placement = try gpa.alloc(Atom, num_qubits);
     for (placement, 0..) |*p, i| {
-        p.* = try Atom.place(allocator, i, sites.items[i]);
+        p.* = try Atom.place(gpa, i, sites.items[i]);
     }
 
     return placement;
