@@ -134,6 +134,7 @@ pub const Physical = struct {
     ) !void {
         var ordered: std.ArrayList(usize) = .empty;
         defer ordered.deinit(allocator);
+
         var cols: std.ArrayList(usize) = .empty;
         defer cols.deinit(allocator);
 

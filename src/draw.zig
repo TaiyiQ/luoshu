@@ -862,6 +862,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     const screen_h = rl.getScreenHeight();
 
     const sites = try allSlmSites(s.allocator, layout);
+    defer s.allocator.free(sites);
 
     const bbox = computeBoundingBox(sites);
     var camera = Camera{};

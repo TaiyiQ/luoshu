@@ -35,7 +35,7 @@ const Stage = struct {
     // Generate a graph connecting CZ qubits, to move them into the compute zone.
     // The stage owns the graph. Therefore, it compiles a logical sequence from
     // the CZ gates using a graph.
-    pub fn compile(s: *Stage, allocator: std.mem.Allocator, num_qubit: usize) !route.Sequence {
+    pub fn computeSequence(s: *Stage, allocator: std.mem.Allocator, num_qubit: usize) !route.Sequence {
         std.debug.print(">> Stage: compiling\n", .{});
 
         for (s.cz_gates.items) |gate| {
@@ -90,7 +90,7 @@ pub const Pipeline = struct {
         errdefer physical.deinit();
 
         for (s.stages.items, 0..) |*stage, stage_idx| {
-            var sequence = try stage.compile(s.allocator, s.num_qubits);
+            var sequence = try stage.computeSequence(s.allocator, s.num_qubits);
             defer sequence.deinit();
 
             if (stage_idx == 0) {
@@ -104,7 +104,6 @@ pub const Pipeline = struct {
             }
 
             try physical.moveSlmCompute(s.allocator, cfg, sequence.fixed);
-            physical.t += 1;
             try physical.moveAodCompute(s.allocator, cfg, sequence.moveable);
             try physical.moveAodStorage(s.allocator, cfg, sequence.moveable);
             try physical.moveSlmStorage(s.allocator, cfg, sequence.fixed);
@@ -119,12 +118,6 @@ pub const Pipeline = struct {
         }
 
         return physical;
-
-        //        return .{
-        //            .allocator = s.allocator,
-        //            .ops = try ops.toOwnedSlice(s.allocator),
-        //            .placement = initial_placement,
-        //        };
     }
 };
 
