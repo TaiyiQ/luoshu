@@ -108,7 +108,8 @@ pub const Op = struct {
 pub const Physical = struct {
     allocator: std.mem.Allocator,
     ops: std.ArrayList(Op) = .empty,
-    placement: []Atom = &.{}, // Initial storage-zone position of each qubit (index = qubit id).
+    placement: []Atom = &.{}, // Working position of each qubit (index = qubit id); mutated as atoms move.
+    initial: []Point = &.{}, // Starting storage-zone position of each qubit, frozen at placement time.
     t: u32 = 0,
 
     pub fn deinit(s: *Physical) void {
@@ -122,6 +123,7 @@ pub const Physical = struct {
         s.ops.deinit(s.allocator);
         for (s.placement) |*p| p.deinit();
         s.allocator.free(s.placement);
+        s.allocator.free(s.initial);
     }
 
     pub fn moveSlmCompute(

@@ -761,8 +761,8 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         allocator.free(frame_positions);
     }
     {
-        const cur = try allocator.alloc(Point, s.placement.len);
-        for (s.placement, 0..) |atom, i| cur[i] = atom.pos;
+        const cur = try allocator.alloc(Point, s.initial.len);
+        for (s.initial, 0..) |pos, i| cur[i] = pos;
         defer allocator.free(cur);
         for (0..frame_count) |t| {
             for (s.ops.items) |op| {

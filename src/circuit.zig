@@ -87,9 +87,7 @@ pub const Pipeline = struct {
 
     pub fn compile(s: *Pipeline, cfg: arch.ArchConfig) !schedule.Physical {
         var physical = schedule.Physical{ .allocator = s.allocator };
-        defer physical.deinit();
-
-        var initial_placement: []schedule.Atom = &.{};
+        errdefer physical.deinit();
 
         for (s.stages.items, 0..) |*stage, stage_idx| {
             var sequence = try stage.compile(s.allocator, s.num_qubits);
@@ -101,7 +99,8 @@ pub const Pipeline = struct {
                     cfg.storage_zone,
                     s.num_qubits,
                 );
-                initial_placement = try s.allocator.dupe(schedule.Atom, physical.placement);
+                physical.initial = try s.allocator.alloc(schedule.Point, physical.placement.len);
+                for (physical.placement, physical.initial) |atom, *p| p.* = atom.pos;
             }
 
             try physical.moveSlmCompute(s.allocator, cfg, sequence.fixed);
