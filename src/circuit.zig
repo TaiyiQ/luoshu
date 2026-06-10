@@ -267,6 +267,24 @@ pub const Circuit = struct {
     }
 };
 
+/// Loads and parses an OpenQASM circuit from a file.
+pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Circuit {
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
+    defer file.close(io);
+
+    var read_buf: [4096]u8 = undefined;
+    var fr = file.reader(io, &read_buf);
+    const reader = &fr.interface;
+
+    // Reads everything to EOF into allocator-owned memory. No truncation,
+    // no "must fill exactly N bytes" error.
+    const src = try reader.allocRemaining(gpa, .unlimited);
+    defer gpa.free(src);
+
+    var parser = QasmParser.init(gpa, src);
+    return try parser.parse();
+}
+
 pub const QasmParser = struct {
     const Register = struct { name: []const u8, base: usize };
 

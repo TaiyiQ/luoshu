@@ -3,7 +3,7 @@ const toml = @import("toml");
 
 // ── Raw structs (floats) — mirrors the TOML exactly ──────────────────────────
 
-pub const RawSlm = struct {
+const RawSlm = struct {
     slm_id: u32,
     num_row: u32,
     num_col: u32,
@@ -11,14 +11,14 @@ pub const RawSlm = struct {
     offset_um: [2]f64,
 };
 
-pub const RawStorageZone = struct {
+const RawStorageZone = struct {
     zone_id: u32,
     offset_um: [2]f64,
     dimension_um: [2]f64,
     slm: RawSlm,
 };
 
-pub const RawComputeZone = struct {
+const RawComputeZone = struct {
     zone_id: u32,
     offset_um: [2]f64,
     dimension_um: [2]f64,
@@ -27,20 +27,20 @@ pub const RawComputeZone = struct {
     slms: []RawSlm,
 };
 
-pub const RawReadoutZone = struct {
+const RawReadoutZone = struct {
     zone_id: u32,
     offset_um: [2]f64,
     dimension_um: [2]f64,
 };
 
-pub const RawAod = struct {
+const RawAod = struct {
     aod_id: u32,
     min_sep_um: f64,
     max_num_row: u32,
     max_num_col: u32,
 };
 
-pub const RawConstraints = struct {
+const RawConstraints = struct {
     db_um: f64,
     dz_um: f64,
     one_qubit_gate_fidelity: f64,
@@ -48,7 +48,7 @@ pub const RawConstraints = struct {
     readout_fidelity: f64,
 };
 
-pub const RawArchConfig = struct {
+const RawArchConfig = struct {
     platform: Platform,
     aod: RawAod,
     storage_zone: RawStorageZone,
@@ -231,6 +231,18 @@ pub const ArchConfig = struct {
     }
 };
 
+/// Loads an architecture config from a TOML file and converts it to
+/// integer-nm form.
+pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ArchConfig {
+    var parser = toml.Parser(RawArchConfig).init(gpa);
+    defer parser.deinit();
+
+    var raw = try parser.parseFile(io, path);
+    defer raw.deinit();
+
+    return try convertConfig(raw.value, gpa);
+}
+
 // ── Conversion: um (f64) -> nm (integer) ─────────────────────────────────────
 
 fn umToNm(um: f64) u32 {
@@ -251,7 +263,7 @@ fn convertSlm(raw: RawSlm) Slm {
     };
 }
 
-pub fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
+fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
     const name = try alloc.dupe(u8, raw.platform.name);
     errdefer alloc.free(name);
     const version = try alloc.dupe(u8, raw.platform.version);

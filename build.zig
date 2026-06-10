@@ -59,7 +59,7 @@ pub fn build(b: *std.Build) void {
     // --- External dependecies.
 
     const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
-    exe.root_module.addImport("toml", toml_dep.module("toml"));
+    arch_mod.addImport("toml", toml_dep.module("toml"));
 
     const raylib_dep = b.dependency("raylib_zig", .{
         .target = target,
