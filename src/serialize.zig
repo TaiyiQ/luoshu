@@ -60,17 +60,17 @@ pub fn hardwareToJson(gpa: std.mem.Allocator, hw: *const schedule.Hardware) ![]u
     for (hw.frames.items) |frame| total += frame.items.len;
 
     var i: usize = 0;
-    for (hw.frames.items) |frame| {
+    for (hw.frames.items, 0..) |frame, t| {
         for (frame.items) |op| {
             defer i += 1;
             const last_op = i == total - 1;
             try w.writeAll("    {\n");
-            switch (op.kind) {
+            switch (op) {
                 .raman => |r| {
                     try w.writeAll("      \"op\": \"raman\",\n");
                     try w.print("      \"angle\": {d:.4},\n", .{r.angle});
                     try w.print("      \"phase\": {d:.4},\n", .{r.phase});
-                    try w.print("      \"t\": {d},\n", .{op.t});
+                    try w.print("      \"t\": {d},\n", .{t});
                     try w.writeAll("      \"targets\": [\n");
                     for (r.targets, 0..) |target, j| {
                         const last = j == r.targets.len - 1;
@@ -84,18 +84,18 @@ pub fn hardwareToJson(gpa: std.mem.Allocator, hw: *const schedule.Hardware) ![]u
                     try w.print("      \"qubit\": {d},\n", .{m.qubit});
                     try w.print("      \"from\": {{ \"x\": {d}, \"y\": {d} }},\n", .{ m.src.x, m.src.y });
                     try w.print("      \"to\": {{ \"x\": {d}, \"y\": {d} }},\n", .{ m.dest.x, m.dest.y });
-                    try w.print("      \"t\": {d}\n", .{op.t});
+                    try w.print("      \"t\": {d}\n", .{t});
                 },
                 .rydberg => |r| {
                     try w.writeAll("      \"op\": \"rydberg\",\n");
                     try w.print("      \"zone\": \"{s}\",\n", .{zoneName(r.zone)});
-                    try w.print("      \"t\": {d}\n", .{op.t});
+                    try w.print("      \"t\": {d}\n", .{t});
                 },
                 .measure => |m| {
                     try w.writeAll("      \"op\": \"measure\",\n");
                     try w.print("      \"zone\": \"{s}\",\n", .{zoneName(m.zone)});
                     try w.writeAll("      \"basis\": \"Z\",\n");
-                    try w.print("      \"t\": {d},\n", .{op.t});
+                    try w.print("      \"t\": {d},\n", .{t});
                     try w.writeAll("      \"qubits\": [");
                     for (m.qubits, 0..) |q, j| {
                         if (j > 0) try w.writeAll(", ");
@@ -108,14 +108,14 @@ pub fn hardwareToJson(gpa: std.mem.Allocator, hw: *const schedule.Hardware) ![]u
                     try w.print("      \"qubit\": {d},\n", .{ld.qubit});
                     try w.print("      \"x\": {d},\n", .{ld.position.x});
                     try w.print("      \"y\": {d},\n", .{ld.position.y});
-                    try w.print("      \"t\": {d}\n", .{op.t});
+                    try w.print("      \"t\": {d}\n", .{t});
                 },
                 .store => |st| {
                     try w.writeAll("      \"op\": \"store\",\n");
                     try w.print("      \"qubit\": {d},\n", .{st.qubit});
                     try w.print("      \"x\": {d},\n", .{st.position.x});
                     try w.print("      \"y\": {d},\n", .{st.position.y});
-                    try w.print("      \"t\": {d}\n", .{op.t});
+                    try w.print("      \"t\": {d}\n", .{t});
                 },
             }
             try w.writeAll(if (last_op) "    }\n" else "    },\n");

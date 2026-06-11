@@ -108,9 +108,11 @@ pub fn buildGrid(gpa: std.mem.Allocator) !circuit.Circuit {
 pub fn buildQft5(gpa: std.mem.Allocator) !circuit.Circuit {
     var c = circuit.Circuit.init(gpa, 5);
     errdefer c.deinit();
-    for (0..5) |i| {
+    var i: u32 = 0;
+    while (i < 5) : (i += 1) {
         try c.h(i);
-        for (i + 1..5) |j| try c.cz(i, j);
+        var j = i + 1;
+        while (j < 5) : (j += 1) try c.cz(i, j);
     }
     return c;
 }

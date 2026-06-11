@@ -5,16 +5,18 @@ const std = @import("std");
 
 const PI = std.math.pi;
 
+/// Qubit ids are u32 end-to-end (front-end gates through hardware ops);
+/// only counts and array indices are usize.
 pub const U = struct {
-    qubit: usize,
+    qubit: u32,
     theta: f64,
     phi: f64,
     lambda: f64,
 };
 
 pub const Cz = struct {
-    control: usize,
-    target: usize,
+    control: u32,
+    target: u32,
 };
 
 pub const Native = union(enum) {
@@ -136,7 +138,7 @@ pub const Circuit = struct {
         s.gates.deinit(s.gpa);
     }
 
-    pub fn h(s: *Circuit, q: usize) !void {
+    pub fn h(s: *Circuit, q: u32) !void {
         try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = PI / 2.0,
@@ -145,7 +147,7 @@ pub const Circuit = struct {
         } });
     }
 
-    pub fn x(s: *Circuit, q: usize) !void {
+    pub fn x(s: *Circuit, q: u32) !void {
         try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = PI,
@@ -154,7 +156,7 @@ pub const Circuit = struct {
         } });
     }
 
-    pub fn y(s: *Circuit, q: usize) !void {
+    pub fn y(s: *Circuit, q: u32) !void {
         try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = PI,
@@ -163,7 +165,7 @@ pub const Circuit = struct {
         } });
     }
 
-    pub fn z(s: *Circuit, q: usize) !void {
+    pub fn z(s: *Circuit, q: u32) !void {
         try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = 0.0,
@@ -172,7 +174,7 @@ pub const Circuit = struct {
         } });
     }
 
-    pub fn rx(s: *Circuit, q: usize, theta: f64) !void {
+    pub fn rx(s: *Circuit, q: u32, theta: f64) !void {
         try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = theta,
@@ -181,7 +183,7 @@ pub const Circuit = struct {
         } });
     }
 
-    pub fn ry(s: *Circuit, q: usize, theta: f64) !void {
+    pub fn ry(s: *Circuit, q: u32, theta: f64) !void {
         try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = theta,
@@ -190,7 +192,7 @@ pub const Circuit = struct {
         } });
     }
 
-    pub fn rz(s: *Circuit, q: usize, angle: f64) !void {
+    pub fn rz(s: *Circuit, q: u32, angle: f64) !void {
         try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = 0.0,
@@ -199,7 +201,7 @@ pub const Circuit = struct {
         } });
     }
 
-    pub fn u(s: *Circuit, q: usize, theta: f64, phi: f64, lambda: f64) !void {
+    pub fn u(s: *Circuit, q: u32, theta: f64, phi: f64, lambda: f64) !void {
         try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = theta,
@@ -208,20 +210,20 @@ pub const Circuit = struct {
         } });
     }
 
-    pub fn cz(s: *Circuit, control: usize, target: usize) !void {
+    pub fn cz(s: *Circuit, control: u32, target: u32) !void {
         try s.gates.append(s.gpa, .{ .cz = .{
             .control = control,
             .target = target,
         } });
     }
 
-    pub fn cx(s: *Circuit, control: usize, target: usize) !void {
+    pub fn cx(s: *Circuit, control: u32, target: u32) !void {
         try s.h(target);
         try s.cz(control, target);
         try s.h(target);
     }
 
-    pub fn sx(s: *Circuit, q: usize) !void {
+    pub fn sx(s: *Circuit, q: u32) !void {
         try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,
             .theta = PI / 2.0,
@@ -381,18 +383,18 @@ pub const QasmParser = struct {
         }
     }
 
-    fn parseQubitRef(s: *QasmParser) !usize {
+    fn parseQubitRef(s: *QasmParser) !u32 {
         s.skipWs();
         if (s.pos < s.src.len and s.src[s.pos] == '$') {
             s.pos += 1;
-            return try s.readUint();
+            return @intCast(try s.readUint());
         }
         const name = s.readIdent();
         try s.consume('[');
         const idx = try s.readUint();
         try s.consume(']');
         const base = s.findRegister(name) orelse return error.UnknownRegister;
-        return base + idx;
+        return @intCast(base + idx);
     }
 
     const ExprError = error{ ParseError, InvalidCharacter };

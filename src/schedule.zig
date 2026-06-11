@@ -29,7 +29,7 @@ pub const Point = struct {
     y: i32,
 };
 
-const RamanTarget = struct { qubit: u32, pos: Point };
+pub const RamanTarget = struct { qubit: u32, pos: Point };
 const Raman = struct { angle: f64, phase: f64, targets: []const RamanTarget };
 
 /// One single-qubit rotation request, as handed over by the driver
@@ -51,19 +51,21 @@ pub const OpKind = union(enum) {
     measure: Measure,
 };
 
-pub const Op = struct {
-    t: u32,
-    kind: OpKind,
-};
-
-/// All ops that execute in parallel during one timestep.
-pub const Frame = std.ArrayList(Op);
+/// All ops that execute in parallel during one timestep. The frame's index
+/// in Hardware.frames is the timestep.
+pub const Frame = std.ArrayList(OpKind);
 
 pub const Hardware = struct {
+    // Scratch for schedule construction (work lists, occupancy sets).
     gpa: std.mem.Allocator,
+
+    // Owns everything the schedule hands out: frames, op payloads,
+    // placement, initial. deinit is one arena teardown.
+    arena: std.heap.ArenaAllocator,
+
     cfg: arch.ArchConfig,
 
-    // Ops grouped by timestep; frame index == Op.t.
+    // Ops grouped by timestep; frame index == timestep.
     frames: std.ArrayList(Frame) = .empty,
 
     // Working position of each qubit (index = qubit id); mutated as atoms move.
@@ -103,33 +105,23 @@ pub const Hardware = struct {
         // here instead of indexing past `sites` below.
         if (num_qubits > sites.items.len) return error.TooManyQubits;
 
-        const plc = try gpa.alloc(Atom, num_qubits);
+        var hw = Hardware{ .gpa = gpa, .arena = .init(gpa), .cfg = cfg };
+        errdefer hw.arena.deinit();
+        const a = hw.arena.allocator();
+
+        const plc = try a.alloc(Atom, num_qubits);
         for (plc, 0..) |*p, i| {
             p.* = .{ .id = @intCast(i), .pos = sites.items[i] };
         }
-
-        var hw = Hardware{ .gpa = gpa, .cfg = cfg };
         hw.placement = plc;
-        hw.initial = try gpa.alloc(Point, hw.placement.len);
+        hw.initial = try a.alloc(Point, hw.placement.len);
         for (hw.placement, hw.initial) |atom, *p| p.* = atom.pos;
 
         return hw;
     }
 
     pub fn deinit(s: *Hardware) void {
-        for (s.frames.items) |*frame| {
-            for (frame.items) |op| {
-                switch (op.kind) {
-                    .raman => |r| s.gpa.free(r.targets),
-                    .measure => |m| s.gpa.free(m.qubits),
-                    .rydberg, .load, .move, .store => {},
-                }
-            }
-            frame.deinit(s.gpa);
-        }
-        s.frames.deinit(s.gpa);
-        s.gpa.free(s.placement);
-        s.gpa.free(s.initial);
+        s.arena.deinit();
     }
 
     // ── Timestep management ──────────────────────────────────────────────
@@ -138,8 +130,9 @@ pub const Hardware = struct {
     // frame is empty, so frames are never empty and never collide.
 
     fn emit(s: *Hardware, kind: OpKind) !void {
-        if (s.frames.items.len <= s.t) try s.frames.append(s.gpa, .empty);
-        try s.frames.items[s.t].append(s.gpa, .{ .t = s.t, .kind = kind });
+        const a = s.arena.allocator();
+        if (s.frames.items.len <= s.t) try s.frames.append(a, .empty);
+        try s.frames.items[s.t].append(a, kind);
     }
 
     fn step(s: *Hardware) void {
@@ -439,18 +432,17 @@ pub const Hardware = struct {
     pub fn raman(s: *Hardware, gates: []const RamanGate) !void {
         // FIXME, do we need a list of targets?
         for (gates) |gate| {
-            var targets: std.ArrayList(RamanTarget) = .empty;
-
-            try targets.append(s.gpa, .{
+            const targets = try s.arena.allocator().alloc(RamanTarget, 1);
+            targets[0] = .{
                 .qubit = gate.qubit,
                 .pos = s.placement[gate.qubit].pos,
-            });
+            };
 
             try s.emit(.{
                 .raman = .{
                     .angle = gate.angle,
                     .phase = gate.phase,
-                    .targets = try targets.toOwnedSlice(s.gpa),
+                    .targets = targets,
                 },
             });
         }
@@ -510,7 +502,7 @@ pub const Hardware = struct {
 
     // Read out every qubit at its current position.
     pub fn measure(s: *Hardware, zone: Zone) !void {
-        const qubits = try s.gpa.alloc(u32, s.placement.len);
+        const qubits = try s.arena.allocator().alloc(u32, s.placement.len);
         for (qubits, 0..) |*q, i| q.* = @intCast(i);
         try s.emit(.{ .measure = .{ .zone = zone, .qubits = qubits } });
         s.step();
@@ -529,8 +521,15 @@ pub const Hardware = struct {
 
         if (ord.len == 0) return register;
 
+        // Sites occupied by atoms not (yet) in the register. Unregistered
+        // atoms never move during pickup, so removal on pickup keeps the
+        // set exact.
+        var occupied = std.AutoHashMap(Point, void).init(s.gpa);
+        defer occupied.deinit();
+        for (s.placement) |atom| try occupied.put(atom.pos, {});
+
         // Pick up first atom.
-        try s.pickUpAtom(&register, &s.placement[ord[0]]);
+        try s.pickUpAtom(&register, &occupied, &s.placement[ord[0]]);
         s.step();
         var front = s.placement[ord[0]];
 
@@ -550,7 +549,7 @@ pub const Hardware = struct {
                 while (conflict) {
                     conflict = false;
                     for (register.items) |a| {
-                        if (siteOccupied(register, s.placement, a.pos.x, a.pos.y + d)) {
+                        if (occupied.contains(.{ .x = a.pos.x, .y = a.pos.y + d })) {
                             try s.moveAtom(a, -d, 0);
                             conflict = true;
                         }
@@ -561,7 +560,7 @@ pub const Hardware = struct {
                 s.step();
             }
 
-            try s.pickUpAtom(&register, &s.placement[q]);
+            try s.pickUpAtom(&register, &occupied, &s.placement[q]);
             s.step();
             front = next;
         }
@@ -573,27 +572,21 @@ pub const Hardware = struct {
         return register;
     }
 
-    fn pickUpAtom(s: *Hardware, register: *Register, atom: *Atom) !void {
+    fn pickUpAtom(
+        s: *Hardware,
+        register: *Register,
+        occupied: *std.AutoHashMap(Point, void),
+        atom: *Atom,
+    ) !void {
         try s.loadAtom(atom);
         try register.append(s.gpa, atom);
+        _ = occupied.remove(atom.pos);
     }
 };
 
 /// Indexed by qubit id; null means the atom hasn't been picked up.
 /// Backed by a single allocation sized to the number of sites.
 pub const Register = std.ArrayList(*Atom);
-
-// Returns true if an unregistered atom occupies (x, y).
-fn siteOccupied(register: Register, placement: []const Atom, x: i32, y: i32) bool {
-    outer: for (placement) |atom| {
-        if (atom.pos.x != x or atom.pos.y != y) continue;
-        for (register.items) |r| {
-            if (r.id == atom.id) continue :outer;
-        }
-        return true;
-    }
-    return false;
-}
 
 // Returns a set of x coordinates at `y_target` occupied by atoms whose placement
 // index is NOT in `returning`. Caller must deinit the returned map.

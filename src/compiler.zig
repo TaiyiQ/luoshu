@@ -36,6 +36,7 @@ pub fn compile(gpa: std.mem.Allocator, pipe: *const circuit.Pipeline, cfg: arch.
         if (stage.cz_gates.items.len > 0) {
             var sequence = try routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
             defer sequence.deinit();
+
             if (trace.enabled) sequence.print();
 
             try hw.moveSlmCompute(sequence.fixed);
@@ -48,8 +49,13 @@ pub fn compile(gpa: std.mem.Allocator, pipe: *const circuit.Pipeline, cfg: arch.
         // and by now all atoms are back at their storage positions.
         const pulses = try gpa.alloc(schedule.RamanGate, stage.u_gates.items.len);
         defer gpa.free(pulses);
+
         for (stage.u_gates.items, pulses) |gate, *p| {
-            p.* = .{ .qubit = @intCast(gate.qubit), .angle = gate.theta, .phase = gate.phi };
+            p.* = .{
+                .qubit = gate.qubit,
+                .angle = gate.theta,
+                .phase = gate.phi,
+            };
         }
         try hw.raman(pulses);
     }

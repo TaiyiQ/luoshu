@@ -102,6 +102,15 @@ pub fn build(b: *std.Build) void {
     golden_mod.addImport("verify", verify_mod);
     golden_mod.addImport("testutil", testutil_mod);
 
+    // draw's raylib-free precompute, split out so it is unit-testable.
+    const viewmodel_mod = b.addModule("viewmodel", .{
+        .root_source_file = b.path("src/viewmodel.zig"),
+        .target = target,
+    });
+    viewmodel_mod.addImport("schedule", schedule_mod);
+    viewmodel_mod.addImport("arch", arch_mod);
+    viewmodel_mod.addImport("testutil", testutil_mod);
+
     const draw_mod = b.addModule("draw", .{
         .root_source_file = b.path("src/draw.zig"),
         .target = target,
@@ -109,6 +118,7 @@ pub fn build(b: *std.Build) void {
     draw_mod.addImport("schedule", schedule_mod);
     draw_mod.addImport("arch", arch_mod);
     draw_mod.addImport("circuit", circuit_mod);
+    draw_mod.addImport("viewmodel", viewmodel_mod);
     exe.root_module.addImport("draw", draw_mod);
 
     // --- External dependecies.
@@ -141,7 +151,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit and golden tests");
     const test_mods = [_]*std.Build.Module{
-        arch_mod, trace_mod, circuit_mod, schedule_mod, route_mod, compiler_mod, serialize_mod, verify_mod, golden_mod,
+        arch_mod, trace_mod, circuit_mod, schedule_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
     };
     for (test_mods) |mod| {
         const t = b.addTest(.{ .root_module = mod });

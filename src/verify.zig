@@ -5,9 +5,8 @@
 //!
 //!  - trap-state machine: load only from SLM, move/store only from AOD,
 //!    every atom back in an SLM trap at the end of the schedule;
-//!  - op coherence: frame stamps match the frame index, move sources match
-//!    the replayed positions, moves are axis-aligned (Manhattan), raman
-//!    targets match the replayed positions;
+//!  - op coherence: move sources match the replayed positions, moves are
+//!    axis-aligned (Manhattan), raman targets match the replayed positions;
 //!  - path legality: no move sweeps through a trap site that is occupied
 //!    for the whole frame (ops within a frame execute in parallel, so an
 //!    atom loaded in the same frame lifts with the sweep and is no obstacle);
@@ -64,11 +63,7 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
 
         // Replay ops in emission order: trap-state machine and op coherence.
         for (frame.items) |op| {
-            if (op.t != t) {
-                vfail(t, "op stamped with t={d}", .{op.t});
-                return error.FrameIndexMismatch;
-            }
-            switch (op.kind) {
+            switch (op) {
                 .load => |ld| {
                     const q = try qubitIndex(t, ld.qubit, n);
                     if (trap[q] != .slm) {
@@ -217,7 +212,7 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
 
         // Zone checks at settled positions.
         for (frame.items) |op| {
-            switch (op.kind) {
+            switch (op) {
                 .rydberg => |r| try checkBlockade(t, hw.cfg, pos, r.zone),
                 .measure => |m| {
                     const bounds = zoneBounds(hw.cfg, m.zone);
@@ -357,17 +352,16 @@ fn testCfg() arch.ArchConfig {
 }
 
 fn makeHw(gpa: std.mem.Allocator, initial: []const Point) !schedule.Hardware {
-    var hw = schedule.Hardware{ .gpa = gpa, .cfg = testCfg() };
-    hw.initial = try gpa.dupe(Point, initial);
+    var hw = schedule.Hardware{ .gpa = gpa, .arena = .init(gpa), .cfg = testCfg() };
+    hw.initial = try hw.arena.allocator().dupe(Point, initial);
     return hw;
 }
 
 fn addFrame(hw: *schedule.Hardware, kinds: []const schedule.OpKind) !void {
+    const a = hw.arena.allocator();
     var frame: schedule.Frame = .empty;
-    errdefer frame.deinit(hw.gpa);
-    const t: u32 = @intCast(hw.frames.items.len);
-    for (kinds) |kind| try frame.append(hw.gpa, .{ .t = t, .kind = kind });
-    try hw.frames.append(hw.gpa, frame);
+    try frame.appendSlice(a, kinds);
+    try hw.frames.append(a, frame);
 }
 
 fn pt(x: i32, y: i32) Point {
@@ -597,7 +591,7 @@ test "catches a measurement outside its zone" {
     var hw = try makeHw(gpa, &.{pt(0, 0)});
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{ .measure = .{ .zone = .readout, .qubits = try gpa.dupe(u32, &measured) } }});
+    try addFrame(&hw, &.{.{ .measure = .{ .zone = .readout, .qubits = try hw.arena.allocator().dupe(u32, &measured) } }});
 
     quiet = true;
     defer quiet = false;

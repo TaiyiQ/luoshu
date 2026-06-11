@@ -200,11 +200,24 @@ reads the routing code.
 `arena.deinit()`. Removes a whole class of leak bugs as op payloads grow
 (and they will: rydberg pair lists, measure results).
 
+> **Status (2026-06-11):** done. `Hardware` carries an arena that owns
+> frames, op payloads, `placement`, and `initial`; `deinit` is one
+> `arena.deinit()`. `gpa` stays for construction scratch (work lists,
+> occupancy sets), which is still freed eagerly.
+
 ### 11. Unify qubit id types
 
 `usize` in route/circuit, `u32` in ops, `@intCast` sprinkled at every
 boundary. Pick `u32` (or a `Qubit = u32` newtype) end-to-end; the casts
 disappear and the signatures document themselves.
+
+> **Status (2026-06-11):** done for the qubit-id domain: `circuit.U` /
+> `circuit.Cz` and the gate builder methods are `u32`, matching the ops —
+> the boundary casts in the driver are gone and the remaining `@intCast`s
+> sit at the QASM parse boundary and loop-index → id conversions. Route's
+> graph nodes and `Sequence` slot tables deliberately stay `usize`: they are
+> array indices throughout, `u32` ids coerce into them losslessly where the
+> layers meet, and converting them would add casts rather than remove any.
 
 ### 12. Split `draw.zig`'s view-model from its render loop
 
@@ -213,6 +226,12 @@ disappear and the signatures document themselves.
 the precompute into a `ViewModel.init(gpa, hw)` — it becomes unit-testable
 (e.g., "loaded state is monotone between load/store") and the render loop
 shrinks to pure drawing.
+
+> **Status (2026-06-11):** done. `viewmodel.zig` (no raylib dependency)
+> computes per-frame positions, loaded flags, `num_qubits`, and the op
+> `Summary` in one schedule walk; it runs in `zig build test` with exactly
+> the suggested tests. `draw.physical` consumes the view-model and is pure
+> rendering.
 
 ### 13. CLI arguments
 
@@ -238,6 +257,14 @@ golden tests in §6 trivial to script.
 - `pickup`'s `siteOccupied` is O(atoms) per check inside a loop — fine today,
   but an occupancy hash set per frame falls out of the verifier work (§2)
   for free.
+
+> **Status (2026-06-11):** all done. The `rl` import went with §7. `Op` is
+> gone entirely — a `Frame` is a list of `OpKind` and the frame index is the
+> timestep; serializers print `t` from the index (goldens unchanged) and the
+> verifier dropped its now-meaningless stamp check. `pickup` keeps a
+> `Point`-keyed occupancy set (atoms leave it when picked up; unpicked atoms
+> never move during pickup, so the set stays exact) instead of scanning the
+> placement per probe.
 
 ---
 
