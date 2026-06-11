@@ -1,10 +1,10 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
-// Debug tracing. Excluded from test builds: the build runner displays any
-// stderr a test step produces (decorated with a misleading "failed command:"
-// line), so test binaries must stay silent unless something actually fails.
-const enabled = builtin.mode == .Debug and !builtin.is_test;
+// Pass tracing, off by default so the compiler is silent as a library and
+// in tests (the build runner displays any stderr a test step produces,
+// decorated with a misleading "failed command:" line). The driver enables
+// it via trace.enabled (the CLI's -v flag).
+const trace = @import("trace");
 
 const MIN = -1; // -1 to help k in leastAdmissible start at 0.
 
@@ -252,7 +252,7 @@ fn maxIndependentSet(allocator: std.mem.Allocator, g: Graph) !Aod {
         if (set[v]) try nodes.append(allocator, v);
     }
 
-    if (enabled) std.debug.print(">> AOD ordered nodes: {any}\n", .{nodes.items});
+    trace.print(">> AOD ordered nodes: {any}\n", .{nodes.items});
 
     return .{ .set = set, .nodes = nodes };
 }
@@ -635,7 +635,7 @@ fn placeSlmWithResting(
     }
     // trailing nulls already null from memset
 
-    if (enabled) std.debug.print("SLM Slots: {any}\n", .{slots});
+    trace.print("SLM Slots: {any}\n", .{slots});
     return slots;
 }
 
@@ -677,11 +677,11 @@ fn computeRestingPositions(
             }
         }
 
-        if (enabled) {
-            std.debug.print("ACTIVE AODs: t({})\n", .{t});
+        if (trace.enabled) {
+            trace.print("ACTIVE AODs: t({})\n", .{t});
             var it = active.iterator();
             while (it.next()) |entry| {
-                std.debug.print("  {} => {}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                trace.print("  {} => {}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
             }
         }
 
@@ -712,7 +712,7 @@ fn computeRestingPositions(
                 const key = Rest{ .left = l_aod, .right = r_aod };
                 const cnt = if (t_resting.get(key)) |c| c + 1 else 1;
                 try t_resting.put(key, cnt);
-                if (enabled) std.debug.print("t:{}, left:{any} resting_aod:{} right:{any} count:{}\n", .{ t, l_aod, v, r_aod, cnt });
+                trace.print("t:{}, left:{any} resting_aod:{} right:{any} count:{}\n", .{ t, l_aod, v, r_aod, cnt });
             }
         }
 
@@ -769,12 +769,12 @@ fn computeRestingPositions(
         }
 
         // Add remaining new requirements.
-        if (enabled) std.debug.print(">> t_resting:\n", .{});
+        trace.print(">> t_resting:\n", .{});
         var t_it = t_resting.iterator();
         while (t_it.next()) |entry| {
             const p = entry.key_ptr.*;
             const c = entry.value_ptr.*;
-            if (enabled) std.debug.print("  {}:{}\n", .{ p, c });
+            trace.print("  {}:{}\n", .{ p, c });
             const nc = if (new_resting.get(p)) |v| v + c else c;
             try new_resting.put(p, nc);
         }
@@ -792,7 +792,7 @@ fn computeRestingPositions(
         }
     }
 
-    if (enabled) std.debug.print(">> POSITIONS: {any}\n", .{positions});
+    trace.print(">> POSITIONS: {any}\n", .{positions});
 
     std.mem.sort(usize, positions.items, {}, std.sort.asc(usize));
 
@@ -819,11 +819,11 @@ pub fn compile(allocator: std.mem.Allocator, g: *Graph) !Sequence {
 
     const slm_order = try topoSort(allocator, dep_graph, aod.set, g.*);
     defer allocator.free(slm_order);
-    if (enabled) std.debug.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
+    trace.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
 
     const resting_xs = try computeRestingPositions(allocator, g, aod, slm_order);
     defer allocator.free(resting_xs);
-    if (enabled) std.debug.print("resting_xs: {any}\n", .{resting_xs});
+    trace.print("resting_xs: {any}\n", .{resting_xs});
 
     const fixed = try placeSlmWithResting(arena_alloc, slm_order, resting_xs, aod.nodes.items.len);
     const moveable = try logicalSchedule(arena_alloc, g, aod, fixed);
@@ -997,7 +997,7 @@ pub fn buildQftGraph(allocator: std.mem.Allocator) !Graph {
 }
 
 pub fn edgeColors(g: Graph) void {
-    if (comptime !enabled) return;
+    if (!trace.enabled) return;
     std.debug.print(">> Edge Colors\n", .{});
 
     for (0..g.n) |x| {
@@ -1022,7 +1022,7 @@ pub fn edgeColors(g: Graph) void {
 }
 
 pub fn aodTargets(g: *Graph, aod_order: []const usize, aod_targets: [][]usize) void {
-    if (comptime !enabled) return;
+    if (!trace.enabled) return;
     std.debug.print(">> AOD Target Positions\n", .{});
 
     for (1..aod_targets.len) |c| {
@@ -1061,7 +1061,7 @@ pub fn qubitPositions(
     fixed_slm_slots: []const usize,
     aod_slot: []const usize,
 ) void {
-    if (comptime !enabled) return;
+    if (!trace.enabled) return;
     std.debug.print("\n=== Resting Positions Debug — Time Step t = {} (SLMs FIXED) ===\n", .{time_step});
     std.debug.print("AOD order : ", .{});
     for (aod_order) |id| std.debug.print("AOD{d} ", .{id});

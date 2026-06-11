@@ -170,6 +170,15 @@ library code should be silent by default.
 - This also unblocks using the compiler as a library / in tests without
   stderr noise.
 
+> **Status (2026-06-11):** done. `trace.zig` is the one tracing facility: a
+> runtime `trace.enabled` flag (set by the driver from `-v`) plus
+> `trace.print`. All of route's pass tracing and `compiler.compile`'s
+> `sequence.print()` go through it, replacing the compile-mode
+> (`builtin.mode == .Debug and !builtin.is_test`) gating — so a Debug build
+> of the CLI is now silent by default too. Error diagnostics that accompany
+> a returned error (verifier `vfail`, config `cfail`, snapshot mismatches,
+> route's `NoRestingSlotAvailable`) intentionally stay on `std.debug.print`.
+
 ### 9. Name the IRs and unify the vocabulary
 
 The same concept currently has three names: `Sequence.fixed` /
@@ -212,6 +221,13 @@ commented alternates — the recent path breakage came directly from this.
 `gatecomp <circuit.qasm> [--arch <file>] [--emit-json <path>] [--draw]`
 removes the edit-recompile loop and the comment graveyard, and makes the
 golden tests in §6 trivial to script.
+
+> **Status (2026-06-11):** done. `gatecomp <circuit.qasm> [--arch <file>]
+> [--emit-json <path>] [--draw] [-v|--verbose] [-h|--help]` — drawing is now
+> opt-in, JSON emission goes wherever you point it, and `-v` flips the §8
+> trace flag. Bad usage and unloadable files exit 1 with a one-line
+> diagnostic instead of an error trace. `just run [circuit]` keeps the old
+> draw-the-example behavior.
 
 ### 14. Misc
 

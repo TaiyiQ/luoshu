@@ -2,12 +2,23 @@
 
 ## Usage
 
-- Run with main example
+```
+gatecomp <circuit.qasm> [options]
+
+options:
+  --arch <file>       architecture TOML (default: example/arch.toml)
+  --emit-json <path>  write the hardware schedule as JSON
+  --draw              open the schedule visualization
+  -v, --verbose       trace the compiler passes to stderr
+  -h, --help          show this help
+```
+
+- Compile, visualize, and trace the main example circuit:
 ```shell
 > just run
 ```
 
-- View generate schedule
+- Compile a circuit to a hardware schedule JSON:
 ```shell
-> cat /tmp/schedule.json
+> zig build run -- ../qasm/mvp.qasm --emit-json schedule.json
 ```

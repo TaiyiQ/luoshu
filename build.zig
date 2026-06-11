@@ -34,10 +34,18 @@ pub fn build(b: *std.Build) void {
     });
     schedule_mod.addImport("arch", arch_mod);
 
+    // Pass tracing, silent unless the driver enables it (-v).
+    const trace_mod = b.addModule("trace", .{
+        .root_source_file = b.path("src/trace.zig"),
+        .target = target,
+    });
+    exe.root_module.addImport("trace", trace_mod);
+
     const route_mod = b.addModule("route", .{
         .root_source_file = b.path("src/route.zig"),
         .target = target,
     });
+    route_mod.addImport("trace", trace_mod);
 
     const serialize_mod = b.addModule("serialize", .{
         .root_source_file = b.path("src/serialize.zig"),
@@ -55,6 +63,7 @@ pub fn build(b: *std.Build) void {
     compiler_mod.addImport("circuit", circuit_mod);
     compiler_mod.addImport("route", route_mod);
     compiler_mod.addImport("schedule", schedule_mod);
+    compiler_mod.addImport("trace", trace_mod);
     exe.root_module.addImport("compiler", compiler_mod);
 
     const verify_mod = b.addModule("verify", .{
@@ -72,6 +81,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
     arch_mod.addImport("testutil", testutil_mod);
+    trace_mod.addImport("testutil", testutil_mod);
     circuit_mod.addImport("testutil", testutil_mod);
     schedule_mod.addImport("testutil", testutil_mod);
     route_mod.addImport("testutil", testutil_mod);
@@ -131,7 +141,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit and golden tests");
     const test_mods = [_]*std.Build.Module{
-        arch_mod, circuit_mod, schedule_mod, route_mod, compiler_mod, serialize_mod, verify_mod, golden_mod,
+        arch_mod, trace_mod, circuit_mod, schedule_mod, route_mod, compiler_mod, serialize_mod, verify_mod, golden_mod,
     };
     for (test_mods) |mod| {
         const t = b.addTest(.{ .root_module = mod });

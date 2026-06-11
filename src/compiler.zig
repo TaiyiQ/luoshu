@@ -8,11 +8,11 @@
 //!     arch <- schedule <- compiler -> route
 //!                                  -> circuit
 const std = @import("std");
-const builtin = @import("builtin");
 const arch = @import("arch");
 const circuit = @import("circuit");
 const route = @import("route");
 const schedule = @import("schedule");
+const trace = @import("trace");
 
 /// Route one stage's CZ gates: build the interaction graph and compile it
 /// into a logical Sequence. Caller owns the result.
@@ -36,9 +36,7 @@ pub fn compile(gpa: std.mem.Allocator, pipe: *const circuit.Pipeline, cfg: arch.
         if (stage.cz_gates.items.len > 0) {
             var sequence = try routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
             defer sequence.deinit();
-            // Silent in tests: any test-step stderr gets displayed by the
-            // build runner under a misleading "failed command:" banner.
-            if (builtin.mode == .Debug and !builtin.is_test) sequence.print();
+            if (trace.enabled) sequence.print();
 
             try hw.moveSlmCompute(sequence.fixed);
             try hw.moveAodCompute(sequence.moveable);
