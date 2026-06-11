@@ -5,8 +5,7 @@
 //! only file that sees the whole pipeline; circuit, route, and schedule
 //! do not import each other:
 //!
-//!     arch <- schedule <- compiler -> route
-//!                                  -> circuit
+//!     arch <- schedule <- compiler -> route -> circuit
 const std = @import("std");
 const arch = @import("arch");
 const circuit = @import("circuit");
@@ -22,7 +21,7 @@ pub fn routeStage(gpa: std.mem.Allocator, cz_gates: []const circuit.Cz, num_qubi
 
     for (cz_gates) |gate| try g.addEdge(gate.control, gate.target);
 
-    return route.compile(gpa, &g);
+    return route.computeSequence(gpa, &g);
 }
 
 /// Compile a staged circuit into a hardware schedule.
@@ -31,8 +30,7 @@ pub fn compile(gpa: std.mem.Allocator, pipe: *const circuit.Pipeline, cfg: arch.
     errdefer hw.deinit();
 
     for (pipe.stages.items) |*stage| {
-        // A stage with no CZ gates has nothing to route (route.compile
-        // rejects an edgeless graph), so it is pure Raman pulses.
+        // A stage with no CZ gates has nothing to route, so it is pure Raman pulses.
         if (stage.cz_gates.items.len > 0) {
             var sequence = try routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
             defer sequence.deinit();
@@ -45,7 +43,7 @@ pub fn compile(gpa: std.mem.Allocator, pipe: *const circuit.Pipeline, cfg: arch.
             try hw.moveSlmStorage(sequence.fixed);
         }
 
-        // U gates fire last: within a stage CZs precede the U barrier,
+        // U gates fire last: within a stage, CZs precede the U barrier,
         // and by now all atoms are back at their storage positions.
         const pulses = try gpa.alloc(schedule.RamanGate, stage.u_gates.items.len);
         defer gpa.free(pulses);
@@ -60,8 +58,8 @@ pub fn compile(gpa: std.mem.Allocator, pipe: *const circuit.Pipeline, cfg: arch.
         try hw.raman(pulses);
     }
 
-    // Terminal readout: shuttle all qubits to the readout zone and image.
     try hw.moveReadout();
+
     try hw.measure(.readout);
 
     return hw;

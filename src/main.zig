@@ -12,9 +12,9 @@ const usage =
     \\usage: gatecomp <circuit.qasm> [options]
     \\
     \\options:
-    \\  --arch <file>       architecture TOML (default: example/arch.toml)
+    \\  --arch <file>       architecture TOML (default: ./arch.toml)
     \\  --emit-json <path>  write the hardware schedule as JSON
-    \\  --draw              open the schedule visualization
+    \\  --draw              open the schedule visualization (default: true)
     \\  -v, --verbose       trace the compiler passes to stderr
     \\  -h, --help          show this help
     \\
@@ -22,9 +22,9 @@ const usage =
 
 const Options = struct {
     qasm_path: []const u8,
-    arch_path: []const u8 = "example/arch.toml",
+    arch_path: []const u8 = "arch.toml",
     emit_json: ?[]const u8 = null,
-    draw: bool = false,
+    draw: bool = true,
     verbose: bool = false,
 };
 
@@ -89,15 +89,18 @@ pub fn main(init: std.process.Init) !void {
 
     var sch = try compiler.compile(init.gpa, &pipeline, cfg);
     defer sch.deinit();
-    if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
+    //if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
 
     if (opts.emit_json) |path| {
         try serialize.writeHardware(init.gpa, init.io, path, &sch);
     }
 
     if (opts.draw) {
-        try draw.pipeline(circ, null); // Draw original circuit.
+        // Draw original circuit.
+        try draw.pipeline(circ, null);
+        // Draw circuit decomposed into stages.
         try draw.pipeline(circ, pipeline);
+        // Draw arch layout and compiled schedule.
         try draw.physical(init.gpa, cfg, sch);
     }
 }

@@ -279,11 +279,11 @@ fn cfail(comptime fmt: []const u8, args: anytype) void {
     std.debug.print("arch config: " ++ fmt ++ "\n", args);
 }
 
-/// Structural legality of a converted config. Everything the scheduler
-/// assumes without checking is rejected here instead.
+/// Structural legality of a converted config.
+/// Everything the scheduler assumes without checking is rejected here.
 pub fn validate(cfg: ArchConfig) ConfigError!void {
     if (cfg.aod.max_num_row == 0 or cfg.aod.max_num_col == 0 or cfg.aod.min_sep_nm == 0) {
-        cfail("aod limits must be positive (rows={d} cols={d} min_sep={d}nm)", .{
+        cfail("aod limits must be > 0 (rows={d} cols={d} min_sep={d}nm)", .{
             cfg.aod.max_num_row, cfg.aod.max_num_col, cfg.aod.min_sep_nm,
         });
         return error.InvalidAodLimits;

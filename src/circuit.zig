@@ -89,7 +89,6 @@ pub const Pipeline = struct {
 ///
 /// Caller owns the result and must free it with `freeStages`.
 pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
-    //    var pipe: Pipeline = .{ .gpa = gpa };
     var pipe = try Pipeline.init(gpa, c.n);
     errdefer pipe.deinit();
 
@@ -242,8 +241,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Circuit {
     var fr = file.reader(io, &read_buf);
     const reader = &fr.interface;
 
-    // Reads everything to EOF into allocator-owned memory. No truncation,
-    // no "must fill exactly N bytes" error.
+    // Reads everything to EOF into allocator-owned memory.
     const src = try reader.allocRemaining(gpa, .unlimited);
     defer gpa.free(src);
 

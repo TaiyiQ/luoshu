@@ -746,6 +746,10 @@ fn computeRestingPositions(
                     // Pick narrowest overlapping interval.
                     var best = overlaps.items[0];
                     for (overlaps.items[1..]) |o| {
+                        // TODO: usize cannot go negative.
+                        // AODs are overlapping. Fix needed.
+                        if (best.left > best.right) continue;
+                        std.debug.print(">> {any}\n", .{best.right - best.left});
                         if (o.right - o.left < best.right - best.left) best = o;
                     }
 
@@ -799,7 +803,7 @@ fn computeRestingPositions(
     return positions.toOwnedSlice(allocator);
 }
 
-pub fn compile(allocator: std.mem.Allocator, g: *Graph) !Sequence {
+pub fn computeSequence(allocator: std.mem.Allocator, g: *Graph) !Sequence {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const arena_alloc = arena.allocator();

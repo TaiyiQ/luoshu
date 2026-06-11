@@ -504,7 +504,12 @@ pub const Hardware = struct {
     pub fn measure(s: *Hardware, zone: Zone) !void {
         const qubits = try s.arena.allocator().alloc(u32, s.placement.len);
         for (qubits, 0..) |*q, i| q.* = @intCast(i);
-        try s.emit(.{ .measure = .{ .zone = zone, .qubits = qubits } });
+        try s.emit(.{
+            .measure = .{
+                .zone = zone,
+                .qubits = qubits,
+            },
+        });
         s.step();
     }
 
