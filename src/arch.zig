@@ -31,6 +31,7 @@ const RawReadoutZone = struct {
     zone_id: u32,
     offset_um: [2]f64,
     dimension_um: [2]f64,
+    slm: RawSlm,
 };
 
 const RawAod = struct {
@@ -149,6 +150,11 @@ pub const ReadoutZone = struct {
     zone_id: u32,
     offset_nm: [2]i32,
     dimension_nm: [2]u32,
+    slm: Slm,
+
+    pub fn grid(z: ReadoutZone) Grid {
+        return slmGrid(z.offset_nm, z.slm);
+    }
 };
 
 pub const Constraints = struct {
@@ -214,8 +220,11 @@ pub const ArchConfig = struct {
                 slm.offset_nm[0], slm.offset_nm[1],
             });
         }
-        std.debug.print("  Readout:      zone={d}  offset=({d},{d})nm\n", .{
+        std.debug.print("  Readout:      zone={d}  slm={d}  {d}x{d} traps  offset=({d},{d})nm\n", .{
             s.readout_zone.zone_id,
+            s.readout_zone.slm.slm_id,
+            s.readout_zone.slm.num_row,
+            s.readout_zone.slm.num_col,
             s.readout_zone.offset_nm[0],
             s.readout_zone.offset_nm[1],
         });
@@ -299,6 +308,7 @@ fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
             .zone_id = raw.readout_zone.zone_id,
             .offset_nm = .{ umToNmSigned(raw.readout_zone.offset_um[0]), umToNmSigned(raw.readout_zone.offset_um[1]) },
             .dimension_nm = .{ umToNm(raw.readout_zone.dimension_um[0]), umToNm(raw.readout_zone.dimension_um[1]) },
+            .slm = convertSlm(raw.readout_zone.slm),
         },
         .constraints = .{
             .db_nm = umToNm(raw.constraints.db_um),

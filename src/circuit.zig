@@ -95,6 +95,10 @@ pub const Pipeline = struct {
             try hw.raman(stage.u_gates.items);
         }
 
+        // Terminal readout: shuttle all qubits to the readout zone and image.
+        try hw.moveReadout();
+        try hw.measure(.readout);
+
         return hw;
     }
 };

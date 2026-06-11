@@ -398,8 +398,10 @@ pub const Hardware = struct {
             var moved_q: std.ArrayList(usize) = .empty;
             defer moved_q.deinit(s.gpa);
 
+            var has_qubit = false;
             for (row, 0..) |maybe_q, i| {
                 if (maybe_q) |q| {
+                    has_qubit = true;
                     const a = &s.placement[q];
                     const dest_x = grid.x(i);
                     if (a.pos.x == dest_x) continue;
@@ -413,6 +415,14 @@ pub const Hardware = struct {
 
             for (moved_q.items) |q| try s.storeAtom(&s.placement[q]);
             s.step();
+
+            // This timeframe's pairs now sit within blockade range of their
+            // partners: fire the entangling pulse for this color class.
+            // Conflicting CZs live in different rows, so one pulse per row.
+            if (has_qubit) {
+                try s.emit(.{ .rydberg = .{ .zone = .compute } });
+                s.step();
+            }
         }
     }
 
@@ -436,6 +446,65 @@ pub const Hardware = struct {
                 },
             });
         }
+        s.step();
+    }
+
+    // Shuttle every atom from the bottom storage row to the readout zone:
+    // fan out across the compute zone's trap-free inter-column lanes,
+    // descend through the zone, then park at sequential readout columns.
+    pub fn moveReadout(s: *Hardware) !void {
+        if (s.placement.len == 0) return;
+
+        // Sort by current x so sequential column assignment preserves the
+        // AOD's left-to-right order.
+        const order = try s.gpa.alloc(usize, s.placement.len);
+        defer s.gpa.free(order);
+        for (order, 0..) |*q, i| q.* = i;
+        std.sort.block(usize, order, s.placement, struct {
+            fn lt(p: []const Atom, a: usize, b: usize) bool {
+                return p[a].pos.x < p[b].pos.x;
+            }
+        }.lt);
+
+        for (order) |q| try s.loadAtom(&s.placement[q]);
+        s.step();
+
+        // Step 1: fan out, one inter-column lane per atom. Lanes sit at
+        // half-sep right of each compute column, so the descent crosses
+        // no trap sites.
+        const cgrid = s.cfg.compute_zone.grid(0);
+        const d_c = cgrid.halfSepX();
+        for (order, 0..) |q, i| {
+            const a = &s.placement[q];
+            const lane_x = cgrid.x(i) + d_c;
+            if (a.pos.x != lane_x) try s.moveAtom(a, lane_x - a.pos.x, 0);
+        }
+        s.step();
+
+        // Step 2: descend through the compute zone to the readout row.
+        const rgrid = s.cfg.readout_zone.grid();
+        const y_readout = rgrid.y(0);
+        for (order) |q| {
+            const a = &s.placement[q];
+            if (a.pos.y != y_readout) try s.moveAtom(a, 0, y_readout - a.pos.y);
+        }
+        s.step();
+
+        // Step 3: slide to sequential readout columns and deposit.
+        for (order, 0..) |q, i| {
+            const a = &s.placement[q];
+            const dest_x = rgrid.x(i);
+            if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
+            try s.storeAtom(a);
+        }
+        s.step();
+    }
+
+    // Read out every qubit at its current position.
+    pub fn measure(s: *Hardware, zone: Zone) !void {
+        const qubits = try s.gpa.alloc(u32, s.placement.len);
+        for (qubits, 0..) |*q, i| q.* = @intCast(i);
+        try s.emit(.{ .measure = .{ .zone = zone, .qubits = qubits } });
         s.step();
     }
 

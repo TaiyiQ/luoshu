@@ -61,12 +61,19 @@ sep_um = [10.0, 12.0]
 offset_um = [0.0, 2.0]
 
 # ── Readout zone ───────────────────────────────────────────────
-# Where atoms are imaged. No SLM traps needed for MVP —
-# compiler just needs to know where to shuttle atoms for measurement.
+# Where atoms are imaged. One SLM row of measurement traps — the
+# compiler shuttles atoms here and parks them for imaging.
 [readout_zone]
 zone_id = 2
-offset_um = [0.0, 390.0]
-dimension_um = [240.0, 30.0]
+offset_um = [0.0, 150.0]
+dimension_um = [240.0, 10.0]
+
+[readout_zone.slm]
+slm_id = 3
+num_row = 1
+num_col = 20
+sep_um = [4.0, 4.0]    # imaging spot spacing; >= aod.min_sep_um
+offset_um = [0.0, 0.0] # relative to readout_zone.offset_um
 
 # ── Physical constraints ───────────────────────────────────────
 # Compiler uses these to validate shuttles and estimate timing.

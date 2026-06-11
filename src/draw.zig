@@ -39,6 +39,20 @@ pub fn allSlmSites(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig) ![]const
         };
     }
 
+    {
+        const slm = layout.readout_zone.slm;
+        const x0 = layout.readout_zone.offset_nm[0] + slm.offset_nm[0];
+        const y0 = layout.readout_zone.offset_nm[1] + slm.offset_nm[1];
+        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
+        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
+        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
+            try sites.append(gpa, .{
+                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
+                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
+            });
+        };
+    }
+
     return try sites.toOwnedSlice(gpa);
 }
 
@@ -60,6 +74,7 @@ const palette = struct {
     pub const divider = rl.Color{ .r = 65, .g = 69, .b = 89, .a = 255 };
     pub const zone_storage = rl.Color{ .r = 56, .g = 62, .b = 82, .a = 80 };
     pub const zone_compute = rl.Color{ .r = 46, .g = 70, .b = 66, .a = 90 };
+    pub const zone_readout = rl.Color{ .r = 72, .g = 56, .b = 80, .a = 90 };
     pub const zone_compute_active = rl.Color{ .r = 65, .g = 130, .b = 120, .a = 120 };
     pub const zone_border = rl.Color{ .r = 115, .g = 121, .b = 148, .a = 100 };
     pub const qload_fill = rl.Color{ .r = 147, .g = 154, .b = 183, .a = 255 };
@@ -839,6 +854,9 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
         compute_rect.y1 = @max(compute_rect.y1, r.y1);
     }
 
+    const rz = layout.readout_zone;
+    const readout_rect = slmZoneRect(rz.offset_nm[0], rz.offset_nm[1], rz.slm);
+
     rl.setConfigFlags(.{
         .fullscreen_mode = false,
         .window_resizable = true,
@@ -1007,7 +1025,20 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
                 },
                 .load => |ld| active[ld.qubit] = true,
                 .store => |st| active[st.qubit] = true,
-                .rydberg => {},
+                // A rydberg pulse illuminates a whole zone: every atom
+                // currently inside it participates.
+                .rydberg => |r| {
+                    const zr = switch (r.zone) {
+                        .storage => storage_rect,
+                        .compute => compute_rect,
+                        .readout => readout_rect,
+                    };
+                    for (frame_positions[frame], 0..) |p, q| {
+                        if (p.x >= zr.x0 and p.x <= zr.x1 and
+                            p.y >= zr.y0 and p.y <= zr.y1)
+                            active[q] = true;
+                    }
+                },
             }
         }
 
@@ -1015,6 +1046,7 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
 
         drawZone(camera, storage_rect, palette.zone_storage);
         drawZone(camera, compute_rect, palette.zone_compute);
+        drawZone(camera, readout_rect, palette.zone_readout);
 
         @memcpy(draw_positions, frame_positions[frame]);
 
