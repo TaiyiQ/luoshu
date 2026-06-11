@@ -14,6 +14,9 @@
 //!  - site exclusivity: no two atoms on the same site at the end of a frame;
 //!  - AOD rigidity: two atoms held in the AOD never invert their relative
 //!    x or y order within a frame (AOD rows/columns cannot cross);
+//!  - AOD hardware limits: held atoms never occupy more rows/columns than
+//!    `cfg.aod` allows, and no two AOD rows or columns sit closer than
+//!    `min_sep_nm`;
 //!  - blockade: during a rydberg pulse, no atom in the illuminated zone has
 //!    more than one neighbour within the blockade radius `db_nm`;
 //!  - measurement: measured qubits lie inside the named zone.
@@ -174,6 +177,41 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
                     });
                     return error.AodOrderInversion;
                 }
+            }
+        }
+
+        // AOD grid constraints: held atoms sit on row/column intersections,
+        // so distinct x values are AOD columns and distinct y values AOD
+        // rows. Hardware limits both their count and their pitch.
+        {
+            const aod = hw.cfg.aod;
+            var cols: usize = 0;
+            var rows: usize = 0;
+            for (0..n) |a| {
+                if (trap[a] != .aod) continue;
+                var new_col = true;
+                var new_row = true;
+                for (0..a) |b| {
+                    if (trap[b] != .aod) continue;
+                    if (pos[b].x == pos[a].x) new_col = false;
+                    if (pos[b].y == pos[a].y) new_row = false;
+                    const dx = @abs(@as(i64, pos[a].x) - pos[b].x);
+                    const dy = @abs(@as(i64, pos[a].y) - pos[b].y);
+                    if ((dx != 0 and dx < aod.min_sep_nm) or (dy != 0 and dy < aod.min_sep_nm)) {
+                        vfail(t, "AOD qubits {d} and {d} at ({d},{d})/({d},{d}) closer than min_sep={d}nm", .{
+                            b, a, pos[b].x, pos[b].y, pos[a].x, pos[a].y, aod.min_sep_nm,
+                        });
+                        return error.AodSeparationViolation;
+                    }
+                }
+                if (new_col) cols += 1;
+                if (new_row) rows += 1;
+            }
+            if (cols > aod.max_num_col or rows > aod.max_num_row) {
+                vfail(t, "AOD holds {d} columns x {d} rows, hardware limit is {d}x{d}", .{
+                    cols, rows, aod.max_num_col, aod.max_num_row,
+                });
+                return error.AodCapacityExceeded;
             }
         }
 
@@ -458,6 +496,62 @@ test "catches an AOD order inversion" {
     quiet = true;
     defer quiet = false;
     try std.testing.expectError(error.AodOrderInversion, verify(gpa, &hw));
+}
+
+test "catches AOD columns closer than the minimum separation" {
+    const gpa = std.testing.allocator;
+    var hw = try makeHw(gpa, &.{ pt(0, 0), pt(1000, 0) });
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{
+        .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
+        .{ .load = .{ .qubit = 1, .position = pt(1000, 0) } },
+    });
+    // 50nm between the two AOD columns; testCfg's min_sep_nm is 100.
+    try addFrame(&hw, &.{.{ .move = .{ .qubit = 1, .src = pt(1000, 0), .dest = pt(50, 0) } }});
+
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(error.AodSeparationViolation, verify(gpa, &hw));
+}
+
+test "catches more AOD columns than the hardware has" {
+    const gpa = std.testing.allocator;
+    // Five distinct columns; testCfg's AOD is 4x4.
+    var hw = try makeHw(gpa, &.{ pt(0, 0), pt(1000, 0), pt(2000, 0), pt(3000, 0), pt(4000, 0) });
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{
+        .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
+        .{ .load = .{ .qubit = 1, .position = pt(1000, 0) } },
+        .{ .load = .{ .qubit = 2, .position = pt(2000, 0) } },
+        .{ .load = .{ .qubit = 3, .position = pt(3000, 0) } },
+        .{ .load = .{ .qubit = 4, .position = pt(4000, 0) } },
+    });
+
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(error.AodCapacityExceeded, verify(gpa, &hw));
+}
+
+test "accepts two AOD atoms sharing a column" {
+    const gpa = std.testing.allocator;
+    var hw = try makeHw(gpa, &.{ pt(0, 0), pt(1000, 0) });
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{
+        .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
+        .{ .load = .{ .qubit = 1, .position = pt(1000, 0) } },
+    });
+    try addFrame(&hw, &.{.{ .move = .{ .qubit = 1, .src = pt(1000, 0), .dest = pt(1000, 1000) } }});
+    // Qubit 1 joins qubit 0's column: zero x separation is one column, legal.
+    try addFrame(&hw, &.{.{ .move = .{ .qubit = 1, .src = pt(1000, 1000), .dest = pt(0, 1000) } }});
+    try addFrame(&hw, &.{
+        .{ .store = .{ .qubit = 0, .position = pt(0, 0) } },
+        .{ .store = .{ .qubit = 1, .position = pt(0, 1000) } },
+    });
+
+    try verify(gpa, &hw);
 }
 
 test "catches an atom left in the AOD at end of schedule" {

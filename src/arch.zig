@@ -240,8 +240,9 @@ pub const ArchConfig = struct {
     }
 };
 
-/// Loads an architecture config from a TOML file and converts it to
-/// integer-nm form.
+/// Loads an architecture config from a TOML file, converts it to integer-nm
+/// form, and validates it. A malformed config is a load-time error here, not
+/// an index-out-of-bounds panic deep in scheduling.
 pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ArchConfig {
     var parser = toml.Parser(RawArchConfig).init(gpa);
     defer parser.deinit();
@@ -249,7 +250,126 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ArchConfig {
     var raw = try parser.parseFile(io, path);
     defer raw.deinit();
 
-    return try convertConfig(raw.value, gpa);
+    const cfg = try convertConfig(raw.value, gpa);
+    errdefer cfg.deinit(gpa);
+
+    try validate(cfg);
+
+    return cfg;
+}
+
+// ── Validation ───────────────────────────────────────────────────────────────
+
+pub const ConfigError = error{
+    InvalidAodLimits,
+    TooFewComputeSlms,
+    InvalidSlmGrid,
+    SlmOutsideZone,
+    ZonesOverlap,
+    BlockadeGeometry,
+    InvalidFidelity,
+};
+
+/// Suppresses validation diagnostics; same pattern as verify.quiet (tests
+/// that assert on expected config errors set this).
+pub var quiet: bool = false;
+
+fn cfail(comptime fmt: []const u8, args: anytype) void {
+    if (quiet) return;
+    std.debug.print("arch config: " ++ fmt ++ "\n", args);
+}
+
+/// Structural legality of a converted config. Everything the scheduler
+/// assumes without checking is rejected here instead.
+pub fn validate(cfg: ArchConfig) ConfigError!void {
+    if (cfg.aod.max_num_row == 0 or cfg.aod.max_num_col == 0 or cfg.aod.min_sep_nm == 0) {
+        cfail("aod limits must be positive (rows={d} cols={d} min_sep={d}nm)", .{
+            cfg.aod.max_num_row, cfg.aod.max_num_col, cfg.aod.min_sep_nm,
+        });
+        return error.InvalidAodLimits;
+    }
+
+    try validateSlm("storage", cfg.storage_zone.slm, cfg.storage_zone.dimension_nm);
+    try validateSlm("readout", cfg.readout_zone.slm, cfg.readout_zone.dimension_nm);
+
+    // The scheduler pairs Rydberg sites from slms[0] and slms[1] unconditionally.
+    if (cfg.compute_zone.slms.len < 2) {
+        cfail("compute zone needs at least 2 SLMs for Rydberg site pairing, got {d}", .{
+            cfg.compute_zone.slms.len,
+        });
+        return error.TooFewComputeSlms;
+    }
+    for (cfg.compute_zone.slms) |slm| {
+        try validateSlm("compute", slm, cfg.compute_zone.dimension_nm);
+    }
+
+    // Zones must not overlap, and must keep the configured inter-zone gap so
+    // the Rydberg laser cannot stray into storage or readout.
+    const dz: i64 = cfg.constraints.dz_nm;
+    const storage = zoneBox(cfg.storage_zone.offset_nm, cfg.storage_zone.dimension_nm);
+    const compute = zoneBox(cfg.compute_zone.offset_nm, cfg.compute_zone.dimension_nm);
+    const readout = zoneBox(cfg.readout_zone.offset_nm, cfg.readout_zone.dimension_nm);
+    try requireGap("storage", storage, "compute", compute, dz);
+    try requireGap("compute", compute, "readout", readout, dz);
+    try requireGap("storage", storage, "readout", readout, dz);
+
+    // A Rydberg pair must sit within the blockade radius; neighbouring sites
+    // must sit outside it.
+    if (cfg.compute_zone.dr_nm >= cfg.constraints.db_nm or
+        cfg.compute_zone.dw_nm <= cfg.constraints.db_nm)
+    {
+        cfail("blockade geometry requires dr < db < dw, got dr={d}nm db={d}nm dw={d}nm", .{
+            cfg.compute_zone.dr_nm, cfg.constraints.db_nm, cfg.compute_zone.dw_nm,
+        });
+        return error.BlockadeGeometry;
+    }
+
+    const fids = [_]f64{
+        cfg.constraints.one_qubit_gate_fidelity,
+        cfg.constraints.two_qubit_gate_fidelity,
+        cfg.constraints.readout_fidelity,
+    };
+    for (fids) |f| {
+        if (!(f > 0 and f <= 1)) {
+            cfail("fidelities must lie in (0, 1], got 1Q={d} 2Q={d} readout={d}", .{
+                fids[0], fids[1], fids[2],
+            });
+            return error.InvalidFidelity;
+        }
+    }
+}
+
+fn validateSlm(zone: []const u8, slm: Slm, dim: [2]u32) ConfigError!void {
+    if (slm.num_row == 0 or slm.num_col == 0 or slm.sep_nm[0] == 0 or slm.sep_nm[1] == 0) {
+        cfail("{s} slm {d}: rows, cols, and separations must be positive", .{ zone, slm.slm_id });
+        return error.InvalidSlmGrid;
+    }
+    const ext_x = @as(i64, slm.offset_nm[0]) + @as(i64, slm.num_col - 1) * slm.sep_nm[0];
+    const ext_y = @as(i64, slm.offset_nm[1]) + @as(i64, slm.num_row - 1) * slm.sep_nm[1];
+    if (slm.offset_nm[0] < 0 or slm.offset_nm[1] < 0 or ext_x > dim[0] or ext_y > dim[1]) {
+        cfail("{s} slm {d}: trap grid extends outside its zone ({d}x{d}nm grid, {d}x{d}nm zone)", .{
+            zone, slm.slm_id, ext_x, ext_y, dim[0], dim[1],
+        });
+        return error.SlmOutsideZone;
+    }
+}
+
+const ZoneBox = struct { min: [2]i64, max: [2]i64 };
+
+fn zoneBox(offset_nm: [2]i32, dim_nm: [2]u32) ZoneBox {
+    return .{
+        .min = .{ offset_nm[0], offset_nm[1] },
+        .max = .{ offset_nm[0] + @as(i64, dim_nm[0]), offset_nm[1] + @as(i64, dim_nm[1]) },
+    };
+}
+
+fn requireGap(a_name: []const u8, a: ZoneBox, b_name: []const u8, b: ZoneBox, gap: i64) ConfigError!void {
+    const separated = a.max[0] + gap <= b.min[0] or b.max[0] + gap <= a.min[0] or
+        a.max[1] + gap <= b.min[1] or b.max[1] + gap <= a.min[1];
+    if (!separated) {
+        cfail("{s} and {s} zones overlap or sit closer than dz={d}nm", .{ a_name, b_name, gap });
+        return error.ZonesOverlap;
+    }
 }
 
 // ── Conversion: um (f64) -> nm (integer) ─────────────────────────────────────
@@ -318,6 +438,97 @@ fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
             .readout_fidelity = raw.constraints.readout_fidelity,
         },
     };
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+const test_slm = Slm{
+    .slm_id = 0,
+    .num_row = 2,
+    .num_col = 4,
+    .sep_nm = .{ 3000, 1000 },
+    .offset_nm = .{ 0, 0 },
+};
+
+var test_compute_slms = [2]Slm{
+    .{ .slm_id = 1, .num_row = 2, .num_col = 2, .sep_nm = .{ 10000, 10000 }, .offset_nm = .{ 0, 0 } },
+    .{ .slm_id = 2, .num_row = 2, .num_col = 2, .sep_nm = .{ 10000, 10000 }, .offset_nm = .{ 0, 2000 } },
+};
+
+fn testCfg() ArchConfig {
+    return .{
+        .platform = .{ .name = "test", .version = "0" },
+        .aod = .{ .aod_id = 0, .min_sep_nm = 1500, .max_num_row = 4, .max_num_col = 8 },
+        .storage_zone = .{ .zone_id = 0, .offset_nm = .{ 0, 0 }, .dimension_nm = .{ 12000, 4000 }, .slm = test_slm },
+        .compute_zone = .{ .zone_id = 1, .offset_nm = .{ 0, 10000 }, .dimension_nm = .{ 20000, 14000 }, .dr_nm = 2000, .dw_nm = 10000, .slms = &test_compute_slms },
+        .readout_zone = .{ .zone_id = 2, .offset_nm = .{ 0, 30000 }, .dimension_nm = .{ 12000, 4000 }, .slm = test_slm },
+        .constraints = .{ .db_nm = 3000, .dz_nm = 3000, .one_qubit_gate_fidelity = 0.999, .two_qubit_gate_fidelity = 0.995, .readout_fidelity = 0.99 },
+    };
+}
+
+test "validate accepts a well-formed config" {
+    try validate(testCfg());
+}
+
+test "validate rejects a single compute SLM" {
+    var cfg = testCfg();
+    cfg.compute_zone.slms = test_compute_slms[0..1];
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(error.TooFewComputeSlms, validate(cfg));
+}
+
+test "validate rejects zero trap separation" {
+    var cfg = testCfg();
+    cfg.storage_zone.slm.sep_nm[0] = 0;
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(error.InvalidSlmGrid, validate(cfg));
+}
+
+test "validate rejects an SLM grid extending outside its zone" {
+    var cfg = testCfg();
+    cfg.storage_zone.dimension_nm = .{ 4000, 4000 }; // grid is 9000nm wide
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(error.SlmOutsideZone, validate(cfg));
+}
+
+test "validate rejects overlapping zones" {
+    var cfg = testCfg();
+    cfg.compute_zone.offset_nm = .{ 0, 2000 }; // storage spans y 0..4000
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(error.ZonesOverlap, validate(cfg));
+}
+
+test "validate rejects zones closer than the configured gap" {
+    var cfg = testCfg();
+    cfg.compute_zone.offset_nm = .{ 0, 5000 }; // 1000nm gap, dz is 3000nm
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(error.ZonesOverlap, validate(cfg));
+}
+
+test "validate rejects broken blockade geometry" {
+    var cfg = testCfg();
+    cfg.compute_zone.dw_nm = 2000; // site spacing inside the blockade radius
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(error.BlockadeGeometry, validate(cfg));
+}
+
+test "validate rejects an out-of-range fidelity" {
+    var cfg = testCfg();
+    cfg.constraints.readout_fidelity = 1.5;
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(error.InvalidFidelity, validate(cfg));
+}
+
+test "the example config loads and validates" {
+    const cfg = try load(std.testing.allocator, std.testing.io, "example/arch.toml");
+    defer cfg.deinit(std.testing.allocator);
 }
 
 test {

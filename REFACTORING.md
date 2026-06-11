@@ -75,6 +75,24 @@ Also validate the config itself in `arch.load`: `compute_zone.slms.len >= 2`
 `num_qubits <= sites`. Today a malformed TOML produces an index-out-of-bounds
 panic deep in scheduling instead of a config error at load time.
 
+> **Status (2026-06-11):** done. `arch.validate` (run by `arch.load`) rejects
+> malformed configs at load time: fewer than 2 compute SLMs, zero-sized trap
+> grids or separations, SLM grids extending outside their zone, zones
+> overlapping or closer than `dz_nm`, broken blockade geometry (`dr < db < dw`),
+> out-of-range fidelities. The verifier enforces `cfg.aod` per frame: row and
+> column capacity (`AodCapacityExceeded`) and `min_sep_nm` between AOD rows
+> and columns (`AodSeparationViolation`). The scheduler also respects the
+> limits directly: `pickup` rejects registers wider than the AOD, and
+> `Hardware.init` rejects circuits with more qubits than loading-window sites
+> (`TooManyQubits`). Giving the config teeth exposed that `example/arch.toml`
+> was itself illegal three ways: the storage zone's 300um box swallowed the
+> compute and readout zones, the compute SLM grids (74um tall) poked out of
+> their 70um zone, and `min_sep_um = 4` is unsatisfiable by the half-sep lane
+> choreography over a 3um storage grid — the example is now self-consistent
+> (`min_sep_um = 1.5`). Making the *scheduler* min-sep-aware (so coarser AODs
+> can pick up adjacent atoms in multiple passes) remains future work. Goldens
+> unchanged byte-for-byte.
+
 ### 4. The QASM parser fails without locations and skips silently
 
 - Unknown statements/gates fall through to `skipToSemicolon()` with no

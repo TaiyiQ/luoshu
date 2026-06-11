@@ -12,7 +12,9 @@ version = "0.1"
 # parallel shuttling across multiple compute zones.
 [aod]
 aod_id = 0
-min_sep_um = 4.0 # minimum row-to-row and col-to-col separation
+min_sep_um = 1.5 # minimum row-to-row and col-to-col separation; the pickup
+                 # choreography packs columns down to half the storage trap
+                 # spacing (3.0 / 2), so it must not exceed that
 max_num_row = 7  # physical limit of your AOD row component
 max_num_col = 20 # physical limit of your AOD column component
 
@@ -21,8 +23,8 @@ max_num_col = 20 # physical limit of your AOD column component
 # Rydberg laser does NOT illuminate this region.
 [storage_zone]
 zone_id = 0
-offset_um = [0.0, 0.0]        # bottom-left corner (x, y)
-dimension_um = [300.0, 300.0] # width x height: num_col * sep_um
+offset_um = [0.0, 0.0]      # bottom-left corner (x, y)
+dimension_um = [90.0, 30.0] # width x height: covers the 30x10 trap grid
 
 [storage_zone.slm]
 slm_id = 0
@@ -38,7 +40,7 @@ offset_um = [0.0, 0.0] # relative to storage_zone.offset_um
 [compute_zone]
 zone_id = 1
 offset_um = [0.0, 50.0]
-dimension_um = [240.0, 70.0]
+dimension_um = [240.0, 80.0] # covers the 7-row, 12um-pitch SLM grids
 dr_um = 2.0                  # trap separation within a Rydberg site (laser spot size)
 dw_um = 10.0                 # site-to-site separation (must exceed blockade radius)
 

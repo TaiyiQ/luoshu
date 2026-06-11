@@ -99,6 +99,10 @@ pub const Hardware = struct {
             }
         }
 
+        // The loading window only has so many sites; reject oversubscription
+        // here instead of indexing past `sites` below.
+        if (num_qubits > sites.items.len) return error.TooManyQubits;
+
         const plc = try gpa.alloc(Atom, num_qubits);
         for (plc, 0..) |*p, i| {
             p.* = .{ .id = @intCast(i), .pos = sites.items[i] };
@@ -515,6 +519,9 @@ pub const Hardware = struct {
     // Pick up atoms from storage in `ord` order, traversing without
     // crossing occupied sites.
     fn pickup(s: *Hardware, ord: []const usize) !Register {
+        // Every picked-up atom occupies its own AOD column.
+        if (ord.len > s.cfg.aod.max_num_col) return error.AodCapacityExceeded;
+
         const d = s.cfg.storage_zone.grid().halfSepX();
 
         var register: Register = .empty;
@@ -605,6 +612,61 @@ fn occupiedStorageX(
         if (atom.pos.y == y_target) try occ.put(atom.pos.x, {});
     }
     return occ;
+}
+
+var test_no_slms: [0]arch.Slm = .{};
+
+test "init rejects more qubits than loading-window sites" {
+    const slm = arch.Slm{
+        .slm_id = 0,
+        .num_row = 1,
+        .num_col = 4,
+        .sep_nm = .{ 1000, 1000 },
+        .offset_nm = .{ 0, 0 },
+    };
+
+    const cfg = arch.ArchConfig{
+        .platform = .{ .name = "test", .version = "0" },
+        .aod = .{
+            .aod_id = 0,
+            .min_sep_nm = 100,
+            .max_num_row = 1,
+            .max_num_col = 4,
+        },
+        .storage_zone = .{
+            .zone_id = 0,
+            .offset_nm = .{ 0, 0 },
+            .dimension_nm = .{ 4000, 1000 },
+            .slm = slm,
+        },
+        .compute_zone = .{
+            .zone_id = 1,
+            .offset_nm = .{ 0, 5000 },
+            .dimension_nm = .{ 4000, 1000 },
+            .dr_nm = 200,
+            .dw_nm = 1000,
+            .slms = &test_no_slms,
+        },
+        .readout_zone = .{
+            .zone_id = 2,
+            .offset_nm = .{ 0, 9000 },
+            .dimension_nm = .{ 4000, 1000 },
+            .slm = slm,
+        },
+        .constraints = .{
+            .db_nm = 300,
+            .dz_nm = 100,
+            .one_qubit_gate_fidelity = 1,
+            .two_qubit_gate_fidelity = 1,
+            .readout_fidelity = 1,
+        },
+    };
+
+    // The center-half window of a 1x4 grid is columns 1..3: two sites.
+    try std.testing.expectError(
+        error.TooManyQubits,
+        Hardware.init(std.testing.allocator, cfg, 3),
+    );
 }
 
 test {
