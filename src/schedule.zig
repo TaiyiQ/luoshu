@@ -1,6 +1,5 @@
 const std = @import("std");
 const arch = @import("arch");
-const circuit = @import("circuit");
 
 pub const Zone = enum { storage, compute, readout };
 const Axis = enum { x, y };
@@ -32,6 +31,11 @@ pub const Point = struct {
 
 const RamanTarget = struct { qubit: u32, pos: Point };
 const Raman = struct { angle: f64, phase: f64, targets: []const RamanTarget };
+
+/// One single-qubit rotation request, as handed over by the driver
+/// (a front-end U gate maps theta -> angle, phi -> phase).
+pub const RamanGate = struct { qubit: u32, angle: f64, phase: f64 };
+
 const Load = struct { qubit: u32, position: Point };
 const Store = struct { qubit: u32, position: Point };
 const Move = struct { qubit: u32, src: Point, dest: Point };
@@ -426,22 +430,22 @@ pub const Hardware = struct {
         }
     }
 
-    // Apply single-qubit U gates as Raman pulses at the atoms' current
+    // Apply single-qubit rotations as Raman pulses at the atoms' current
     // storage-zone positions. All gates of the batch fire in one timestep.
-    pub fn raman(s: *Hardware, u_gates: []const circuit.U) !void {
+    pub fn raman(s: *Hardware, gates: []const RamanGate) !void {
         // FIXME, do we need a list of targets?
-        for (u_gates) |gate| {
+        for (gates) |gate| {
             var targets: std.ArrayList(RamanTarget) = .empty;
 
             try targets.append(s.gpa, .{
-                .qubit = @intCast(gate.qubit),
+                .qubit = gate.qubit,
                 .pos = s.placement[gate.qubit].pos,
             });
 
             try s.emit(.{
                 .raman = .{
-                    .angle = gate.theta,
-                    .phase = gate.phi,
+                    .angle = gate.angle,
+                    .phase = gate.phase,
                     .targets = try targets.toOwnedSlice(s.gpa),
                 },
             });

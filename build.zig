@@ -12,7 +12,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // --- Internal dependecies.
+    // --- Internal dependecies. The module graph mirrors the pass pipeline:
+    // circuit (front-end) and route depend only on std; schedule depends on
+    // arch; compiler is the driver that orchestrates all of them.
 
     const arch_mod = b.addModule("arch", .{
         .root_source_file = b.path("src/arch.zig"),
@@ -31,18 +33,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
     schedule_mod.addImport("arch", arch_mod);
-    schedule_mod.addImport("circuit", circuit_mod);
-    exe.root_module.addImport("schedule", schedule_mod);
 
     const route_mod = b.addModule("route", .{
         .root_source_file = b.path("src/route.zig"),
         .target = target,
     });
-    route_mod.addImport("schedule", schedule_mod);
-    exe.root_module.addImport("route", route_mod);
-    circuit_mod.addImport("arch", arch_mod);
-    circuit_mod.addImport("schedule", schedule_mod);
-    circuit_mod.addImport("route", route_mod);
 
     const serialize_mod = b.addModule("serialize", .{
         .root_source_file = b.path("src/serialize.zig"),
@@ -50,8 +45,17 @@ pub fn build(b: *std.Build) void {
     });
     serialize_mod.addImport("schedule", schedule_mod);
     exe.root_module.addImport("serialize", serialize_mod);
-    circuit_mod.addImport("serialize", serialize_mod);
     route_mod.addImport("serialize", serialize_mod); // for snapshot.zig (route's test helper)
+
+    const compiler_mod = b.addModule("compiler", .{
+        .root_source_file = b.path("src/compiler.zig"),
+        .target = target,
+    });
+    compiler_mod.addImport("arch", arch_mod);
+    compiler_mod.addImport("circuit", circuit_mod);
+    compiler_mod.addImport("route", route_mod);
+    compiler_mod.addImport("schedule", schedule_mod);
+    exe.root_module.addImport("compiler", compiler_mod);
 
     const verify_mod = b.addModule("verify", .{
         .root_source_file = b.path("src/verify.zig"),
@@ -72,6 +76,7 @@ pub fn build(b: *std.Build) void {
     schedule_mod.addImport("testutil", testutil_mod);
     route_mod.addImport("testutil", testutil_mod);
     serialize_mod.addImport("testutil", testutil_mod);
+    compiler_mod.addImport("testutil", testutil_mod);
     verify_mod.addImport("testutil", testutil_mod);
 
     // Golden tests over the full pipeline: circuit -> Sequence/Hardware JSON,
@@ -82,7 +87,7 @@ pub fn build(b: *std.Build) void {
     });
     golden_mod.addImport("arch", arch_mod);
     golden_mod.addImport("circuit", circuit_mod);
-    golden_mod.addImport("schedule", schedule_mod);
+    golden_mod.addImport("compiler", compiler_mod);
     golden_mod.addImport("serialize", serialize_mod);
     golden_mod.addImport("verify", verify_mod);
     golden_mod.addImport("testutil", testutil_mod);
@@ -108,8 +113,6 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.linkLibrary(raylib_dep.artifact("raylib"));
     draw_mod.addImport("raylib", raylib_dep.module("raylib"));
-    circuit_mod.addImport("raylib", raylib_dep.module("raylib"));
-    circuit_mod.addImport("raygui", raylib_dep.module("raygui"));
 
     b.installArtifact(exe); // enables `zig build`
 
@@ -128,7 +131,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit and golden tests");
     const test_mods = [_]*std.Build.Module{
-        arch_mod, circuit_mod, schedule_mod, route_mod, serialize_mod, verify_mod, golden_mod,
+        arch_mod, circuit_mod, schedule_mod, route_mod, compiler_mod, serialize_mod, verify_mod, golden_mod,
     };
     for (test_mods) |mod| {
         const t = b.addTest(.{ .root_module = mod });
@@ -149,6 +152,7 @@ pub fn build(b: *std.Build) void {
     });
     update_exe.root_module.addImport("arch", arch_mod);
     update_exe.root_module.addImport("circuit", circuit_mod);
+    update_exe.root_module.addImport("compiler", compiler_mod);
     update_exe.root_module.addImport("route", route_mod);
     update_exe.root_module.addImport("serialize", serialize_mod);
     update_exe.root_module.addImport("verify", verify_mod);

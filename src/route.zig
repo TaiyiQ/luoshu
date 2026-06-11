@@ -1,5 +1,4 @@
 const std = @import("std");
-const schedule = @import("schedule");
 const builtin = @import("builtin");
 
 // Debug tracing. Excluded from test builds: the build runner displays any

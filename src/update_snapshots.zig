@@ -6,6 +6,7 @@
 const std = @import("std");
 const arch = @import("arch");
 const circuit = @import("circuit");
+const compiler = @import("compiler");
 const route = @import("route");
 const serialize = @import("serialize");
 const verify = @import("verify");
@@ -55,7 +56,7 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(seq_json);
         try serialize.writeJsonFile(io, case.sequence_path, seq_json);
 
-        var hw = try pipe.compile(cfg);
+        var hw = try compiler.compile(gpa, &pipe, cfg);
         defer hw.deinit();
 
         // Never snapshot an illegal schedule as a golden baseline — except

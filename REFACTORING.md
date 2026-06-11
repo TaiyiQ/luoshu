@@ -133,6 +133,13 @@ entire back-end. Inverting this cleans the whole graph:
 - Dependency graph becomes a DAG that mirrors the pass pipeline:
   `arch ← schedule ← driver → route → circuit` instead of today's tangle.
 
+> **Status (2026-06-11):** done. The stage loop lives in `compiler.zig`
+> (`compile` + `routeStage`); `circuit.zig` is pure front-end depending only
+> on `std` (the dead `rl` import and the raylib/raygui module wiring are
+> gone). `schedule.raman` now takes its own `RamanGate` type instead of
+> `circuit.U`, and `route.zig`'s dead `schedule` import is dropped, so the
+> module graph is exactly the DAG above. Goldens unchanged byte-for-byte.
+
 ### 8. Passes print to stderr unconditionally
 
 `route.zig` has 57 `std.debug.print` calls; `sequence.print()` is called

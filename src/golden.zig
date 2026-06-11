@@ -8,6 +8,7 @@
 const std = @import("std");
 const arch = @import("arch");
 const circuit = @import("circuit");
+const compiler = @import("compiler");
 const serialize = @import("serialize");
 const verify = @import("verify");
 
@@ -126,7 +127,7 @@ pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
     for (pipe.stages.items) |*stage| {
         if (stage.cz_gates.items.len == 0) continue;
 
-        var seq = try stage.computeSequence(gpa, pipe.num_qubits);
+        var seq = try compiler.routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
         defer seq.deinit();
 
         const json = try serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
@@ -190,7 +191,7 @@ fn goldenCase(case: Case) !void {
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    var hw = try pipe.compile(cfg);
+    var hw = try compiler.compile(gpa, &pipe, cfg);
     defer hw.deinit();
 
     if (case.known_violation) |expected| {

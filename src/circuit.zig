@@ -1,9 +1,7 @@
+//! Pure front-end: QASM parsing (`load`) and staging (`decompose`).
+//! Depends on nothing but std; the back-end passes (route, schedule) are
+//! orchestrated over the resulting `Pipeline` by the driver in compiler.zig.
 const std = @import("std");
-const builtin = @import("builtin");
-const schedule = @import("schedule");
-const route = @import("route");
-const arch = @import("arch");
-const rl = @import("raylib");
 
 const PI = std.math.pi;
 
@@ -24,27 +22,13 @@ pub const Native = union(enum) {
     cz: Cz,
 };
 
-const Stage = struct {
+pub const Stage = struct {
     u_gates: std.ArrayList(U) = .empty,
     cz_gates: std.ArrayList(Cz) = .empty,
 
     fn deinit(s: *Stage, gpa: std.mem.Allocator) void {
         s.u_gates.deinit(gpa);
         s.cz_gates.deinit(gpa);
-    }
-
-    // Generate a graph connecting CZ qubits, to move them into the compute zone.
-    // The stage owns the graph. Therefore, it compiles a logical sequence from
-    // the CZ gates using a graph.
-    pub fn computeSequence(s: *Stage, gpa: std.mem.Allocator, num_qubit: usize) !route.Sequence {
-        var g = try route.Graph.init(gpa, num_qubit, false);
-        defer g.deinit();
-
-        for (s.cz_gates.items) |gate| try g.addEdge(gate.control, gate.target);
-
-        const sequence = try route.compile(gpa, &g);
-        //try serialize.writeSequence(gpa, io, "./zig-out/logical.json", sequence.fixed, sequence.moveable);
-        return sequence;
     }
 };
 
@@ -76,37 +60,6 @@ pub const Pipeline = struct {
             .u => |g| try stage.u_gates.append(s.gpa, g),
             .cz => |g| try stage.cz_gates.append(s.gpa, g),
         }
-    }
-
-    pub fn compile(s: *Pipeline, cfg: arch.ArchConfig) !schedule.Hardware {
-        var hw = try schedule.Hardware.init(s.gpa, cfg, s.num_qubits);
-
-        for (s.stages.items) |*stage| {
-            // A stage with no CZ gates has nothing to route (route.compile
-            // rejects an edgeless graph), so it is pure Raman pulses.
-            if (stage.cz_gates.items.len > 0) {
-                var sequence = try stage.computeSequence(s.gpa, s.num_qubits);
-                defer sequence.deinit();
-                // Silent in tests: any test-step stderr gets displayed by the
-                // build runner under a misleading "failed command:" banner.
-                if (builtin.mode == .Debug and !builtin.is_test) sequence.print();
-
-                try hw.moveSlmCompute(sequence.fixed);
-                try hw.moveAodCompute(sequence.moveable);
-                try hw.moveAodStorage(sequence.moveable);
-                try hw.moveSlmStorage(sequence.fixed);
-            }
-
-            // U gates fire last: within a stage CZs precede the U barrier,
-            // and by now all atoms are back at their storage positions.
-            try hw.raman(stage.u_gates.items);
-        }
-
-        // Terminal readout: shuttle all qubits to the readout zone and image.
-        try hw.moveReadout();
-        try hw.measure(.readout);
-
-        return hw;
     }
 };
 

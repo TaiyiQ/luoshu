@@ -2,8 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const arch = @import("arch");
 const circuit = @import("circuit");
-const route = @import("route");
-const schedule = @import("schedule");
+const compiler = @import("compiler");
 const draw = @import("draw");
 const serialize = @import("serialize");
 const verify = @import("verify");
@@ -20,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
     const cfg = try arch.load(init.gpa, init.io, "./example/arch.toml");
     defer cfg.deinit(init.gpa);
 
-    var sch = try pipeline.compile(cfg);
+    var sch = try compiler.compile(init.gpa, &pipeline, cfg);
     defer sch.deinit();
     if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
     //try serialize.writeHardware(init.gpa, init.io, "./zig-out/physical.json", &sch);
