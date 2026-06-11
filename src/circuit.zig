@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const schedule = @import("schedule");
 const route = @import("route");
 const arch = @import("arch");
@@ -81,14 +82,20 @@ pub const Pipeline = struct {
         var hw = try schedule.Hardware.init(s.gpa, cfg, s.num_qubits);
 
         for (s.stages.items) |*stage| {
-            var sequence = try stage.computeSequence(s.gpa, s.num_qubits);
-            sequence.print();
-            defer sequence.deinit();
+            // A stage with no CZ gates has nothing to route (route.compile
+            // rejects an edgeless graph), so it is pure Raman pulses.
+            if (stage.cz_gates.items.len > 0) {
+                var sequence = try stage.computeSequence(s.gpa, s.num_qubits);
+                defer sequence.deinit();
+                // Silent in tests: any test-step stderr gets displayed by the
+                // build runner under a misleading "failed command:" banner.
+                if (builtin.mode == .Debug and !builtin.is_test) sequence.print();
 
-            try hw.moveSlmCompute(sequence.fixed);
-            try hw.moveAodCompute(sequence.moveable);
-            try hw.moveAodStorage(sequence.moveable);
-            try hw.moveSlmStorage(sequence.fixed);
+                try hw.moveSlmCompute(sequence.fixed);
+                try hw.moveAodCompute(sequence.moveable);
+                try hw.moveAodStorage(sequence.moveable);
+                try hw.moveSlmStorage(sequence.fixed);
+            }
 
             // U gates fire last: within a stage CZs precede the U barrier,
             // and by now all atoms are back at their storage positions.
@@ -611,3 +618,7 @@ pub const QasmParser = struct {
         }
     }
 };
+
+test {
+    @import("testutil").refAllDeclsRecursive(@This());
+}

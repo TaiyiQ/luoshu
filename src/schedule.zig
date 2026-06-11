@@ -602,3 +602,7 @@ fn occupiedStorageX(
     }
     return occ;
 }
+
+test {
+    @import("testutil").refAllDeclsRecursive(@This());
+}

@@ -319,3 +319,7 @@ fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
         },
     };
 }
+
+test {
+    @import("testutil").refAllDeclsRecursive(@This());
+}

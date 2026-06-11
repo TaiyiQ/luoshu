@@ -164,3 +164,7 @@ fn zoneName(z: schedule.Zone) []const u8 {
         .readout => "readout_zone",
     };
 }
+
+test {
+    @import("testutil").refAllDeclsRecursive(@This());
+}

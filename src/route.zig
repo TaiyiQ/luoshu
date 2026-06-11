@@ -2,7 +2,10 @@ const std = @import("std");
 const schedule = @import("schedule");
 const builtin = @import("builtin");
 
-const enabled = builtin.mode == .Debug;
+// Debug tracing. Excluded from test builds: the build runner displays any
+// stderr a test step produces (decorated with a misleading "failed command:"
+// line), so test binaries must stay silent unless something actually fails.
+const enabled = builtin.mode == .Debug and !builtin.is_test;
 
 const MIN = -1; // -1 to help k in leastAdmissible start at 0.
 
@@ -250,7 +253,7 @@ fn maxIndependentSet(allocator: std.mem.Allocator, g: Graph) !Aod {
         if (set[v]) try nodes.append(allocator, v);
     }
 
-    std.debug.print(">> AOD ordered nodes: {any}\n", .{nodes.items});
+    if (enabled) std.debug.print(">> AOD ordered nodes: {any}\n", .{nodes.items});
 
     return .{ .set = set, .nodes = nodes };
 }
@@ -633,7 +636,7 @@ fn placeSlmWithResting(
     }
     // trailing nulls already null from memset
 
-    std.debug.print("SLM Slots: {any}\n", .{slots});
+    if (enabled) std.debug.print("SLM Slots: {any}\n", .{slots});
     return slots;
 }
 
@@ -675,10 +678,12 @@ fn computeRestingPositions(
             }
         }
 
-        std.debug.print("ACTIVE AODs: t({})\n", .{t});
-        var it = active.iterator();
-        while (it.next()) |entry| {
-            std.debug.print("  {} => {}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+        if (enabled) {
+            std.debug.print("ACTIVE AODs: t({})\n", .{t});
+            var it = active.iterator();
+            while (it.next()) |entry| {
+                std.debug.print("  {} => {}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+            }
         }
 
         var t_resting = std.AutoHashMap(Rest, usize).init(allocator);
@@ -708,7 +713,7 @@ fn computeRestingPositions(
                 const key = Rest{ .left = l_aod, .right = r_aod };
                 const cnt = if (t_resting.get(key)) |c| c + 1 else 1;
                 try t_resting.put(key, cnt);
-                std.debug.print("t:{}, left:{any} resting_aod:{} right:{any} count:{}\n", .{ t, l_aod, v, r_aod, cnt });
+                if (enabled) std.debug.print("t:{}, left:{any} resting_aod:{} right:{any} count:{}\n", .{ t, l_aod, v, r_aod, cnt });
             }
         }
 
@@ -765,12 +770,12 @@ fn computeRestingPositions(
         }
 
         // Add remaining new requirements.
-        std.debug.print(">> t_resting:\n", .{});
+        if (enabled) std.debug.print(">> t_resting:\n", .{});
         var t_it = t_resting.iterator();
         while (t_it.next()) |entry| {
             const p = entry.key_ptr.*;
             const c = entry.value_ptr.*;
-            std.debug.print("  {}:{}\n", .{ p, c });
+            if (enabled) std.debug.print("  {}:{}\n", .{ p, c });
             const nc = if (new_resting.get(p)) |v| v + c else c;
             try new_resting.put(p, nc);
         }
@@ -788,7 +793,7 @@ fn computeRestingPositions(
         }
     }
 
-    std.debug.print(">> POSITIONS: {any}\n", .{positions});
+    if (enabled) std.debug.print(">> POSITIONS: {any}\n", .{positions});
 
     std.mem.sort(usize, positions.items, {}, std.sort.asc(usize));
 
@@ -815,11 +820,11 @@ pub fn compile(allocator: std.mem.Allocator, g: *Graph) !Sequence {
 
     const slm_order = try topoSort(allocator, dep_graph, aod.set, g.*);
     defer allocator.free(slm_order);
-    std.debug.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
+    if (enabled) std.debug.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
 
     const resting_xs = try computeRestingPositions(allocator, g, aod, slm_order);
     defer allocator.free(resting_xs);
-    std.debug.print("resting_xs: {any}\n", .{resting_xs});
+    if (enabled) std.debug.print("resting_xs: {any}\n", .{resting_xs});
 
     const fixed = try placeSlmWithResting(arena_alloc, slm_order, resting_xs, aod.nodes.items.len);
     const moveable = try logicalSchedule(arena_alloc, g, aod, fixed);
@@ -829,6 +834,10 @@ pub fn compile(allocator: std.mem.Allocator, g: *Graph) !Sequence {
         .fixed = fixed,
         .moveable = moveable,
     };
+}
+
+test {
+    @import("testutil").refAllDeclsRecursive(@This());
 }
 
 test "snapshot: mvp - aod set, coloring, schedule shape" {
@@ -1028,7 +1037,7 @@ pub fn aodTargets(g: *Graph, aod_order: []const usize, aod_targets: [][]usize) v
 
             var e = g.edges[aod_id];
             while (e) |edge| : (e = edge.next) {
-                if (edge.color == c) {
+                if (edge.color == @as(i32, @intCast(c))) {
                     partner = edge.y;
                     break;
                 }

@@ -2,4 +2,7 @@ run:
 	zig build run
 
 test:
-	zig test src/route.zig
+	zig build test
+
+update-snapshots:
+	zig build update-snapshots
