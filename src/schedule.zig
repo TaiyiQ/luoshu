@@ -38,7 +38,7 @@ const Move = struct { qubit: u32, src: Point, dest: Point };
 const Rydberg = struct { zone: Zone };
 const Measure = struct { zone: Zone, qubits: []u32 };
 
-const OpKind = union(enum) {
+pub const OpKind = union(enum) {
     raman: Raman,
     load: Load,
     move: Move,

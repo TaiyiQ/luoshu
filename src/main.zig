@@ -1,10 +1,12 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const arch = @import("arch");
 const circuit = @import("circuit");
 const route = @import("route");
 const schedule = @import("schedule");
 const draw = @import("draw");
 const serialize = @import("serialize");
+const verify = @import("verify");
 
 pub fn main(init: std.process.Init) !void {
     var circ = try circuit.load(init.gpa, init.io, "../qasm/mvp.qasm");
@@ -20,10 +22,11 @@ pub fn main(init: std.process.Init) !void {
 
     var sch = try pipeline.compile(cfg);
     defer sch.deinit();
+    if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
     //try serialize.writeHardware(init.gpa, init.io, "./zig-out/physical.json", &sch);
 
-    //try draw.pipeline(circ, null); // Draw original circuit.
-    //try draw.pipeline(circ, pipeline);
+    try draw.pipeline(circ, null); // Draw original circuit.
+    try draw.pipeline(circ, pipeline);
     //try draw.stageGraph(circ, pipeline);
     try draw.physical(init.gpa, cfg, sch);
 }

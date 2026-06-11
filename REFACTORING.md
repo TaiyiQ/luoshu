@@ -54,6 +54,14 @@ Run it in debug builds after `Pipeline.compile`, and in every test. A routing
 bug that today shows up as a visual glitch in the animation becomes a failing
 assertion with a frame number.
 
+> **Status (2026-06-11):** implemented in `verify.zig`; runs in every golden
+> test, in `update-snapshots`, and after `Pipeline.compile` in debug builds.
+> It immediately found a real routing bug: the grid circuit's logical schedule
+> swaps AOD qubits 2 and 6 between colors 2 and 3 (`AodOrderInversion`,
+> frame 30) — two AOD columns cannot cross. The edge coloring's order
+> constraints don't cover this case. Tracked as `known_violation` on the grid
+> golden case; the test flips when the routing fix lands.
+
 ### 3. The hardware config is loaded but not obeyed
 
 `cfg.aod` (max rows/cols, `min_sep_nm`) and `cfg.constraints` (blockade

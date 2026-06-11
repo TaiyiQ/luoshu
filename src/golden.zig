@@ -9,6 +9,7 @@ const std = @import("std");
 const arch = @import("arch");
 const circuit = @import("circuit");
 const serialize = @import("serialize");
+const verify = @import("verify");
 
 pub const arch_path = "example/arch.toml";
 
@@ -19,6 +20,11 @@ pub const Case = struct {
     build: CircuitBuilder,
     sequence_path: []const u8,
     hardware_path: []const u8,
+
+    /// A legality violation the verifier is expected to report for this
+    /// circuit — a known routing bug, asserted so the test fails loudly
+    /// the day routing is fixed (then: regenerate goldens, clear this).
+    known_violation: ?anyerror = null,
 };
 
 pub const cases = [_]Case{
@@ -39,6 +45,12 @@ pub const cases = [_]Case{
         .build = buildGrid,
         .sequence_path = "testdata/grid.sequence.json",
         .hardware_path = "testdata/grid.hardware.json",
+        // Real routing bug found by the verifier: between colors 2 and 3 the
+        // logical schedule moves AOD qubit 2 to slot 7 (its CZ partner's
+        // column) while qubit 6 rests left of it, inverting their relative
+        // x order — two AOD columns cannot cross. The edge-coloring's order
+        // constraints don't prevent this case yet.
+        .known_violation = error.AodOrderInversion,
     },
     .{
         .name = "qft-5",
@@ -180,6 +192,14 @@ fn goldenCase(case: Case) !void {
 
     var hw = try pipe.compile(cfg);
     defer hw.deinit();
+
+    if (case.known_violation) |expected| {
+        verify.quiet = true;
+        defer verify.quiet = false;
+        try std.testing.expectError(expected, verify.verify(gpa, &hw));
+    } else {
+        try verify.verify(gpa, &hw);
+    }
 
     const hw_json = try serialize.hardwareToJson(gpa, &hw);
     defer gpa.free(hw_json);

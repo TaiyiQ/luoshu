@@ -53,6 +53,14 @@ pub fn build(b: *std.Build) void {
     circuit_mod.addImport("serialize", serialize_mod);
     route_mod.addImport("serialize", serialize_mod); // for snapshot.zig (route's test helper)
 
+    const verify_mod = b.addModule("verify", .{
+        .root_source_file = b.path("src/verify.zig"),
+        .target = target,
+    });
+    verify_mod.addImport("schedule", schedule_mod);
+    verify_mod.addImport("arch", arch_mod);
+    exe.root_module.addImport("verify", verify_mod);
+
     // Test-only helper (refAllDeclsRecursive). A named module because a file
     // may belong to only one module, so per-module file imports won't do.
     const testutil_mod = b.createModule(.{
@@ -64,6 +72,7 @@ pub fn build(b: *std.Build) void {
     schedule_mod.addImport("testutil", testutil_mod);
     route_mod.addImport("testutil", testutil_mod);
     serialize_mod.addImport("testutil", testutil_mod);
+    verify_mod.addImport("testutil", testutil_mod);
 
     // Golden tests over the full pipeline: circuit -> Sequence/Hardware JSON,
     // compared byte-for-byte against testdata/ snapshots.
@@ -75,6 +84,7 @@ pub fn build(b: *std.Build) void {
     golden_mod.addImport("circuit", circuit_mod);
     golden_mod.addImport("schedule", schedule_mod);
     golden_mod.addImport("serialize", serialize_mod);
+    golden_mod.addImport("verify", verify_mod);
     golden_mod.addImport("testutil", testutil_mod);
 
     const draw_mod = b.addModule("draw", .{
@@ -118,7 +128,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit and golden tests");
     const test_mods = [_]*std.Build.Module{
-        arch_mod, circuit_mod, schedule_mod, route_mod, serialize_mod, golden_mod,
+        arch_mod, circuit_mod, schedule_mod, route_mod, serialize_mod, verify_mod, golden_mod,
     };
     for (test_mods) |mod| {
         const t = b.addTest(.{ .root_module = mod });
@@ -141,6 +151,7 @@ pub fn build(b: *std.Build) void {
     update_exe.root_module.addImport("circuit", circuit_mod);
     update_exe.root_module.addImport("route", route_mod);
     update_exe.root_module.addImport("serialize", serialize_mod);
+    update_exe.root_module.addImport("verify", verify_mod);
     update_exe.root_module.addImport("golden", golden_mod);
 
     const update_run = b.addRunArtifact(update_exe);

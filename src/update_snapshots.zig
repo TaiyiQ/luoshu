@@ -8,6 +8,7 @@ const arch = @import("arch");
 const circuit = @import("circuit");
 const route = @import("route");
 const serialize = @import("serialize");
+const verify = @import("verify");
 const golden = @import("golden");
 
 const GraphCase = struct {
@@ -56,6 +57,23 @@ pub fn main(init: std.process.Init) !void {
 
         var hw = try pipe.compile(cfg);
         defer hw.deinit();
+
+        // Never snapshot an illegal schedule as a golden baseline — except
+        // a documented known violation, which is asserted so a routing fix
+        // is noticed here too.
+        if (case.known_violation) |expected| {
+            verify.quiet = true;
+            defer verify.quiet = false;
+            if (verify.verify(gpa, &hw)) |_| {
+                std.debug.print(
+                    "{s}: known violation {t} no longer occurs — clear known_violation and rerun\n",
+                    .{ case.name, expected },
+                );
+                return error.KnownViolationFixed;
+            } else |err| if (err != expected) return err;
+        } else {
+            try verify.verify(gpa, &hw);
+        }
 
         const hw_json = try serialize.hardwareToJson(gpa, &hw);
         defer gpa.free(hw_json);
