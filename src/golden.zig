@@ -327,6 +327,39 @@ test "assembly: qft-5 compiles legally from example/assembly.json" {
     try verify.verify(gpa, &hw);
 }
 
+/// The CLI input path: parse a vendored .qasm with circuit.load (the case
+/// builders construct Circuits directly, bypassing the parser) and require
+/// a schedule the verifier accepts. Not a snapshot test, so it pins the
+/// parser-to-schedule path without freezing its output.
+fn qasmCompilesLegally(path: []const u8) !void {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var circ = try circuit.load(gpa, io, path);
+    defer circ.deinit();
+
+    var pipe = try circuit.decompose(gpa, circ);
+    defer pipe.deinit();
+
+    const cfg = try arch.load(gpa, io, arch_path);
+    defer cfg.deinit(gpa);
+
+    var hw = try compiler.compile(gpa, &pipe, cfg, null);
+    defer hw.deinit();
+
+    try verify.verify(gpa, &hw);
+}
+
+test "qasm: bell compiles legally from testdata/bell.qasm" {
+    try qasmCompilesLegally("testdata/bell.qasm");
+}
+
+// All six CZs land in one stage; routing rejects the coloring with
+// CyclicAodOrder and the driver must split the stage into pickup rounds.
+test "qasm: cyclic-aod compiles legally from testdata/cyclic-aod.qasm" {
+    try qasmCompilesLegally("testdata/cyclic-aod.qasm");
+}
+
 test {
     std.testing.refAllDecls(@This());
 }

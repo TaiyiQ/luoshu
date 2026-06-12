@@ -1,6 +1,7 @@
 //! Pure front-end: QASM parsing (`load`) and staging (`decompose`).
 //! Depends on nothing but std; the back-end passes (route, schedule) are
 //! orchestrated over the resulting `Pipeline` by the driver in compiler.zig.
+
 const std = @import("std");
 
 const PI = std.math.pi;
@@ -571,6 +572,66 @@ pub const QasmParser = struct {
         }
     }
 };
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+test "QasmParser flattens a register and parses gate arguments" {
+    const src =
+        \\OPENQASM 3.0;
+        \\include "stdgates.inc";
+        \\qubit[2] q;
+        \\bit[2] c;
+        \\// comments and unknown statements are skipped
+        \\ry(pi/2) q[0];
+        \\cz q[0], q[1];
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(2, circ.n);
+    try std.testing.expectEqual(2, circ.gates.items.len);
+
+    const ry = circ.gates.items[0].u;
+    try std.testing.expectEqual(0, ry.qubit);
+    try std.testing.expectEqual(PI / 2.0, ry.theta);
+
+    const cz_gate = circ.gates.items[1].cz;
+    try std.testing.expectEqual(0, cz_gate.control);
+    try std.testing.expectEqual(1, cz_gate.target);
+}
+
+test "QasmParser assigns later registers higher base indices" {
+    const src =
+        \\qubit[2] a;
+        \\qubit[3] b;
+        \\cz a[1], b[2];
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(5, circ.n);
+    const cz_gate = circ.gates.items[0].cz;
+    try std.testing.expectEqual(1, cz_gate.control);
+    try std.testing.expectEqual(4, cz_gate.target);
+}
+
+test "QasmParser lowers cx to H-CZ-H on the target" {
+    const src =
+        \\qubit[2] q;
+        \\cx q[0], q[1];
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(3, circ.gates.items.len);
+    try std.testing.expectEqual(1, circ.gates.items[0].u.qubit);
+    try std.testing.expectEqual(0, circ.gates.items[1].cz.control);
+    try std.testing.expectEqual(1, circ.gates.items[1].cz.target);
+    try std.testing.expectEqual(1, circ.gates.items[2].u.qubit);
+}
 
 test {
     std.testing.refAllDecls(@This());
