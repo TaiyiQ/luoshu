@@ -10,6 +10,7 @@ const arch = @import("arch");
 const assembly = @import("assembly");
 const circuit = @import("circuit");
 const compiler = @import("compiler");
+const route = @import("route");
 const serialize = @import("serialize");
 const verify = @import("verify");
 
@@ -59,6 +60,12 @@ pub const cases = [_]Case{
         .build = buildCycle6,
         .sequence_path = "testdata/cycle-6.sequence.json",
         .hardware_path = "testdata/cycle-6.hardware.json",
+    },
+    .{
+        .name = "cyclic-aod",
+        .build = buildCyclicAod,
+        .sequence_path = "testdata/cyclic-aod.sequence.json",
+        .hardware_path = "testdata/cyclic-aod.hardware.json",
     },
 };
 
@@ -120,6 +127,23 @@ pub fn buildCycle6(gpa: std.mem.Allocator) !circuit.Circuit {
     return c;
 }
 
+// Five-cycle 0-1-3-4-2-0 with a pendant qubit 5 on 1 (mirrors
+// qasm/cyclic-aod.qasm). The deterministic coloring's class 0 forces AOD
+// column 1 left of 4 while class 2 forces 4 left of 1 — no rigid column
+// order satisfies both, so routing returns CyclicAodOrder and the driver
+// must split the CZ set into separate pickup rounds.
+pub fn buildCyclicAod(gpa: std.mem.Allocator) !circuit.Circuit {
+    var c = circuit.Circuit.init(gpa, 6);
+    errdefer c.deinit();
+    try c.cz(0, 1);
+    try c.cz(0, 2);
+    try c.cz(1, 3);
+    try c.cz(1, 5);
+    try c.cz(2, 4);
+    try c.cz(3, 4);
+    return c;
+}
+
 // QFT-shaped interaction pattern on 5 qubits: H per qubit, then a CZ between
 // every pair (the controlled-phase skeleton) — complete-graph routing.
 pub fn buildQft5(gpa: std.mem.Allocator) !circuit.Circuit {
@@ -135,7 +159,9 @@ pub fn buildQft5(gpa: std.mem.Allocator) !circuit.Circuit {
 }
 
 /// Serializes the routing output of every CZ-carrying stage as a JSON array,
-/// one Sequence object per stage. U-only stages route nothing and are skipped.
+/// one Sequence object per pickup round (a stage whose coloring demands
+/// contradictory AOD orders is split into several rounds). U-only stages
+/// route nothing and are skipped.
 pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
     var buf: std.Io.Writer.Allocating = .init(gpa);
     defer buf.deinit();
@@ -146,15 +172,21 @@ pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
     for (pipe.stages.items) |*stage| {
         if (stage.cz_gates.items.len == 0) continue;
 
-        var seq = try compiler.routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
-        defer seq.deinit();
+        var rounds: std.ArrayList(route.Sequence) = .empty;
+        defer {
+            for (rounds.items) |*s| s.deinit();
+            rounds.deinit(gpa);
+        }
+        try compiler.routeStageRounds(gpa, stage.cz_gates.items, pipe.num_qubits, &rounds);
 
-        const json = try serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
-        defer gpa.free(json);
+        for (rounds.items) |seq| {
+            const json = try serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
+            defer gpa.free(json);
 
-        if (!first) try w.writeAll(",\n");
-        first = false;
-        try w.writeAll(json);
+            if (!first) try w.writeAll(",\n");
+            first = false;
+            try w.writeAll(json);
+        }
     }
     try w.writeAll("\n]");
 
@@ -244,6 +276,10 @@ test "golden: qft-5" {
 
 test "golden: cycle-6" {
     try goldenCase(cases[4]);
+}
+
+test "golden: cyclic-aod" {
+    try goldenCase(cases[5]);
 }
 
 // Not a snapshot test: pins down that an explicit assembly handoff (square

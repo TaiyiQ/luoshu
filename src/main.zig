@@ -14,10 +14,11 @@ const usage =
     \\
     \\options:
     \\  --arch <file>       architecture TOML (default: ./arch.toml)
-    \\  --assembly <file>   storage occupancy JSON from the upstream (default: examples/assembly.json)
-    \\                      atom-rearrangement package (default: procedural)
+    \\  --assembly <file>   storage occupancy JSON from the upstream
+    \\                      atom-rearrangement package
+    \\                      (default: ./example/assembly.json)
     \\  --emit-json <path>  write the hardware schedule as JSON
-    \\  --draw              open the schedule visualization (default: true)
+    \\  --draw / --no-draw  open the schedule visualization (default: on)
     \\  -v, --verbose       trace the compiler passes to stderr
     \\  -h, --help          show this help
     \\
@@ -63,6 +64,8 @@ fn parseArgs(arena: std.mem.Allocator, args: std.process.Args) !Options {
             opts.emit_json = try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--draw")) {
             opts.draw = true;
+        } else if (std.mem.eql(u8, arg, "--no-draw")) {
+            opts.draw = false;
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
             opts.verbose = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
@@ -102,6 +105,11 @@ pub fn main(init: std.process.Init) !void {
         const a = assembly.load(init.gpa, init.io, path) catch |err|
             fatal("cannot load assembly '{s}': {t}", .{ path, err });
         asm_doc = a;
+        if (pipeline.num_qubits > a.sites.len) {
+            fatal("circuit needs {d} qubits but assembly '{s}' delivers only {d} atoms", .{
+                pipeline.num_qubits, path, a.sites.len,
+            });
+        }
         const slm = cfg.storage_zone.slm;
         if (a.zone_id != cfg.storage_zone.zone_id or a.slm_id != slm.slm_id or
             a.rows != slm.num_row or a.cols != slm.num_col)

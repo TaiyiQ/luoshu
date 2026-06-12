@@ -24,6 +24,34 @@ pub fn routeStage(gpa: std.mem.Allocator, cz_gates: []const circuit.Cz, num_qubi
     return route.computeSequence(gpa, &g);
 }
 
+/// Route one stage's CZ gates into one or more pickup rounds, appended to
+/// `out`. A coloring whose per-class left-right constraints conflict cannot
+/// ride a single rigid AOD register; CZ gates commute, so such a set is
+/// split in half and each half routed as its own round (each round gets a
+/// fresh register, so the conflicting classes never share a column order).
+pub fn routeStageRounds(
+    gpa: std.mem.Allocator,
+    cz_gates: []const circuit.Cz,
+    num_qubits: usize,
+    out: *std.ArrayList(route.Sequence),
+) !void {
+    const sequence = routeStage(gpa, cz_gates, num_qubits) catch |err| switch (err) {
+        error.CyclicAodOrder, error.CyclicSlmConstraints => {
+            if (cz_gates.len < 2) return err;
+            const mid = cz_gates.len / 2;
+            try routeStageRounds(gpa, cz_gates[0..mid], num_qubits, out);
+            try routeStageRounds(gpa, cz_gates[mid..], num_qubits, out);
+            return;
+        },
+        else => return err,
+    };
+    errdefer {
+        var s = sequence;
+        s.deinit();
+    }
+    try out.append(gpa, sequence);
+}
+
 /// Compile a staged circuit into a hardware schedule. `initial_sites` is the
 /// storage occupancy delivered by the upstream atom-rearrangement package
 /// (null falls back to the procedural placement in Hardware.init).
@@ -34,15 +62,21 @@ pub fn compile(gpa: std.mem.Allocator, pipe: *const circuit.Pipeline, cfg: arch.
     for (pipe.stages.items) |*stage| {
         // A stage with no CZ gates has nothing to route, so it is pure Raman pulses.
         if (stage.cz_gates.items.len > 0) {
-            var sequence = try routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
-            defer sequence.deinit();
+            var rounds: std.ArrayList(route.Sequence) = .empty;
+            defer {
+                for (rounds.items) |*s| s.deinit();
+                rounds.deinit(gpa);
+            }
+            try routeStageRounds(gpa, stage.cz_gates.items, pipe.num_qubits, &rounds);
 
-            if (trace.enabled) sequence.print();
+            for (rounds.items) |*sequence| {
+                if (trace.enabled) sequence.print();
 
-            try hw.moveSlmCompute(sequence.fixed);
-            try hw.moveAodCompute(sequence.moveable);
-            try hw.moveAodStorage(sequence.moveable);
-            try hw.moveSlmStorage(sequence.fixed);
+                try hw.moveSlmCompute(sequence.fixed);
+                try hw.moveAodCompute(sequence.moveable);
+                try hw.moveAodStorage(sequence.moveable);
+                try hw.moveSlmStorage(sequence.fixed);
+            }
         }
 
         // U gates fire last: within a stage, CZs precede the U barrier,

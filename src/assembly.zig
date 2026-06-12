@@ -146,9 +146,10 @@ test "the example assembly file loads" {
 
     try std.testing.expectEqual(@as(u32, 10), a.rows);
     try std.testing.expectEqual(@as(u32, 110), a.cols);
-    try std.testing.expectEqual(@as(usize, 16), a.sites.len);
-    // 4x4 block: first qubit sits in the compute-facing row at the block's left edge.
-    try std.testing.expectEqual(schedule.Site{ .row = 9, .col = 53 }, a.sites[0]);
+    try std.testing.expectEqual(@as(usize, 50), a.sites.len);
+    // 5x10 centered block (rows 2..6, cols 50..59): first qubit sits in the
+    // highest occupied row (compute-facing) at the block's left edge.
+    try std.testing.expectEqual(schedule.Site{ .row = 6, .col = 50 }, a.sites[0]);
 }
 
 test {

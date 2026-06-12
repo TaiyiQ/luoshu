@@ -106,6 +106,7 @@ pub fn build(b: *std.Build) void {
     });
     golden_mod.addImport("arch", arch_mod);
     golden_mod.addImport("assembly", assembly_mod);
+    golden_mod.addImport("route", route_mod);
     golden_mod.addImport("circuit", circuit_mod);
     golden_mod.addImport("compiler", compiler_mod);
     golden_mod.addImport("serialize", serialize_mod);
