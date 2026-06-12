@@ -40,6 +40,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
     assembly_mod.addImport("schedule", schedule_mod);
+    assembly_mod.addImport("arch", arch_mod);
     exe.root_module.addImport("assembly", assembly_mod);
 
     // Pass tracing, silent unless the driver enables it (-v).

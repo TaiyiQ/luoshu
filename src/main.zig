@@ -97,29 +97,15 @@ pub fn main(init: std.process.Init) !void {
     defer cfg.deinit(init.gpa);
     if (opts.verbose) cfg.print();
 
-    // The assembly handoff must address the storage SLM as the arch defines
-    // it, otherwise its (row, col) indices mean different trap coordinates.
     var asm_doc: ?assembly.Assembly = null;
     defer if (asm_doc) |a| a.deinit(init.gpa);
     if (opts.asm_path) |path| {
         const a = assembly.load(init.gpa, init.io, path) catch |err|
             fatal("cannot load assembly '{s}': {t}", .{ path, err });
         asm_doc = a;
-        if (pipeline.num_qubits > a.sites.len) {
-            fatal("circuit needs {d} qubits but assembly '{s}' delivers only {d} atoms", .{
-                pipeline.num_qubits, path, a.sites.len,
-            });
-        }
-        const slm = cfg.storage_zone.slm;
-        if (a.zone_id != cfg.storage_zone.zone_id or a.slm_id != slm.slm_id or
-            a.rows != slm.num_row or a.cols != slm.num_col)
-        {
-            fatal("assembly '{s}' (zone {d}, slm {d}, {d}x{d}) does not match the storage SLM (zone {d}, slm {d}, {d}x{d})", .{
-                path,        a.zone_id,                a.slm_id,   a.rows,
-                a.cols,      cfg.storage_zone.zone_id, slm.slm_id, slm.num_row,
-                slm.num_col,
-            });
-        }
+        // The detailed diagnostic (which field disagrees) prints in check.
+        assembly.check(a, cfg, pipeline.num_qubits) catch |err|
+            fatal("assembly '{s}' rejected: {t}", .{ path, err });
     }
 
     const initial_sites = if (asm_doc) |a| a.sites else null;
