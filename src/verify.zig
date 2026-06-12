@@ -16,6 +16,9 @@
 //!  - AOD hardware limits: held atoms never occupy more rows/columns than
 //!    `cfg.aod` allows, and no two AOD rows or columns sit closer than
 //!    `min_sep_nm`;
+//!  - single AOD row: the physical AOD drives one row tone, so all held
+//!    atoms share one y at the end of every frame (vertical register
+//!    moves are register-wide; only column tones move per-atom);
 //!  - blockade: during a rydberg pulse, no atom in the illuminated zone has
 //!    more than one neighbour within the blockade radius `db_nm`;
 //!  - measurement: measured qubits lie inside the named zone.
@@ -207,6 +210,27 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
                     cols, rows, aod.max_num_col, aod.max_num_row,
                 });
                 return error.AodCapacityExceeded;
+            }
+
+            // Single row tone: every held atom shares one y once the frame
+            // settles (the pickup choreography rides the register between
+            // storage rows as a unit).
+            if (rows > 1) {
+                var first: ?usize = null;
+                for (0..n) |a| {
+                    if (trap[a] != .aod) continue;
+                    const f = first orelse {
+                        first = a;
+                        continue;
+                    };
+                    if (pos[a].y != pos[f].y) {
+                        vfail(t, "AOD register split across rows: qubits {d} (y={d}) and {d} (y={d})", .{
+                            f, pos[f].y, a, pos[a].y,
+                        });
+                        break;
+                    }
+                }
+                return error.AodRowSplit;
             }
         }
 
@@ -528,7 +552,7 @@ test "catches more AOD columns than the hardware has" {
     try std.testing.expectError(error.AodCapacityExceeded, verify(gpa, &hw));
 }
 
-test "accepts two AOD atoms sharing a column" {
+test "catches an AOD register split across rows" {
     const gpa = std.testing.allocator;
     var hw = try makeHw(gpa, &.{ pt(0, 0), pt(1000, 0) });
     defer hw.deinit();
@@ -537,15 +561,12 @@ test "accepts two AOD atoms sharing a column" {
         .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
         .{ .load = .{ .qubit = 1, .position = pt(1000, 0) } },
     });
+    // Qubit 1 rises alone: the register would need a second row tone.
     try addFrame(&hw, &.{.{ .move = .{ .qubit = 1, .src = pt(1000, 0), .dest = pt(1000, 1000) } }});
-    // Qubit 1 joins qubit 0's column: zero x separation is one column, legal.
-    try addFrame(&hw, &.{.{ .move = .{ .qubit = 1, .src = pt(1000, 1000), .dest = pt(0, 1000) } }});
-    try addFrame(&hw, &.{
-        .{ .store = .{ .qubit = 0, .position = pt(0, 0) } },
-        .{ .store = .{ .qubit = 1, .position = pt(0, 1000) } },
-    });
 
-    try verify(gpa, &hw);
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(error.AodRowSplit, verify(gpa, &hw));
 }
 
 test "catches an atom left in the AOD at end of schedule" {
