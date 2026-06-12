@@ -263,6 +263,7 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !ArchConfig {
 pub const ConfigError = error{
     InvalidAodLimits,
     TooFewComputeSlms,
+    MismatchedComputeSlms,
     InvalidSlmGrid,
     SlmOutsideZone,
     ZonesOverlap,
@@ -301,6 +302,22 @@ pub fn validate(cfg: ArchConfig) ConfigError!void {
     }
     for (cfg.compute_zone.slms) |slm| {
         try validateSlm("compute", slm, cfg.compute_zone.dimension_nm);
+    }
+
+    // Sites are paired by (row, col) index across slms[0] and slms[1], with
+    // no bounds check downstream: the two grids must be congruent, or gates
+    // beyond the smaller grid land on traps that don't exist.
+    const pair_a = cfg.compute_zone.slms[0];
+    const pair_b = cfg.compute_zone.slms[1];
+    if (pair_a.num_row != pair_b.num_row or pair_a.num_col != pair_b.num_col or
+        pair_a.sep_nm[0] != pair_b.sep_nm[0] or pair_a.sep_nm[1] != pair_b.sep_nm[1])
+    {
+        cfail("Rydberg pair SLMs {d} and {d} must be congruent grids, got {d}x{d} sep=({d},{d})nm vs {d}x{d} sep=({d},{d})nm", .{
+            pair_a.slm_id,    pair_b.slm_id,    pair_a.num_row, pair_a.num_col,
+            pair_a.sep_nm[0], pair_a.sep_nm[1], pair_b.num_row, pair_b.num_col,
+            pair_b.sep_nm[0], pair_b.sep_nm[1],
+        });
+        return error.MismatchedComputeSlms;
     }
 
     // Zones must not overlap, and must keep the configured inter-zone gap so
@@ -468,6 +485,16 @@ fn testCfg() ArchConfig {
 
 test "validate accepts a well-formed config" {
     try validate(testCfg());
+}
+
+test "validate rejects mismatched Rydberg pair SLMs" {
+    var slms = test_compute_slms;
+    slms[1].num_col = 1;
+    var cfg = testCfg();
+    cfg.compute_zone.slms = &slms;
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(error.MismatchedComputeSlms, validate(cfg));
 }
 
 test "validate rejects a single compute SLM" {
