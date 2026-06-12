@@ -391,12 +391,14 @@ fn requireGap(a_name: []const u8, a: ZoneBox, b_name: []const u8, b: ZoneBox, ga
 
 // ── Conversion: um (f64) -> nm (integer) ─────────────────────────────────────
 
+// @round, not bare @intFromFloat: truncation silently loses a nanometre
+// whenever the product lands a hair under an integer (1.001 um -> 1000 nm).
 fn umToNm(um: f64) u32 {
-    return @intFromFloat(um * 1000.0);
+    return @intFromFloat(@round(um * 1000.0));
 }
 
 fn umToNmSigned(um: f64) i32 {
-    return @intFromFloat(um * 1000.0);
+    return @intFromFloat(@round(um * 1000.0));
 }
 
 fn convertSlm(raw: RawSlm) Slm {
@@ -556,6 +558,48 @@ test "validate rejects an out-of-range fidelity" {
 test "the example config loads and validates" {
     const cfg = try load(std.testing.allocator, std.testing.io, "arch.toml");
     defer cfg.deinit(std.testing.allocator);
+}
+
+test "umToNm rounds to the nearest nanometre" {
+    try std.testing.expectEqual(3000, umToNm(3.0));
+    try std.testing.expectEqual(2300, umToNm(2.3));
+    // Regression: truncation would yield 1000 (1.001 * 1000.0 lands a hair
+    // under 1001.0 in f64).
+    try std.testing.expectEqual(1001, umToNm(1.001));
+    try std.testing.expectEqual(-2500, umToNmSigned(-2.5));
+    try std.testing.expectEqual(-1001, umToNmSigned(-1.001));
+}
+
+test "Grid maps rows and columns to absolute nm coordinates" {
+    const g = Grid{
+        .origin_nm = .{ 1000, -2000 },
+        .sep_nm = .{ 3000, 1000 },
+        .num_row = 2,
+        .num_col = 4,
+    };
+    try std.testing.expectEqual(1000, g.x(0));
+    try std.testing.expectEqual(7000, g.x(2));
+    try std.testing.expectEqual(-2000, g.y(0));
+    try std.testing.expectEqual(-1000, g.y(1));
+    try std.testing.expectEqual(1500, g.halfSepX());
+    try std.testing.expectEqual(-1000, g.bottomRowY());
+}
+
+test "zone grids compose the zone offset with the SLM offset" {
+    const cfg = testCfg();
+    // Compute SLM 1 sits 2000 nm above the zone's bottom-left corner.
+    const g = cfg.compute_zone.grid(1);
+    try std.testing.expectEqual(0, g.x(0));
+    try std.testing.expectEqual(12000, g.y(0)); // zone y 10000 + slm offset 2000
+}
+
+test "corridorY lies in the trap-free lane between storage and compute" {
+    const cfg = try load(std.testing.allocator, std.testing.io, "arch.toml");
+    defer cfg.deinit(std.testing.allocator);
+
+    const cy = cfg.corridorY();
+    try std.testing.expect(cy > cfg.storage_zone.grid().bottomRowY());
+    try std.testing.expect(cy < cfg.compute_zone.grid(0).y(0));
 }
 
 test {
