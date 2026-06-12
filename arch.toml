@@ -23,8 +23,8 @@ max_num_col = 100 # physical limit of your AOD column component
 # Rydberg laser does NOT illuminate this region.
 [storage_zone]
 zone_id = 0
-offset_um = [0.0, 0.0]       # bottom-left corner (x, y)
-dimension_um = [330.0, 30.0] # width x height: covers the 100x10 trap grid (297x27um)
+offset_um = [0.0, 0.0]        # bottom-left corner (x, y)
+dimension_um = [1100.0, 30.0] # width x height: all zones share the compute
 
 [storage_zone.slm]
 slm_id = 0
@@ -40,7 +40,7 @@ offset_um = [0.0, 0.0] # relative to storage_zone.offset_um
 [compute_zone]
 zone_id = 1
 offset_um = [0.0, 50.0]
-dimension_um = [1100.0, 110.0] # covers the 100x10, 12um-pitch slm 1 grid (990x108um)
+dimension_um = [400.0, 110.0] # covers the 110x10, 12um-pitch slm grids (1090x110um)
 dr_um = 2.0                  # trap separation within a Rydberg site (laser spot size)
 dw_um = 10.0                 # site-to-site separation (must exceed blockade radius)
 
@@ -52,14 +52,14 @@ dw_um = 10.0                 # site-to-site separation (must exceed blockade rad
 [[compute_zone.slms]]
 slm_id = 1
 num_row = 10
-num_col = 110
+num_col = 40
 sep_um = [10.0, 12.0]   # [dr_um + dw_um, dw_um]
 offset_um = [0.0, 0.0] # relative to entangle_zone.offset_um
 
 [[compute_zone.slms]]
 slm_id = 2
 num_row = 10
-num_col = 110
+num_col = 40
 sep_um = [10.0, 12.0]
 offset_um = [0.0, 2.0]
 
@@ -68,13 +68,14 @@ offset_um = [0.0, 2.0]
 # compiler shuttles atoms here and parks them for imaging.
 [readout_zone]
 zone_id = 2
-offset_um = [0.0, 165.0] # compute zone now tops out at y=160; keep dz_um clearance
-dimension_um = [240.0, 10.0]
+offset_um = [0.0, 180.0] # compute zone box tops out at y=160; same 20um
+                         # zone gap as storage -> compute (30 -> 50)
+dimension_um = [400.0, 20.0]
 
 [readout_zone.slm]
 slm_id = 3
-num_row = 1
-num_col = 20
+num_row = 2
+num_col = 40
 sep_um = [4.0, 4.0]    # imaging spot spacing; >= aod.min_sep_um
 offset_um = [0.0, 0.0] # relative to readout_zone.offset_um
 
