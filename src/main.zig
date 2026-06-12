@@ -14,7 +14,7 @@ const usage =
     \\
     \\options:
     \\  --arch <file>       architecture TOML (default: ./arch.toml)
-    \\  --assembly <file>   storage occupancy JSON from the upstream
+    \\  --assembly <file>   storage occupancy JSON from the upstream (default: examples/assembly.json)
     \\                      atom-rearrangement package (default: procedural)
     \\  --emit-json <path>  write the hardware schedule as JSON
     \\  --draw              open the schedule visualization (default: true)
@@ -26,7 +26,7 @@ const usage =
 const Options = struct {
     qasm_path: []const u8,
     arch_path: []const u8 = "arch.toml",
-    assembly_path: ?[]const u8 = null,
+    assembly_path: ?[]const u8 = "./example/assembly.json",
     emit_json: ?[]const u8 = null,
     draw: bool = true,
     verbose: bool = false,

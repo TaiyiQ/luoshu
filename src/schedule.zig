@@ -538,12 +538,16 @@ pub const Hardware = struct {
     }
 
     // Pick up atoms from storage in `ord` order, traversing without
-    // crossing occupied sites.
+    // crossing occupied sites. The physical AOD drives a single row tone,
+    // so the register holds one shared y at every step; only the column
+    // (x) tones move per-atom. Atoms in other storage rows are reached by
+    // riding the whole register to their row.
     fn pickup(s: *Hardware, ord: []const usize) !Register {
         // Every picked-up atom occupies its own AOD column.
         if (ord.len > s.cfg.aod.max_num_col) return error.AodCapacityExceeded;
 
-        const d = s.cfg.storage_zone.grid().halfSepX();
+        const sgrid = s.cfg.storage_zone.grid();
+        const d = sgrid.halfSepX();
 
         var register: Register = .empty;
         errdefer register.deinit(s.gpa);
@@ -567,7 +571,9 @@ pub const Hardware = struct {
         for (ord[1..]) |q| {
             const next = s.placement[q];
 
-            if (next.isLeftOf(front)) {
+            if (next.pos.y != front.pos.y) {
+                try s.rideRegister(&register, next.pos.x, next.pos.y);
+            } else if (next.isLeftOf(front)) {
                 const dx: i32 = front.pos.x - next.pos.x;
                 for (register.items) |a| try s.moveAtom(a, 0, -d); // up
                 s.step();
@@ -594,11 +600,49 @@ pub const Hardware = struct {
             front = next;
         }
 
-        // Move all loaded atoms down together at the same timestep.
-        for (register.items) |a| try s.moveAtom(a, 0, 4 * d);
-        s.step();
+        // Stage the register in the trap-free band past the bottom storage
+        // row. From the bottom row that is a plain drop; from any other row
+        // the descent crosses trap rows, so ride instead.
+        const y_stage = sgrid.bottomRowY() + 4 * d;
+        if (front.pos.y == sgrid.bottomRowY()) {
+            for (register.items) |a| try s.moveAtom(a, 0, y_stage - a.pos.y);
+            s.step();
+        } else {
+            try s.rideRegister(&register, front.pos.x, y_stage);
+        }
 
         return register;
+    }
+
+    // Carries the whole register to `dest_y` in three steps: hover into the
+    // trap-free lane above the current row, pack the columns into the
+    // half-lanes left of `anchor_x`, then ride down/up as one row. Packing
+    // assigns lanes in current x order, so no two AOD columns cross; the
+    // half-lane x means the vertical ride crosses no trap site, whatever
+    // rows it passes. The register's shared y is preserved throughout.
+    fn rideRegister(s: *Hardware, register: *Register, anchor_x: i32, dest_y: i32) !void {
+        const sgrid = s.cfg.storage_zone.grid();
+        const d = sgrid.halfSepX();
+
+        for (register.items) |a| try s.moveAtom(a, 0, -d);
+        s.step();
+
+        const sorted = try s.gpa.dupe(*Atom, register.items);
+        defer s.gpa.free(sorted);
+        std.sort.block(*Atom, sorted, {}, struct {
+            fn lt(_: void, a: *const Atom, b: *const Atom) bool {
+                return a.pos.x < b.pos.x;
+            }
+        }.lt);
+        for (sorted, 0..) |a, i| {
+            const back: i32 = @intCast(sorted.len - 1 - i);
+            const dest_x = anchor_x - d - back * sgrid.sep_nm[0];
+            if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
+        }
+        s.step();
+
+        for (register.items) |a| try s.moveAtom(a, 0, dest_y - a.pos.y);
+        s.step();
     }
 
     fn pickUpAtom(
@@ -715,6 +759,82 @@ test "init rejects more qubits than loading-window sites" {
         error.SiteOutsideGrid,
         Hardware.init(std.testing.allocator, cfg, 1, &.{.{ .row = 1, .col = 0 }}),
     );
+}
+
+// The physical AOD drives a single row tone: at the end of every frame,
+// all atoms currently held in the AOD must share one y.
+test "pickup keeps the AOD register in a single row across storage rows" {
+    const gpa = std.testing.allocator;
+
+    var compute_slms = [2]arch.Slm{
+        .{ .slm_id = 1, .num_row = 2, .num_col = 4, .sep_nm = .{ 3000, 2000 }, .offset_nm = .{ 0, 0 } },
+        .{ .slm_id = 2, .num_row = 2, .num_col = 4, .sep_nm = .{ 3000, 2000 }, .offset_nm = .{ 0, 500 } },
+    };
+    const cfg = arch.ArchConfig{
+        .platform = .{ .name = "test", .version = "0" },
+        .aod = .{ .aod_id = 0, .min_sep_nm = 500, .max_num_row = 1, .max_num_col = 8 },
+        .storage_zone = .{
+            .zone_id = 0,
+            .offset_nm = .{ 0, 0 },
+            .dimension_nm = .{ 4000, 3000 },
+            .slm = .{ .slm_id = 0, .num_row = 3, .num_col = 4, .sep_nm = .{ 1000, 1000 }, .offset_nm = .{ 0, 0 } },
+        },
+        .compute_zone = .{
+            .zone_id = 1,
+            .offset_nm = .{ 0, 6000 },
+            .dimension_nm = .{ 12000, 4000 },
+            .dr_nm = 500,
+            .dw_nm = 2500,
+            .slms = &compute_slms,
+        },
+        .readout_zone = .{
+            .zone_id = 2,
+            .offset_nm = .{ 0, 12000 },
+            .dimension_nm = .{ 4000, 1000 },
+            .slm = .{ .slm_id = 3, .num_row = 1, .num_col = 4, .sep_nm = .{ 1000, 1000 }, .offset_nm = .{ 0, 0 } },
+        },
+        .constraints = .{
+            .db_nm = 1000,
+            .dz_nm = 1000,
+            .one_qubit_gate_fidelity = 1,
+            .two_qubit_gate_fidelity = 1,
+            .readout_fidelity = 1,
+        },
+    };
+
+    // Square-ish assembly: two atoms per storage row. The pickup order
+    // (0, 1, 2, 3) forces a same-row advance, a row change, and a final
+    // descent from a non-bottom row.
+    var hw = try Hardware.init(gpa, cfg, 4, &.{
+        .{ .row = 2, .col = 0 },
+        .{ .row = 2, .col = 2 },
+        .{ .row = 1, .col = 1 },
+        .{ .row = 1, .col = 3 },
+    });
+    defer hw.deinit();
+
+    try hw.moveSlmCompute(&.{ 0, 1, 2, 3 });
+
+    // Replay the frames, tracking which atoms the AOD holds and where.
+    var in_aod = std.AutoHashMap(u32, i32).init(gpa);
+    defer in_aod.deinit();
+
+    for (hw.frames.items) |frame| {
+        for (frame.items) |op| switch (op) {
+            .load => |l| try in_aod.put(l.qubit, l.position.y),
+            .store => |st| _ = in_aod.remove(st.qubit),
+            .move => |m| if (in_aod.contains(m.qubit)) try in_aod.put(m.qubit, m.dest.y),
+            else => {},
+        };
+
+        var row_y: ?i32 = null;
+        var it = in_aod.valueIterator();
+        while (it.next()) |y| {
+            if (row_y) |expected| {
+                try std.testing.expectEqual(expected, y.*);
+            } else row_y = y.*;
+        }
+    }
 }
 
 test {
