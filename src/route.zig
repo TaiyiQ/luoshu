@@ -721,6 +721,7 @@ fn placeSlmWithResting(
 ) ![]?usize {
     const boundary = if (n_aod > 0) n_aod - 1 else 0;
     const total = boundary + slm_order.len + resting_xs.len + boundary;
+
     const slots = try allocator.alloc(?usize, total);
     @memset(slots, null);
 
@@ -904,6 +905,34 @@ fn computeRestingPositions(
     return positions.toOwnedSlice(allocator);
 }
 
+/// Drops every slot column that neither the fixed SLM row nor any moveable
+/// timeframe occupies, compacting the layout to the far left of the compute
+/// zone. placeSlmWithResting over-reserves boundary and gap slots (it cannot
+/// know which ones logicalSchedule will use), so the surplus is trimmed here
+/// instead. Only relative slot order matters downstream, and removing an
+/// always-empty column preserves it. Compacts in place; returns the
+/// shortened slices.
+fn dropUnusedSlots(fixed: []?usize, moveable: [][]?usize) struct { []?usize, [][]?usize } {
+    var w: usize = 0;
+    for (fixed, 0..) |slm, c| {
+        var used = slm != null;
+        if (!used) {
+            for (moveable) |row| {
+                if (row[c] != null) {
+                    used = true;
+                    break;
+                }
+            }
+        }
+        if (!used) continue;
+        fixed[w] = fixed[c];
+        for (moveable) |row| row[w] = row[c];
+        w += 1;
+    }
+    for (moveable) |*row| row.* = row.*[0..w];
+    return .{ fixed[0..w], moveable };
+}
+
 pub fn computeSequence(allocator: std.mem.Allocator, g: *Graph) !Sequence {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
@@ -935,11 +964,12 @@ pub fn computeSequence(allocator: std.mem.Allocator, g: *Graph) !Sequence {
 
     const fixed = try placeSlmWithResting(arena_alloc, slm_order, resting_xs, aod.nodes.items.len);
     const moveable = try logicalSchedule(arena_alloc, g, aod, fixed);
+    const trimmed_fixed, const trimmed_moveable = dropUnusedSlots(fixed, moveable);
 
     return .{
         .arena = arena,
-        .fixed = fixed,
-        .moveable = moveable,
+        .fixed = trimmed_fixed,
+        .moveable = trimmed_moveable,
     };
 }
 
@@ -1095,95 +1125,4 @@ pub fn edgeColors(g: Graph) void {
 
         if (has_any) std.debug.print("\n", .{});
     }
-}
-
-pub fn aodTargets(g: *Graph, aod_order: []const usize, aod_targets: [][]usize) void {
-    if (!trace.enabled) return;
-    std.debug.print(">> AOD Target Positions\n", .{});
-
-    for (1..aod_targets.len) |c| {
-        const targets = aod_targets[c];
-        std.debug.print("Color {d} (parallel CZ layer):\n", .{c});
-
-        var shift: usize = 0;
-
-        for (aod_order, 0..) |aod_id, i| {
-            var partner: ?usize = null;
-
-            var e = g.edges[aod_id];
-            while (e) |edge| : (e = edge.next) {
-                if (edge.color == @as(i32, @intCast(c))) {
-                    partner = edge.y;
-                    break;
-                }
-            }
-
-            const target = targets[i];
-            if (partner) |p| {
-                std.debug.print("  AOD {d} (qubit {d}) -> ACTIVE partner {d} | column {d} (shift={d})\n", .{ i, aod_id, p, target, shift });
-            } else {
-                std.debug.print("  AOD {d} (qubit {d}) -> RESTING          | column {d} (shift={d} -> {d})\n", .{ i, aod_id, target, shift, shift + 1 });
-                shift += 1;
-            }
-        }
-    }
-}
-
-pub fn qubitPositions(
-    time_step: usize,
-    aod_order: []const usize,
-    slm_order: []const usize,
-    match: []const ?usize,
-    fixed_slm_slots: []const usize,
-    aod_slot: []const usize,
-) void {
-    if (!trace.enabled) return;
-    std.debug.print("\n=== Resting Positions Debug — Time Step t = {} (SLMs FIXED) ===\n", .{time_step});
-    std.debug.print("AOD order : ", .{});
-    for (aod_order) |id| std.debug.print("AOD{d} ", .{id});
-    std.debug.print("\nMatching  : ", .{});
-    for (match) |m| {
-        if (m) |v| std.debug.print("SLM{d} ", .{v}) else std.debug.print("null ", .{});
-    }
-    std.debug.print("\n\nFIXED SLM layout (never changes):\n", .{});
-    for (slm_order, 0..) |slm_id, i| {
-        std.debug.print("  SLM {d:2} → slot {d}\n", .{ slm_id, fixed_slm_slots[i] });
-    }
-
-    var max_slot: usize = 0;
-    for (fixed_slm_slots) |s| max_slot = @max(max_slot, s);
-    for (aod_slot) |s| max_slot = @max(max_slot, s);
-
-    std.debug.print("\nTrap layout this step:\n", .{});
-    std.debug.print("────────────────────────────────────\n", .{});
-    for (0..max_slot + 1) |slot| {
-        std.debug.print("Slot {d:2} → ", .{slot});
-        var printed = false;
-
-        for (slm_order, 0..) |slm_id, i| {
-            if (fixed_slm_slots[i] == slot) {
-                std.debug.print("SLM{d} (FIXED)", .{slm_id});
-                printed = true;
-                break;
-            }
-        }
-
-        if (!printed) {
-            for (aod_order, 0..) |aod_id, i| {
-                if (aod_slot[i] == slot) {
-                    if (match[i]) |slm_id| {
-                        std.debug.print("AOD{d} ↔ SLM{d}", .{ aod_id, slm_id });
-                    } else {
-                        std.debug.print("AOD{d} (RESTING GAP)", .{aod_id});
-                    }
-                    printed = true;
-                    break;
-                }
-            }
-        }
-
-        if (!printed) std.debug.print("(empty)", .{});
-        std.debug.print("\n", .{});
-    }
-    std.debug.print("────────────────────────────────────\nTotal slots used: {d}\n====================================\n\n", .{max_slot + 1});
 }

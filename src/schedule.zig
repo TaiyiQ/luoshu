@@ -205,8 +205,9 @@ pub const Hardware = struct {
         }
         s.step();
 
-        // Manhattan step 2: move all atoms to the compute zone row.
-        const y_dest = grid.y(1);
+        // Manhattan step 2: move all atoms to the compute zone's top row —
+        // gates pack into the top-left corner, nearest the storage corridor.
+        const y_dest = grid.y(0);
         for (register.items) |a| {
             try s.moveAtom(a, 0, y_dest - a.pos.y);
         }
@@ -402,8 +403,9 @@ pub const Hardware = struct {
         }
         s.step();
 
-        // Step 2: drop all atoms to SLM[1] row y.
-        const y_dest = grid.y(1);
+        // Step 2: drop all atoms to SLM[1]'s top row, pairing with the fixed
+        // atoms in SLM[0]'s top row.
+        const y_dest = grid.y(0);
         for (register.items) |a| {
             try s.moveAtom(a, 0, y_dest - a.pos.y);
         }
@@ -473,55 +475,76 @@ pub const Hardware = struct {
         s.step();
     }
 
-    // Shuttle every atom from the bottom storage row to the readout zone:
+    // Shuttle every atom from the storage zone to the readout zone:
     // fan out across the compute zone's trap-free inter-column lanes,
     // descend through the zone, then park at sequential readout columns.
+    //
+    // Gated atoms come home to the bottom storage row, but idle atoms
+    // still sit wherever assembly delivered them, possibly on several
+    // rows — and the AOD drives a single row tone, so the register makes
+    // one trip per occupied storage row. Rows nearest the compute zone
+    // empty first, so later descents cross only vacated trap rows.
     pub fn moveReadout(s: *Hardware) !void {
         if (s.placement.len == 0) return;
 
-        // Sort by current x so sequential column assignment preserves the
-        // AOD's left-to-right order.
+        // Sort by row (compute-facing bottom row first), then by x so
+        // sequential lane and column assignment preserves the AOD's
+        // left-to-right order within each trip.
         const order = try s.gpa.alloc(usize, s.placement.len);
         defer s.gpa.free(order);
         for (order, 0..) |*q, i| q.* = i;
         std.sort.block(usize, order, s.placement, struct {
             fn lt(p: []const Atom, a: usize, b: usize) bool {
+                if (p[a].pos.y != p[b].pos.y) return p[a].pos.y > p[b].pos.y;
                 return p[a].pos.x < p[b].pos.x;
             }
         }.lt);
 
-        for (order) |q| try s.loadAtom(&s.placement[q]);
-        s.step();
-
-        // Step 1: fan out, one inter-column lane per atom. Lanes sit at
-        // half-sep right of each compute column, so the descent crosses
-        // no trap sites.
         const cgrid = s.cfg.compute_zone.grid(0);
         const d_c = cgrid.halfSepX();
-        for (order, 0..) |q, i| {
-            const a = &s.placement[q];
-            const lane_x = cgrid.x(i) + d_c;
-            if (a.pos.x != lane_x) try s.moveAtom(a, lane_x - a.pos.x, 0);
-        }
-        s.step();
-
-        // Step 2: descend through the compute zone to the readout row.
         const rgrid = s.cfg.readout_zone.grid();
         const y_readout = rgrid.y(0);
-        for (order) |q| {
-            const a = &s.placement[q];
-            if (a.pos.y != y_readout) try s.moveAtom(a, 0, y_readout - a.pos.y);
-        }
-        s.step();
 
-        // Step 3: slide to sequential readout columns and deposit.
-        for (order, 0..) |q, i| {
-            const a = &s.placement[q];
-            const dest_x = rgrid.x(i);
-            if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
-            try s.storeAtom(a);
+        var start: usize = 0;
+        while (start < order.len) {
+            const row_y = s.placement[order[start]].pos.y;
+            var end = start;
+            while (end < order.len and s.placement[order[end]].pos.y == row_y) end += 1;
+            const trip = order[start..end];
+
+            for (trip) |q| try s.loadAtom(&s.placement[q]);
+            s.step();
+
+            // Step 1: fan out, one inter-column lane per atom. Lanes sit at
+            // half-sep right of each compute column, so the descent crosses
+            // no trap sites. Lane indices continue across trips, keeping the
+            // slide to column `i` clear of atoms already parked at columns
+            // below it.
+            for (trip, start..) |q, i| {
+                const a = &s.placement[q];
+                const lane_x = cgrid.x(i) + d_c;
+                if (a.pos.x != lane_x) try s.moveAtom(a, lane_x - a.pos.x, 0);
+            }
+            s.step();
+
+            // Step 2: descend through the compute zone to the readout row.
+            for (trip) |q| {
+                const a = &s.placement[q];
+                if (a.pos.y != y_readout) try s.moveAtom(a, 0, y_readout - a.pos.y);
+            }
+            s.step();
+
+            // Step 3: slide to sequential readout columns and deposit.
+            for (trip, start..) |q, i| {
+                const a = &s.placement[q];
+                const dest_x = rgrid.x(i);
+                if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
+                try s.storeAtom(a);
+            }
+            s.step();
+
+            start = end;
         }
-        s.step();
     }
 
     // Read out every qubit at its current position.
@@ -761,16 +784,15 @@ test "init rejects more qubits than loading-window sites" {
     );
 }
 
-// The physical AOD drives a single row tone: at the end of every frame,
-// all atoms currently held in the AOD must share one y.
-test "pickup keeps the AOD register in a single row across storage rows" {
-    const gpa = std.testing.allocator;
+var test_compute_slms = [2]arch.Slm{
+    .{ .slm_id = 1, .num_row = 2, .num_col = 4, .sep_nm = .{ 3000, 2000 }, .offset_nm = .{ 0, 0 } },
+    .{ .slm_id = 2, .num_row = 2, .num_col = 4, .sep_nm = .{ 3000, 2000 }, .offset_nm = .{ 0, 500 } },
+};
 
-    var compute_slms = [2]arch.Slm{
-        .{ .slm_id = 1, .num_row = 2, .num_col = 4, .sep_nm = .{ 3000, 2000 }, .offset_nm = .{ 0, 0 } },
-        .{ .slm_id = 2, .num_row = 2, .num_col = 4, .sep_nm = .{ 3000, 2000 }, .offset_nm = .{ 0, 500 } },
-    };
-    const cfg = arch.ArchConfig{
+// Small three-zone config for shuttling tests: 3x4 storage grid, two
+// compute SLMs, one readout row.
+fn testShuttleCfg() arch.ArchConfig {
+    return .{
         .platform = .{ .name = "test", .version = "0" },
         .aod = .{ .aod_id = 0, .min_sep_nm = 500, .max_num_row = 1, .max_num_col = 8 },
         .storage_zone = .{
@@ -785,7 +807,7 @@ test "pickup keeps the AOD register in a single row across storage rows" {
             .dimension_nm = .{ 12000, 4000 },
             .dr_nm = 500,
             .dw_nm = 2500,
-            .slms = &compute_slms,
+            .slms = &test_compute_slms,
         },
         .readout_zone = .{
             .zone_id = 2,
@@ -801,25 +823,16 @@ test "pickup keeps the AOD register in a single row across storage rows" {
             .readout_fidelity = 1,
         },
     };
+}
 
-    // Square-ish assembly: two atoms per storage row. The pickup order
-    // (0, 1, 2, 3) forces a same-row advance, a row change, and a final
-    // descent from a non-bottom row.
-    var hw = try Hardware.init(gpa, cfg, 4, &.{
-        .{ .row = 2, .col = 0 },
-        .{ .row = 2, .col = 2 },
-        .{ .row = 1, .col = 1 },
-        .{ .row = 1, .col = 3 },
-    });
-    defer hw.deinit();
-
-    try hw.moveSlmCompute(&.{ 0, 1, 2, 3 });
-
-    // Replay the frames, tracking which atoms the AOD holds and where.
+// Replays `frames`, asserting that all AOD-held atoms share one y at the
+// end of every frame (the physical AOD drives a single row tone). Returns
+// the held set so callers can also assert on the terminal state.
+fn expectSingleAodRow(gpa: std.mem.Allocator, frames: []const Frame) !std.AutoHashMap(u32, i32) {
     var in_aod = std.AutoHashMap(u32, i32).init(gpa);
-    defer in_aod.deinit();
+    errdefer in_aod.deinit();
 
-    for (hw.frames.items) |frame| {
+    for (frames) |frame| {
         for (frame.items) |op| switch (op) {
             .load => |l| try in_aod.put(l.qubit, l.position.y),
             .store => |st| _ = in_aod.remove(st.qubit),
@@ -835,6 +848,53 @@ test "pickup keeps the AOD register in a single row across storage rows" {
             } else row_y = y.*;
         }
     }
+    return in_aod;
+}
+
+test "pickup keeps the AOD register in a single row across storage rows" {
+    const gpa = std.testing.allocator;
+    const cfg = testShuttleCfg();
+
+    // Square-ish assembly: two atoms per storage row. The pickup order
+    // (0, 1, 2, 3) forces a same-row advance, a row change, and a final
+    // descent from a non-bottom row.
+    var hw = try Hardware.init(gpa, cfg, 4, &.{
+        .{ .row = 2, .col = 0 },
+        .{ .row = 2, .col = 2 },
+        .{ .row = 1, .col = 1 },
+        .{ .row = 1, .col = 3 },
+    });
+    defer hw.deinit();
+
+    try hw.moveSlmCompute(&.{ 0, 1, 2, 3 });
+
+    var in_aod = try expectSingleAodRow(gpa, hw.frames.items);
+    defer in_aod.deinit();
+}
+
+// Idle atoms can sit on any storage row at measurement time; readout
+// shuttling must still keep the single-row-tone register on one y, so
+// it makes one trip per occupied storage row.
+test "moveReadout keeps the AOD register in a single row across storage rows" {
+    const gpa = std.testing.allocator;
+
+    var hw = try Hardware.init(gpa, testShuttleCfg(), 4, &.{
+        .{ .row = 2, .col = 0 },
+        .{ .row = 2, .col = 2 },
+        .{ .row = 0, .col = 1 },
+        .{ .row = 0, .col = 3 },
+    });
+    defer hw.deinit();
+
+    try hw.moveReadout();
+
+    var in_aod = try expectSingleAodRow(gpa, hw.frames.items);
+    defer in_aod.deinit();
+
+    // Every atom parked on the readout row, none left in the AOD.
+    try std.testing.expectEqual(0, in_aod.count());
+    const y_readout = hw.cfg.readout_zone.grid().y(0);
+    for (hw.placement) |a| try std.testing.expectEqual(y_readout, a.pos.y);
 }
 
 test {

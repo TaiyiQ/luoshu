@@ -14,7 +14,7 @@ const usage =
     \\
     \\options:
     \\  --arch <file>       architecture TOML (default: ./arch.toml)
-    \\  --assembly <file>   storage occupancy JSON from the upstream
+    \\  --asm <file>   storage occupancy JSON from the upstream
     \\                      atom-rearrangement package
     \\                      (default: ./example/assembly.json)
     \\  --emit-json <path>  write the hardware schedule as JSON
@@ -56,7 +56,7 @@ fn parseArgs(arena: std.mem.Allocator, args: std.process.Args) !Options {
         } else if (std.mem.eql(u8, arg, "--arch")) {
             const v = it.next() orelse fatal("--arch expects a file", .{});
             opts.arch_path = try arena.dupe(u8, v);
-        } else if (std.mem.eql(u8, arg, "--assembly")) {
+        } else if (std.mem.eql(u8, arg, "--asm")) {
             const v = it.next() orelse fatal("--assembly expects a file", .{});
             opts.assembly_path = try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--emit-json")) {
