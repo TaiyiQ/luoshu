@@ -53,6 +53,12 @@ pub const cases = [_]Case{
         .sequence_path = "testdata/qft-5.sequence.json",
         .hardware_path = "testdata/qft-5.hardware.json",
     },
+    .{
+        .name = "cycle-6",
+        .build = buildCycle6,
+        .sequence_path = "testdata/cycle-6.sequence.json",
+        .hardware_path = "testdata/cycle-6.hardware.json",
+    },
 };
 
 pub fn buildBell(gpa: std.mem.Allocator) !circuit.Circuit {
@@ -94,6 +100,22 @@ pub fn buildGrid(gpa: std.mem.Allocator) !circuit.Circuit {
     try c.cz(4, 7);
     try c.cz(2, 5);
     try c.cz(5, 8);
+    return c;
+}
+
+// CZ ring over 6 qubits — mirrors route.buildCycleGraph. Its first
+// timeframe places the AOD atoms away from the leftmost compute columns,
+// pinning down that the entry move stores atoms directly at their
+// first-timeframe positions.
+pub fn buildCycle6(gpa: std.mem.Allocator) !circuit.Circuit {
+    var c = circuit.Circuit.init(gpa, 6);
+    errdefer c.deinit();
+    try c.cz(0, 1);
+    try c.cz(1, 2);
+    try c.cz(2, 3);
+    try c.cz(3, 4);
+    try c.cz(4, 5);
+    try c.cz(5, 0);
     return c;
 }
 
@@ -217,6 +239,10 @@ test "golden: grid" {
 
 test "golden: qft-5" {
     try goldenCase(cases[3]);
+}
+
+test "golden: cycle-6" {
+    try goldenCase(cases[4]);
 }
 
 test {

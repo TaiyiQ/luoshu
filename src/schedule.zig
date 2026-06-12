@@ -346,20 +346,24 @@ pub const Hardware = struct {
         s.step();
     }
 
+    // Every AOD qubit occupies a slot in every timeframe (active or
+    // resting), so the first row fixes both the pickup order and each
+    // atom's entry column: atoms are stored directly at their first
+    // timeframe positions, and the first sweep iteration degenerates
     pub fn moveAodCompute(s: *Hardware, moveable: [][]?usize) !void {
-        // Collect all unique qubit IDs across all timeframes.
+        if (moveable.len == 0) return;
+
+        // to the Rydberg pulse alone.
         var ordered: std.ArrayList(usize) = .empty;
         defer ordered.deinit(s.gpa);
 
-        var seen = std.AutoHashMap(usize, void).init(s.gpa);
-        defer seen.deinit();
+        var cols: std.ArrayList(usize) = .empty;
+        defer cols.deinit(s.gpa);
 
-        for (moveable) |row| {
-            for (row) |maybe_q| {
-                if (maybe_q) |q| {
-                    const gop = try seen.getOrPut(q);
-                    if (!gop.found_existing) try ordered.append(s.gpa, q);
-                }
+        for (moveable[0], 0..) |maybe_q, col| {
+            if (maybe_q) |q| {
+                try ordered.append(s.gpa, q);
+                try cols.append(s.gpa, col);
             }
         }
         if (ordered.items.len == 0) return;
@@ -372,9 +376,10 @@ pub const Hardware = struct {
         const grid = s.cfg.compute_zone.grid(1);
         const d = grid.halfSepX();
 
-        // Step 1: move each atom to its column x + d (inter-column offset avoids crossings).
-        for (register.items, 0..) |a, i| {
-            try s.moveAtom(a, grid.x(i) - a.pos.x + d, 0);
+        // Step 1: move each atom to its first-timeframe column x + d
+        // (inter-column offset avoids crossings).
+        for (register.items, cols.items) |a, col| {
+            try s.moveAtom(a, grid.x(col) - a.pos.x + d, 0);
         }
         s.step();
 
