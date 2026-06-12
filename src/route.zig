@@ -947,59 +947,27 @@ test {
     @import("testutil").refAllDeclsRecursive(@This());
 }
 
-test "snapshot: mvp - aod set, coloring, schedule shape" {
-    try @import("snapshot.zig").snapshotTest(
-        std.testing.allocator,
-        std.testing.io,
-        buildMvpGraph,
-        "testdata/mvp.json",
-    );
-}
+/// Graph snapshot cases, routed and byte-compared against testdata/. The
+/// snapshot tests below and `zig build update-snapshots` both walk this
+/// table, so the regenerator can never drift from the tests.
+pub const SnapshotCase = struct {
+    build: *const fn (std.mem.Allocator) anyerror!Graph,
+    path: []const u8,
+};
 
-test "snapshot: cycle" {
-    try @import("snapshot.zig").snapshotTest(
-        std.testing.allocator,
-        std.testing.io,
-        buildCycleGraph,
-        "testdata/cycle.json",
-    );
-}
+pub const snapshot_cases = [_]SnapshotCase{
+    .{ .build = buildMvpGraph, .path = "testdata/mvp.json" }, // aod set, coloring, schedule shape
+    .{ .build = buildCycleGraph, .path = "testdata/cycle.json" },
+    .{ .build = buildLadderGraph, .path = "testdata/ladder.json" }, // parallel AOD lanes
+    .{ .build = buildGridGraph, .path = "testdata/grid.json" }, // complex MIS and gap pressure
+    .{ .build = buildGhzGraph, .path = "testdata/ghz.json" }, // binary tree
+    .{ .build = buildQftGraph, .path = "testdata/qft.json" },
+};
 
-test "snapshot: ladder — parallel AOD lanes" {
-    try @import("snapshot.zig").snapshotTest(
-        std.testing.allocator,
-        std.testing.io,
-        buildLadderGraph,
-        "testdata/ladder.json",
-    );
-}
-
-// TODO
-test "snapshot: 3x3 grid — complex MIS and gap pressure" {
-    try @import("snapshot.zig").snapshotTest(
-        std.testing.allocator,
-        std.testing.io,
-        buildGridGraph,
-        "testdata/grid.json",
-    );
-}
-
-test "snapshot: ghz - binary tree" {
-    try @import("snapshot.zig").snapshotTest(
-        std.testing.allocator,
-        std.testing.io,
-        buildGhzGraph,
-        "testdata/ghz.json",
-    );
-}
-
-test "snapshot: qft" {
-    try @import("snapshot.zig").snapshotTest(
-        std.testing.allocator,
-        std.testing.io,
-        buildQftGraph,
-        "testdata/qft.json",
-    );
+test "snapshots: routed graphs match testdata/" {
+    for (snapshot_cases) |case| {
+        try @import("snapshot.zig").snapshotTest(std.testing.allocator, std.testing.io, case);
+    }
 }
 
 pub fn buildMvpGraph(allocator: std.mem.Allocator) !Graph {

@@ -5,20 +5,15 @@ const std = @import("std");
 const route = @import("route.zig");
 const serialize = @import("serialize");
 
-const Graph = route.Graph;
-
-pub const GraphBuilder = *const fn (std.mem.Allocator) anyerror!Graph;
-
-/// Runs computeSequence() on the graph produced by `build`, serialises the
-/// result, and compares it byte-for-byte against `snapshot_path`.
+/// Runs computeSequence() on the graph produced by `case.build`, serialises
+/// the result, and compares it byte-for-byte against `case.path`.
 /// Fails with a clear diff-style print if they diverge.
 pub fn snapshotTest(
     allocator: std.mem.Allocator,
     io: std.Io,
-    build: GraphBuilder,
-    snapshot_path: []const u8,
+    case: route.SnapshotCase,
 ) !void {
-    var g = try build(allocator);
+    var g = try case.build(allocator);
     defer g.deinit();
 
     var sequence = try route.computeSequence(allocator, &g);
@@ -27,12 +22,12 @@ pub fn snapshotTest(
     const actual = try serialize.sequenceToJson(allocator, sequence.fixed, sequence.moveable);
     defer allocator.free(actual);
 
-    const file = std.Io.Dir.cwd().openFile(io, snapshot_path, .{}) catch |err| {
+    const file = std.Io.Dir.cwd().openFile(io, case.path, .{}) catch |err| {
         if (err == error.FileNotFound) {
             std.debug.print(
                 "\nSnapshot missing: {s}\n" ++
                     "  Run `zig build update-snapshots` to generate it.\n",
-                .{snapshot_path},
+                .{case.path},
             );
         }
         return err;
@@ -47,7 +42,7 @@ pub fn snapshotTest(
     if (!std.mem.eql(u8, actual, expected)) {
         std.debug.print(
             "\nSnapshot mismatch: {s}\n--- expected ---\n{s}\n--- actual ---\n{s}\n",
-            .{ snapshot_path, expected, actual },
+            .{ case.path, expected, actual },
         );
         return error.SnapshotMismatch;
     }

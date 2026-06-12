@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
     // arch; compiler is the driver that orchestrates all of them.
 
     const arch_mod = b.addModule("arch", .{
-        .root_source_file = b.path("src/arch.zig"),
+        .root_source_file = b.path("src/architecture.zig"),
         .target = target,
     });
     exe.root_module.addImport("arch", arch_mod);

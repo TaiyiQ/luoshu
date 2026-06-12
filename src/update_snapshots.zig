@@ -12,26 +12,12 @@ const serialize = @import("serialize");
 const verify = @import("verify");
 const golden = @import("golden");
 
-const GraphCase = struct {
-    build: *const fn (std.mem.Allocator) anyerror!route.Graph,
-    path: []const u8,
-};
-
-// Must mirror the snapshot tests in route.zig.
-const graph_cases = [_]GraphCase{
-    .{ .build = route.buildMvpGraph, .path = "testdata/mvp.json" },
-    .{ .build = route.buildCycleGraph, .path = "testdata/cycle.json" },
-    .{ .build = route.buildLadderGraph, .path = "testdata/ladder.json" },
-    .{ .build = route.buildGridGraph, .path = "testdata/grid.json" },
-    .{ .build = route.buildGhzGraph, .path = "testdata/ghz.json" },
-    .{ .build = route.buildQftGraph, .path = "testdata/qft.json" },
-};
-
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
-    for (graph_cases) |case| {
+    // The graph snapshot cases live in route.zig, shared with its tests.
+    for (route.snapshot_cases) |case| {
         var g = try case.build(gpa);
         defer g.deinit();
 

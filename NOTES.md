@@ -27,7 +27,7 @@ src/
   graph.zig      — undirected/directed adjacency-list graph with per-edge integer colouring
   route.zig      — logical routing: MIS, DSatur edge colouring, SLM ordering, logical schedule
   schedule.zig   — physical schedule: storage placement, move ops, Raman ops, Rydberg ops
-  arch.zig       — architecture config types; TOML loader (µm → nm conversion)
+  architecture.zig       — architecture config types; TOML loader (µm → nm conversion)
   viz.zig        — Raylib interactive visualiser
   snapshot.zig   — snapshot test harness (needs repair — see Remaining Work)
   debug.zig      — debug printing helpers
@@ -147,7 +147,7 @@ Key notes on `qubitPlacement`:
 | §V-E | AOD x-sweep + Rydberg pulses | schedule.zig | ✅ |
 | §V-E | Move-back-to-storage after each run | schedule.zig | ✅ |
 | — | Pre-Raman, intermediate Raman, post-run Raman | schedule.zig | ✅ |
-| — | Architecture config (TOML, µm→nm) | arch.zig | ✅ |
+| — | Architecture config (TOML, µm→nm) | architecture.zig | ✅ |
 | — | Raylib visualiser | viz.zig | ✅ |
 | — | JSON output (logical + physical) | schedule.zig | ✅ |
 
