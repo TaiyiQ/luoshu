@@ -16,6 +16,12 @@ pub fn build(b: *std.Build) void {
     // circuit (front-end) and route depend only on std; schedule depends on
     // arch; compiler is the driver that orchestrates all of them.
 
+    const cli_mod = b.addModule("cli", .{
+        .root_source_file = b.path("src/cli.zig"),
+        .target = target,
+    });
+    exe.root_module.addImport("cli", cli_mod);
+
     const arch_mod = b.addModule("arch", .{
         .root_source_file = b.path("src/architecture.zig"),
         .target = target,

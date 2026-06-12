@@ -8,92 +8,21 @@ const draw = @import("draw");
 const serialize = @import("serialize");
 const trace = @import("trace");
 const verify = @import("verify");
-
-const usage =
-    \\usage: gatecomp <circuit.qasm> [options]
-    \\
-    \\options:
-    \\  --arch <file>       architecture TOML (default: ./arch.toml)
-    \\  --asm <file>        storage occupancy JSON from the upstream
-    \\                      atom-rearrangement package
-    \\                      (default: ./example/assembly.json)
-    \\  --output <path>     write the hardware schedule as JSON
-    \\  --draw / --no-draw  open the schedule visualization (default: on)
-    \\  -v, --verbose       trace the compiler passes to stderr
-    \\  -h, --help          show this help
-    \\
-;
-
-const Options = struct {
-    qasm_path: []const u8,
-    arch_path: []const u8 = "arch.toml",
-    asm_path: ?[]const u8 = "./example/assembly.json",
-    output: ?[]const u8 = null,
-    draw: bool = true,
-    verbose: bool = false,
-};
-
-fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
-    std.debug.print("gatecomp: " ++ fmt ++ "\n", args);
-    std.process.exit(1);
-}
-
-/// Parses argv into Options. String values are duped into `arena` because
-/// the iterator's slices don't outlive it.
-fn parseArgs(arena: std.mem.Allocator, args: std.process.Args) !Options {
-    var it = try std.process.Args.Iterator.initAllocator(args, arena);
-    defer it.deinit();
-    _ = it.next(); // argv[0]
-
-    var qasm_path: ?[]const u8 = null;
-    var opts = Options{ .qasm_path = undefined };
-
-    while (it.next()) |argument| {
-        const arg = std.mem.sliceTo(argument, 0);
-        if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            std.debug.print(usage, .{});
-            std.process.exit(0);
-        } else if (std.mem.eql(u8, arg, "--arch")) {
-            const v = it.next() orelse fatal("--arch expects a file", .{});
-            opts.arch_path = try arena.dupe(u8, v);
-        } else if (std.mem.eql(u8, arg, "--asm")) {
-            const v = it.next() orelse fatal("--asm expects a file", .{});
-            opts.asm_path = try arena.dupe(u8, v);
-        } else if (std.mem.eql(u8, arg, "--output")) {
-            const v = it.next() orelse fatal("--output expects a path", .{});
-            opts.output = try arena.dupe(u8, v);
-        } else if (std.mem.eql(u8, arg, "--draw")) {
-            opts.draw = true;
-        } else if (std.mem.eql(u8, arg, "--no-draw")) {
-            opts.draw = false;
-        } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
-            opts.verbose = true;
-        } else if (std.mem.startsWith(u8, arg, "-")) {
-            fatal("unknown option '{s}'\n\n" ++ usage, .{arg});
-        } else if (qasm_path == null) {
-            qasm_path = try arena.dupe(u8, arg);
-        } else {
-            fatal("unexpected argument '{s}'\n\n" ++ usage, .{arg});
-        }
-    }
-
-    opts.qasm_path = qasm_path orelse fatal("missing <circuit.qasm>\n\n" ++ usage, .{});
-    return opts;
-}
+const cli = @import("cli");
 
 pub fn main(init: std.process.Init) !void {
-    const opts = try parseArgs(init.arena.allocator(), init.minimal.args);
+    const opts = try cli.parseArgs(init.arena.allocator(), init.minimal.args);
     trace.enabled = opts.verbose;
 
     var circ = circuit.load(init.gpa, init.io, opts.qasm_path) catch |err|
-        fatal("cannot load circuit '{s}': {t}", .{ opts.qasm_path, err });
+        cli.fatal("cannot load circuit '{s}': {t}", .{ opts.qasm_path, err });
     defer circ.deinit();
 
     var pipeline = try circuit.decompose(init.gpa, circ);
     defer pipeline.deinit();
 
     const cfg = arch.load(init.gpa, init.io, opts.arch_path) catch |err|
-        fatal("cannot load architecture '{s}': {t}", .{ opts.arch_path, err });
+        cli.fatal("cannot load architecture '{s}': {t}", .{ opts.arch_path, err });
     defer cfg.deinit(init.gpa);
     if (opts.verbose) cfg.print();
 
@@ -101,11 +30,11 @@ pub fn main(init: std.process.Init) !void {
     defer if (asm_doc) |a| a.deinit(init.gpa);
     if (opts.asm_path) |path| {
         const a = assembly.load(init.gpa, init.io, path) catch |err|
-            fatal("cannot load assembly '{s}': {t}", .{ path, err });
+            cli.fatal("cannot load assembly '{s}': {t}", .{ path, err });
         asm_doc = a;
         // The detailed diagnostic (which field disagrees) prints in check.
         assembly.check(a, cfg, pipeline.num_qubits) catch |err|
-            fatal("assembly '{s}' rejected: {t}", .{ path, err });
+            cli.fatal("assembly '{s}' rejected: {t}", .{ path, err });
     }
 
     const initial_sites = if (asm_doc) |a| a.sites else null;

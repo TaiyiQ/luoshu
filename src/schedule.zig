@@ -806,8 +806,20 @@ test "init rejects more qubits than loading-window sites" {
 }
 
 var test_compute_slms = [2]arch.Slm{
-    .{ .slm_id = 1, .num_row = 2, .num_col = 4, .sep_nm = .{ 3000, 2000 }, .offset_nm = .{ 0, 0 } },
-    .{ .slm_id = 2, .num_row = 2, .num_col = 4, .sep_nm = .{ 3000, 2000 }, .offset_nm = .{ 0, 500 } },
+    .{
+        .slm_id = 1,
+        .num_row = 2,
+        .num_col = 4,
+        .sep_nm = .{ 3000, 2000 },
+        .offset_nm = .{ 0, 0 },
+    },
+    .{
+        .slm_id = 2,
+        .num_row = 2,
+        .num_col = 4,
+        .sep_nm = .{ 3000, 2000 },
+        .offset_nm = .{ 0, 500 },
+    },
 };
 
 // Small three-zone config for shuttling tests: 3x4 storage grid, two
@@ -815,12 +827,23 @@ var test_compute_slms = [2]arch.Slm{
 fn testShuttleCfg() arch.ArchConfig {
     return .{
         .platform = .{ .name = "test", .version = "0" },
-        .aod = .{ .aod_id = 0, .min_sep_nm = 500, .max_num_row = 1, .max_num_col = 8 },
+        .aod = .{
+            .aod_id = 0,
+            .min_sep_nm = 500,
+            .max_num_row = 1,
+            .max_num_col = 8,
+        },
         .storage_zone = .{
             .zone_id = 0,
             .offset_nm = .{ 0, 0 },
             .dimension_nm = .{ 4000, 3000 },
-            .slm = .{ .slm_id = 0, .num_row = 3, .num_col = 4, .sep_nm = .{ 1000, 1000 }, .offset_nm = .{ 0, 0 } },
+            .slm = .{
+                .slm_id = 0,
+                .num_row = 3,
+                .num_col = 4,
+                .sep_nm = .{ 1000, 1000 },
+                .offset_nm = .{ 0, 0 },
+            },
         },
         .compute_zone = .{
             .zone_id = 1,
@@ -834,7 +857,13 @@ fn testShuttleCfg() arch.ArchConfig {
             .zone_id = 2,
             .offset_nm = .{ 0, 12000 },
             .dimension_nm = .{ 4000, 1000 },
-            .slm = .{ .slm_id = 3, .num_row = 1, .num_col = 4, .sep_nm = .{ 1000, 1000 }, .offset_nm = .{ 0, 0 } },
+            .slm = .{
+                .slm_id = 3,
+                .num_row = 1,
+                .num_col = 4,
+                .sep_nm = .{ 1000, 1000 },
+                .offset_nm = .{ 0, 0 },
+            },
         },
         .constraints = .{
             .db_nm = 1000,
