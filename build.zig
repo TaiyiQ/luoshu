@@ -82,22 +82,6 @@ pub fn build(b: *std.Build) void {
     verify_mod.addImport("arch", arch_mod);
     exe.root_module.addImport("verify", verify_mod);
 
-    // Test-only helper (refAllDeclsRecursive). A named module because a file
-    // may belong to only one module, so per-module file imports won't do.
-    const testutil_mod = b.createModule(.{
-        .root_source_file = b.path("src/testutil.zig"),
-        .target = target,
-    });
-    arch_mod.addImport("testutil", testutil_mod);
-    assembly_mod.addImport("testutil", testutil_mod);
-    trace_mod.addImport("testutil", testutil_mod);
-    circuit_mod.addImport("testutil", testutil_mod);
-    schedule_mod.addImport("testutil", testutil_mod);
-    route_mod.addImport("testutil", testutil_mod);
-    serialize_mod.addImport("testutil", testutil_mod);
-    compiler_mod.addImport("testutil", testutil_mod);
-    verify_mod.addImport("testutil", testutil_mod);
-
     // Golden tests over the full pipeline: circuit -> Sequence/Hardware JSON,
     // compared byte-for-byte against testdata/ snapshots.
     const golden_mod = b.createModule(.{
@@ -111,7 +95,6 @@ pub fn build(b: *std.Build) void {
     golden_mod.addImport("compiler", compiler_mod);
     golden_mod.addImport("serialize", serialize_mod);
     golden_mod.addImport("verify", verify_mod);
-    golden_mod.addImport("testutil", testutil_mod);
 
     // draw's raylib-free precompute, split out so it is unit-testable.
     const viewmodel_mod = b.addModule("viewmodel", .{
@@ -120,7 +103,6 @@ pub fn build(b: *std.Build) void {
     });
     viewmodel_mod.addImport("schedule", schedule_mod);
     viewmodel_mod.addImport("arch", arch_mod);
-    viewmodel_mod.addImport("testutil", testutil_mod);
 
     const draw_mod = b.addModule("draw", .{
         .root_source_file = b.path("src/draw.zig"),
@@ -157,8 +139,8 @@ pub fn build(b: *std.Build) void {
 
     // --- Tests: `zig build test`.
     // draw is excluded: testing it would link raylib; it is still compiled by
-    // the exe build. Every other module carries a refAllDeclsRecursive test,
-    // so dead code fails the build instead of bit-rotting.
+    // the exe build. Every other module carries a std.testing.refAllDecls
+    // test, so dead code fails the build instead of bit-rotting.
 
     const test_step = b.step("test", "Run unit and golden tests");
     const test_mods = [_]*std.Build.Module{

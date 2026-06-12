@@ -620,5 +620,5 @@ test "catches a measurement outside its zone" {
 }
 
 test {
-    @import("testutil").refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }

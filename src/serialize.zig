@@ -1,5 +1,6 @@
 //! JSON serialization for compiler outputs. All output formats live here so
 //! the contract with downstream consumers is reviewable in one place.
+
 const std = @import("std");
 const schedule = @import("schedule");
 
@@ -74,7 +75,11 @@ pub fn hardwareToJson(gpa: std.mem.Allocator, hw: *const schedule.Hardware) ![]u
                     try w.writeAll("      \"targets\": [\n");
                     for (r.targets, 0..) |target, j| {
                         const last = j == r.targets.len - 1;
-                        try w.print("        {{ \"qubit\": {d}, \"x\": {d}, \"y\": {d} }}", .{ target.qubit, target.pos.x, target.pos.y });
+                        try w.print("        {{ \"qubit\": {d}, \"x\": {d}, \"y\": {d} }}", .{
+                            target.qubit,
+                            target.pos.x,
+                            target.pos.y,
+                        });
                         try w.writeAll(if (last) "\n" else ",\n");
                     }
                     try w.writeAll("      ]\n");
@@ -166,5 +171,5 @@ fn zoneName(z: schedule.Zone) []const u8 {
 }
 
 test {
-    @import("testutil").refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }

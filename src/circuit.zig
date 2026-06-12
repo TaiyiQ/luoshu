@@ -573,5 +573,5 @@ pub const QasmParser = struct {
 };
 
 test {
-    @import("testutil").refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }

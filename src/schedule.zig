@@ -898,5 +898,5 @@ test "moveReadout keeps the AOD register in a single row across storage rows" {
 }
 
 test {
-    @import("testutil").refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }

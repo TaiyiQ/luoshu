@@ -261,5 +261,5 @@ test "summary counts ops and num_qubits spans all op kinds" {
 }
 
 test {
-    @import("testutil").refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }

@@ -974,7 +974,7 @@ pub fn computeSequence(allocator: std.mem.Allocator, g: *Graph) !Sequence {
 }
 
 test {
-    @import("testutil").refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }
 
 /// Graph snapshot cases, routed and byte-compared against testdata/. The

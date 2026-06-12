@@ -559,5 +559,5 @@ test "the example config loads and validates" {
 }
 
 test {
-    @import("testutil").refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }

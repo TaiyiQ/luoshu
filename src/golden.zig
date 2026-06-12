@@ -308,5 +308,5 @@ test "assembly: qft-5 compiles legally from example/assembly.json" {
 }
 
 test {
-    @import("testutil").refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }

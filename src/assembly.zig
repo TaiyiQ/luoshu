@@ -6,6 +6,7 @@
 //! grid.y(row)). Qubit ids are assigned by scanning the highest row index
 //! (compute-facing) first, columns left to right — the same order the
 //! procedural placement in schedule.Hardware.init uses.
+
 const std = @import("std");
 const schedule = @import("schedule");
 
@@ -123,25 +124,47 @@ test "parse orders sites compute-facing row first, columns left to right" {
 }
 
 test "parse rejects an atom count that disagrees with the occupancy" {
-    const doc = try std.mem.replaceOwned(u8, std.testing.allocator, test_doc, "\"num_atoms\": 3", "\"num_atoms\": 4");
+    const doc = try std.mem.replaceOwned(
+        u8,
+        std.testing.allocator,
+        test_doc,
+        "\"num_atoms\": 3",
+        "\"num_atoms\": 4",
+    );
     defer std.testing.allocator.free(doc);
     try std.testing.expectError(error.AtomCountMismatch, parse(std.testing.allocator, doc));
 }
 
 test "parse rejects an occupancy matrix that disagrees with rows/cols" {
-    const doc = try std.mem.replaceOwned(u8, std.testing.allocator, test_doc, "\"cols\": 4", "\"cols\": 5");
+    const doc = try std.mem.replaceOwned(
+        u8,
+        std.testing.allocator,
+        test_doc,
+        "\"cols\": 4",
+        "\"cols\": 5",
+    );
     defer std.testing.allocator.free(doc);
     try std.testing.expectError(error.MalformedOccupancy, parse(std.testing.allocator, doc));
 }
 
 test "parse rejects occupancy cells other than 0 and 1" {
-    const doc = try std.mem.replaceOwned(u8, std.testing.allocator, test_doc, "[0,1,1,0]", "[0,2,1,0]");
+    const doc = try std.mem.replaceOwned(
+        u8,
+        std.testing.allocator,
+        test_doc,
+        "[0,1,1,0]",
+        "[0,2,1,0]",
+    );
     defer std.testing.allocator.free(doc);
     try std.testing.expectError(error.Overflow, parse(std.testing.allocator, doc));
 }
 
 test "the example assembly file loads" {
-    const a = try load(std.testing.allocator, std.testing.io, "example/assembly.json");
+    const a = try load(
+        std.testing.allocator,
+        std.testing.io,
+        "example/assembly.json",
+    );
     defer a.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(u32, 10), a.rows);
@@ -153,5 +176,5 @@ test "the example assembly file loads" {
 }
 
 test {
-    @import("testutil").refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }

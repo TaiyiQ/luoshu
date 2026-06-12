@@ -6,6 +6,7 @@
 //! do not import each other:
 //!
 //!     arch <- schedule <- compiler -> route -> circuit
+
 const std = @import("std");
 const arch = @import("arch");
 const circuit = @import("circuit");
@@ -107,5 +108,5 @@ pub fn compile(
 }
 
 test {
-    @import("testutil").refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }

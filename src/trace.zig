@@ -12,5 +12,5 @@ pub fn print(comptime fmt: []const u8, args: anytype) void {
 }
 
 test {
-    @import("testutil").refAllDeclsRecursive(@This());
+    std.testing.refAllDecls(@This());
 }
