@@ -14,10 +14,10 @@ const usage =
     \\
     \\options:
     \\  --arch <file>       architecture TOML (default: ./arch.toml)
-    \\  --asm <file>   storage occupancy JSON from the upstream
+    \\  --asm <file>        storage occupancy JSON from the upstream
     \\                      atom-rearrangement package
     \\                      (default: ./example/assembly.json)
-    \\  --emit-json <path>  write the hardware schedule as JSON
+    \\  --output <path>     write the hardware schedule as JSON
     \\  --draw / --no-draw  open the schedule visualization (default: on)
     \\  -v, --verbose       trace the compiler passes to stderr
     \\  -h, --help          show this help
@@ -27,8 +27,8 @@ const usage =
 const Options = struct {
     qasm_path: []const u8,
     arch_path: []const u8 = "arch.toml",
-    assembly_path: ?[]const u8 = "./example/assembly.json",
-    emit_json: ?[]const u8 = null,
+    asm_path: ?[]const u8 = "./example/assembly.json",
+    output: ?[]const u8 = null,
     draw: bool = true,
     verbose: bool = false,
 };
@@ -57,11 +57,11 @@ fn parseArgs(arena: std.mem.Allocator, args: std.process.Args) !Options {
             const v = it.next() orelse fatal("--arch expects a file", .{});
             opts.arch_path = try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--asm")) {
-            const v = it.next() orelse fatal("--assembly expects a file", .{});
-            opts.assembly_path = try arena.dupe(u8, v);
-        } else if (std.mem.eql(u8, arg, "--emit-json")) {
-            const v = it.next() orelse fatal("--emit-json expects a path", .{});
-            opts.emit_json = try arena.dupe(u8, v);
+            const v = it.next() orelse fatal("--asm expects a file", .{});
+            opts.asm_path = try arena.dupe(u8, v);
+        } else if (std.mem.eql(u8, arg, "--output")) {
+            const v = it.next() orelse fatal("--output expects a path", .{});
+            opts.output = try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--draw")) {
             opts.draw = true;
         } else if (std.mem.eql(u8, arg, "--no-draw")) {
@@ -101,7 +101,7 @@ pub fn main(init: std.process.Init) !void {
     // it, otherwise its (row, col) indices mean different trap coordinates.
     var asm_doc: ?assembly.Assembly = null;
     defer if (asm_doc) |a| a.deinit(init.gpa);
-    if (opts.assembly_path) |path| {
+    if (opts.asm_path) |path| {
         const a = assembly.load(init.gpa, init.io, path) catch |err|
             fatal("cannot load assembly '{s}': {t}", .{ path, err });
         asm_doc = a;
@@ -127,7 +127,7 @@ pub fn main(init: std.process.Init) !void {
     defer sch.deinit();
     if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
 
-    if (opts.emit_json) |path| {
+    if (opts.output) |path| {
         try serialize.writeHardware(init.gpa, init.io, path, &sch);
     }
 
