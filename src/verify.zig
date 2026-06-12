@@ -308,12 +308,24 @@ const Bounds = struct { min: Point, max: Point };
 
 fn zoneBounds(cfg: arch.ArchConfig, zone: schedule.Zone) Bounds {
     const offset, const dim = switch (zone) {
-        .storage => .{ cfg.storage_zone.offset_nm, cfg.storage_zone.dimension_nm },
-        .compute => .{ cfg.compute_zone.offset_nm, cfg.compute_zone.dimension_nm },
-        .readout => .{ cfg.readout_zone.offset_nm, cfg.readout_zone.dimension_nm },
+        .storage => .{
+            cfg.storage_zone.offset_nm,
+            cfg.storage_zone.dimension_nm,
+        },
+        .compute => .{
+            cfg.compute_zone.offset_nm,
+            cfg.compute_zone.dimension_nm,
+        },
+        .readout => .{
+            cfg.readout_zone.offset_nm,
+            cfg.readout_zone.dimension_nm,
+        },
     };
     return .{
-        .min = .{ .x = offset[0], .y = offset[1] },
+        .min = .{
+            .x = offset[0],
+            .y = offset[1],
+        },
         .max = .{
             .x = offset[0] + @as(i32, @intCast(dim[0])),
             .y = offset[1] + @as(i32, @intCast(dim[1])),
@@ -367,16 +379,48 @@ fn testCfg() arch.ArchConfig {
     };
     return .{
         .platform = .{ .name = "test", .version = "0" },
-        .aod = .{ .aod_id = 0, .min_sep_nm = 100, .max_num_row = 4, .max_num_col = 4 },
-        .storage_zone = .{ .zone_id = 0, .offset_nm = .{ 0, 0 }, .dimension_nm = .{ 4000, 2000 }, .slm = slm },
-        .compute_zone = .{ .zone_id = 1, .offset_nm = .{ 0, 5000 }, .dimension_nm = .{ 4000, 2000 }, .dr_nm = 200, .dw_nm = 1000, .slms = &test_no_slms },
-        .readout_zone = .{ .zone_id = 2, .offset_nm = .{ 0, 9000 }, .dimension_nm = .{ 4000, 1000 }, .slm = slm },
-        .constraints = .{ .db_nm = 300, .dz_nm = 100, .one_qubit_gate_fidelity = 1, .two_qubit_gate_fidelity = 1, .readout_fidelity = 1 },
+        .aod = .{
+            .aod_id = 0,
+            .min_sep_nm = 100,
+            .max_num_row = 4,
+            .max_num_col = 4,
+        },
+        .storage_zone = .{
+            .zone_id = 0,
+            .offset_nm = .{ 0, 0 },
+            .dimension_nm = .{ 4000, 2000 },
+            .slm = slm,
+        },
+        .compute_zone = .{
+            .zone_id = 1,
+            .offset_nm = .{ 0, 5000 },
+            .dimension_nm = .{ 4000, 2000 },
+            .dr_nm = 200,
+            .dw_nm = 1000,
+            .slms = &test_no_slms,
+        },
+        .readout_zone = .{
+            .zone_id = 2,
+            .offset_nm = .{ 0, 9000 },
+            .dimension_nm = .{ 4000, 1000 },
+            .slm = slm,
+        },
+        .constraints = .{
+            .db_nm = 300,
+            .dz_nm = 100,
+            .one_qubit_gate_fidelity = 1,
+            .two_qubit_gate_fidelity = 1,
+            .readout_fidelity = 1,
+        },
     };
 }
 
 fn makeHw(gpa: std.mem.Allocator, initial: []const Point) !schedule.Hardware {
-    var hw = schedule.Hardware{ .gpa = gpa, .arena = .init(gpa), .cfg = testCfg() };
+    var hw = schedule.Hardware{
+        .gpa = gpa,
+        .arena = .init(gpa),
+        .cfg = testCfg(),
+    };
     hw.initial = try hw.arena.allocator().dupe(Point, initial);
     return hw;
 }
@@ -397,12 +441,40 @@ test "accepts a legal load-move-store round trip" {
     var hw = try makeHw(gpa, &.{ pt(0, 0), pt(1000, 0) });
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{ .load = .{ .qubit = 0, .position = pt(0, 0) } }});
-    try addFrame(&hw, &.{.{ .move = .{ .qubit = 0, .src = pt(0, 0), .dest = pt(0, 500) } }});
-    try addFrame(&hw, &.{.{ .move = .{ .qubit = 0, .src = pt(0, 500), .dest = pt(2000, 500) } }});
+    try addFrame(&hw, &.{.{
+        .load = .{
+            .qubit = 0,
+            .position = pt(0, 0),
+        },
+    }});
+    try addFrame(&hw, &.{.{
+        .move = .{
+            .qubit = 0,
+            .src = pt(0, 0),
+            .dest = pt(0, 500),
+        },
+    }});
+    try addFrame(&hw, &.{.{
+        .move = .{
+            .qubit = 0,
+            .src = pt(0, 500),
+            .dest = pt(2000, 500),
+        },
+    }});
     try addFrame(&hw, &.{
-        .{ .move = .{ .qubit = 0, .src = pt(2000, 500), .dest = pt(2000, 0) } },
-        .{ .store = .{ .qubit = 0, .position = pt(2000, 0) } },
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(2000, 500),
+                .dest = pt(2000, 0),
+            },
+        },
+        .{
+            .store = .{
+                .qubit = 0,
+                .position = pt(2000, 0),
+            },
+        },
     });
 
     try verify(gpa, &hw);
@@ -414,8 +486,18 @@ test "catches a load while already in the AOD" {
     defer hw.deinit();
 
     try addFrame(&hw, &.{
-        .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
-        .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
+        },
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
+        },
     });
 
     quiet = true;
@@ -428,7 +510,13 @@ test "catches a move of a stored atom" {
     var hw = try makeHw(gpa, &.{pt(0, 0)});
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{ .move = .{ .qubit = 0, .src = pt(0, 0), .dest = pt(1000, 0) } }});
+    try addFrame(&hw, &.{.{
+        .move = .{
+            .qubit = 0,
+            .src = pt(0, 0),
+            .dest = pt(1000, 0),
+        },
+    }});
 
     quiet = true;
     defer quiet = false;
@@ -440,8 +528,19 @@ test "catches a move whose source disagrees with the replayed position" {
     var hw = try makeHw(gpa, &.{pt(0, 0)});
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{ .load = .{ .qubit = 0, .position = pt(0, 0) } }});
-    try addFrame(&hw, &.{.{ .move = .{ .qubit = 0, .src = pt(500, 0), .dest = pt(1000, 0) } }});
+    try addFrame(&hw, &.{.{
+        .load = .{
+            .qubit = 0,
+            .position = pt(0, 0),
+        },
+    }});
+    try addFrame(&hw, &.{.{
+        .move = .{
+            .qubit = 0,
+            .src = pt(500, 0),
+            .dest = pt(1000, 0),
+        },
+    }});
 
     quiet = true;
     defer quiet = false;
@@ -453,9 +552,20 @@ test "catches a sweep through an occupied trap site" {
     var hw = try makeHw(gpa, &.{ pt(0, 0), pt(2000, 0) });
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{ .load = .{ .qubit = 1, .position = pt(2000, 0) } }});
+    try addFrame(&hw, &.{.{
+        .load = .{
+            .qubit = 1,
+            .position = pt(2000, 0),
+        },
+    }});
     // Qubit 1 sweeps left through qubit 0's trap at (0,0).
-    try addFrame(&hw, &.{.{ .move = .{ .qubit = 1, .src = pt(2000, 0), .dest = pt(-2000, 0) } }});
+    try addFrame(&hw, &.{.{
+        .move = .{
+            .qubit = 1,
+            .src = pt(2000, 0),
+            .dest = pt(-2000, 0),
+        },
+    }});
 
     quiet = true;
     defer quiet = false;
@@ -470,10 +580,32 @@ test "atoms loaded in the same frame are not path obstacles" {
     // Both lift in the same frame; qubit 1's sweep crosses qubit 0's old
     // site, but qubit 0 lifts with it (and moves out of the way).
     try addFrame(&hw, &.{
-        .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
-        .{ .move = .{ .qubit = 0, .src = pt(0, 0), .dest = pt(-3000, 0) } },
-        .{ .load = .{ .qubit = 1, .position = pt(2000, 0) } },
-        .{ .move = .{ .qubit = 1, .src = pt(2000, 0), .dest = pt(-2000, 0) } },
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
+        },
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(0, 0),
+                .dest = pt(-3000, 0),
+            },
+        },
+        .{
+            .load = .{
+                .qubit = 1,
+                .position = pt(2000, 0),
+            },
+        },
+        .{
+            .move = .{
+                .qubit = 1,
+                .src = pt(2000, 0),
+                .dest = pt(-2000, 0),
+            },
+        },
     });
     try addFrame(&hw, &.{
         .{ .store = .{ .qubit = 0, .position = pt(-3000, 0) } },
@@ -488,8 +620,19 @@ test "catches two atoms on the same site at end of frame" {
     var hw = try makeHw(gpa, &.{ pt(0, 0), pt(1000, 0) });
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{ .load = .{ .qubit = 1, .position = pt(1000, 0) } }});
-    try addFrame(&hw, &.{.{ .move = .{ .qubit = 1, .src = pt(1000, 0), .dest = pt(0, 0) } }});
+    try addFrame(&hw, &.{.{
+        .load = .{
+            .qubit = 1,
+            .position = pt(1000, 0),
+        },
+    }});
+    try addFrame(&hw, &.{.{
+        .move = .{
+            .qubit = 1,
+            .src = pt(1000, 0),
+            .dest = pt(0, 0),
+        },
+    }});
 
     quiet = true;
     defer quiet = false;
@@ -502,13 +645,35 @@ test "catches an AOD order inversion" {
     defer hw.deinit();
 
     try addFrame(&hw, &.{
-        .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
-        .{ .load = .{ .qubit = 1, .position = pt(2000, 0) } },
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
+        },
+        .{
+            .load = .{
+                .qubit = 1,
+                .position = pt(2000, 0),
+            },
+        },
     });
     // The two AOD columns cross: 0 < 2000 before, 3000 > 1000 after.
     try addFrame(&hw, &.{
-        .{ .move = .{ .qubit = 0, .src = pt(0, 0), .dest = pt(3000, 0) } },
-        .{ .move = .{ .qubit = 1, .src = pt(2000, 0), .dest = pt(1000, 0) } },
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(0, 0),
+                .dest = pt(3000, 0),
+            },
+        },
+        .{
+            .move = .{
+                .qubit = 1,
+                .src = pt(2000, 0),
+                .dest = pt(1000, 0),
+            },
+        },
     });
 
     quiet = true;
@@ -522,11 +687,27 @@ test "catches AOD columns closer than the minimum separation" {
     defer hw.deinit();
 
     try addFrame(&hw, &.{
-        .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
-        .{ .load = .{ .qubit = 1, .position = pt(1000, 0) } },
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
+        },
+        .{
+            .load = .{
+                .qubit = 1,
+                .position = pt(1000, 0),
+            },
+        },
     });
     // 50nm between the two AOD columns; testCfg's min_sep_nm is 100.
-    try addFrame(&hw, &.{.{ .move = .{ .qubit = 1, .src = pt(1000, 0), .dest = pt(50, 0) } }});
+    try addFrame(&hw, &.{.{
+        .move = .{
+            .qubit = 1,
+            .src = pt(1000, 0),
+            .dest = pt(50, 0),
+        },
+    }});
 
     quiet = true;
     defer quiet = false;
@@ -585,7 +766,11 @@ test "catches a blockade violation during a rydberg pulse" {
     const gpa = std.testing.allocator;
     // Three atoms in a 200nm chain inside the compute zone: the middle one
     // has two neighbours within the 300nm blockade radius.
-    var hw = try makeHw(gpa, &.{ pt(1000, 6000), pt(1200, 6000), pt(1400, 6000) });
+    var hw = try makeHw(gpa, &.{
+        pt(1000, 6000),
+        pt(1200, 6000),
+        pt(1400, 6000),
+    });
     defer hw.deinit();
 
     try addFrame(&hw, &.{.{ .rydberg = .{ .zone = .compute } }});
@@ -597,7 +782,11 @@ test "catches a blockade violation during a rydberg pulse" {
 
 test "accepts an isolated pair during a rydberg pulse" {
     const gpa = std.testing.allocator;
-    var hw = try makeHw(gpa, &.{ pt(1000, 6000), pt(1200, 6000), pt(3000, 6000) });
+    var hw = try makeHw(gpa, &.{
+        pt(1000, 6000),
+        pt(1200, 6000),
+        pt(3000, 6000),
+    });
     defer hw.deinit();
 
     try addFrame(&hw, &.{.{ .rydberg = .{ .zone = .compute } }});
@@ -612,7 +801,12 @@ test "catches a measurement outside its zone" {
     var hw = try makeHw(gpa, &.{pt(0, 0)});
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{ .measure = .{ .zone = .readout, .qubits = try hw.arena.allocator().dupe(u32, &measured) } }});
+    try addFrame(&hw, &.{.{
+        .measure = .{
+            .zone = .readout,
+            .qubits = try hw.arena.allocator().dupe(u32, &measured),
+        },
+    }});
 
     quiet = true;
     defer quiet = false;

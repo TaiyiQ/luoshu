@@ -125,6 +125,7 @@ pub fn main(init: std.process.Init) !void {
     const initial_sites = if (asm_doc) |a| a.sites else null;
     var sch = try compiler.compile(init.gpa, &pipeline, cfg, initial_sites);
     defer sch.deinit();
+
     if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
 
     if (opts.output) |path| {
