@@ -133,6 +133,22 @@ checked byte-for-byte. Any change to MIS/coloring/choreography becomes a
 visible, reviewable diff instead of a subtle animation change. This is the
 standard regression net for compiler pipelines and it costs an afternoon.
 
+> **Status (2026-06-12):** implemented in `golden.zig` (six cases, plus
+> qasm-driven cases through `circuit.load` and an assembly-handoff case).
+> One hard-won lesson now on record: goldens pin *stability*, not
+> *correctness* — they defend whatever output was blessed, and the verifier
+> cannot help because it checks hardware legality, never equivalence with
+> the source circuit. Proof: `decompose` had a staging bug (the CZ branch
+> read both qubits' stages but never advanced them, so a U following a CZ
+> on a lagging qubit was hoisted *before* it — a different unitary). The
+> bug sat inside the blessed `ghz-3` and `qft-5` goldens, where every
+> golden run re-confirmed it; all six circuits were too symmetric to make
+> it visible as anything but bytes. It fell out of writing contract-level
+> unit tests for `decompose`'s ordering invariant ("no gate stages before
+> a preceding gate on a shared qubit" — `circuit.zig`). Moral: every IR
+> boundary needs its contract tested directly; snapshots only guard
+> against *unintended change*, unit tests against *being wrong*.
+
 ---
 
 ## P1 — Architecture and layering

@@ -310,7 +310,14 @@ fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
     rl.drawRectangleRoundedLinesEx(rec, 0.06, 8, 1.0, palette.zone_border);
 }
 
-fn drawAodHighlight(cam: Camera, positions: []const Point, loaded: []const bool, frame_ops: []const OpKind, sw: f32, sh: f32) void {
+fn drawAodHighlight(
+    cam: Camera,
+    positions: []const Point,
+    loaded: []const bool,
+    frame_ops: []const OpKind,
+    sw: f32,
+    sh: f32,
+) void {
     const fill = rl.Color{ .r = palette.qact_fill.r, .g = palette.qact_fill.g, .b = palette.qact_fill.b, .a = 15 };
     const edge = rl.Color{ .r = palette.qact_fill.r, .g = palette.qact_fill.g, .b = palette.qact_fill.b, .a = 55 };
     const hw = ATOM_R * cam.zoom;
@@ -338,7 +345,12 @@ fn drawAodHighlight(cam: Camera, positions: []const Point, loaded: []const bool,
     }
 }
 
-fn drawSlot(cam: Camera, slot: Point, positions: []const Point, loaded: []const bool) void {
+fn drawSlot(
+    cam: Camera,
+    slot: Point,
+    positions: []const Point,
+    loaded: []const bool,
+) void {
     const screen = cam.worldToScreen(toVec(slot));
     const screen_radius = ATOM_R * cam.zoom;
 
@@ -358,7 +370,16 @@ fn drawSlot(cam: Camera, slot: Point, positions: []const Point, loaded: []const 
     }
 }
 
-fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, active: bool, loaded: bool, fill: rl.Color, stroke: rl.Color) void {
+fn drawQubit(
+    cam: Camera,
+    font: rl.Font,
+    pos: Point,
+    id: usize,
+    active: bool,
+    loaded: bool,
+    fill: rl.Color,
+    stroke: rl.Color,
+) void {
     const screen = cam.worldToScreen(toVec(pos));
     const screen_radius = (if (loaded) ATOM_R_LOADED else ATOM_R) * cam.zoom;
 

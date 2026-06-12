@@ -86,7 +86,8 @@ pub const Pipeline = struct {
 ///   stage 2: [ ... ]
 ///
 /// A qubit's stage is advanced by each U gate on it; a CZ is placed at the
-/// later of its two qubits' current stages.
+/// later of its two qubits' current stages and pins both qubits there, so
+/// gates never reorder across a shared qubit.
 ///
 /// Caller owns the result and must free it with `freeStages`.
 pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
@@ -111,6 +112,11 @@ pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
             .cz => |g| {
                 const stage = @max(map.get(g.control).?, map.get(g.target).?);
                 try pipe.place(stage, gate);
+                // Pin both qubits to the CZ's stage, or a later U on the
+                // qubit that was lagging would be staged before this CZ.
+                // Same-stage is fine: within a stage CZs execute first.
+                try map.put(g.control, stage);
+                try map.put(g.target, stage);
             },
         }
     }
@@ -615,6 +621,63 @@ test "QasmParser assigns later registers higher base indices" {
     const cz_gate = circ.gates.items[0].cz;
     try std.testing.expectEqual(1, cz_gate.control);
     try std.testing.expectEqual(4, cz_gate.target);
+}
+
+test "decompose merges a run of commuting CZs into one stage" {
+    var c = Circuit.init(std.testing.allocator, 3);
+    defer c.deinit();
+    try c.cz(0, 1);
+    try c.cz(1, 2); // shares q1 with the first CZ, but CZs commute
+
+    var pipe = try decompose(std.testing.allocator, c);
+    defer pipe.deinit();
+
+    try std.testing.expectEqual(1, pipe.stages.items.len);
+    try std.testing.expectEqual(2, pipe.stages.items[0].cz_gates.items.len);
+}
+
+test "decompose: a U barrier splits CZs on its qubit into separate stages" {
+    var c = Circuit.init(std.testing.allocator, 2);
+    defer c.deinit();
+    try c.cz(0, 1);
+    try c.h(1);
+    try c.cz(0, 1);
+
+    var pipe = try decompose(std.testing.allocator, c);
+    defer pipe.deinit();
+
+    try std.testing.expectEqual(2, pipe.stages.items.len);
+    // Stage 0 holds the first CZ and the barrier H (within a stage, CZs
+    // execute before Us); the second CZ lands behind the barrier.
+    try std.testing.expectEqual(1, pipe.stages.items[0].cz_gates.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[0].u_gates.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[1].cz_gates.items.len);
+}
+
+test "decompose never stages a gate before a preceding gate on its qubit" {
+    // h(1); cz(0,1); h(0) — q0 lags q1 at the CZ. The trailing h(0) must
+    // land in the CZ's stage (where Us run after CZs) or later, never
+    // before it.
+    var c = Circuit.init(std.testing.allocator, 2);
+    defer c.deinit();
+    try c.h(1);
+    try c.cz(0, 1);
+    try c.h(0);
+
+    var pipe = try decompose(std.testing.allocator, c);
+    defer pipe.deinit();
+
+    try std.testing.expectEqual(2, pipe.stages.items.len);
+
+    const s0 = pipe.stages.items[0];
+    try std.testing.expectEqual(0, s0.cz_gates.items.len);
+    try std.testing.expectEqual(1, s0.u_gates.items.len);
+    try std.testing.expectEqual(1, s0.u_gates.items[0].qubit);
+
+    const s1 = pipe.stages.items[1];
+    try std.testing.expectEqual(1, s1.cz_gates.items.len);
+    try std.testing.expectEqual(1, s1.u_gates.items.len);
+    try std.testing.expectEqual(0, s1.u_gates.items[0].qubit);
 }
 
 test "QasmParser lowers cx to H-CZ-H on the target" {
