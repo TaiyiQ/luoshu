@@ -5,7 +5,7 @@ const std = @import("std");
 const route = @import("route.zig");
 const serialize = @import("serialize");
 
-/// Runs computeSequence() on the graph produced by `case.build`, serialises
+/// Runs computeSequence() on the graph built for `case.kind`, serialises
 /// the result, and compares it byte-for-byte against `case.path`.
 /// Fails with a clear diff-style print if they diverge.
 pub fn snapshotTest(
@@ -13,7 +13,7 @@ pub fn snapshotTest(
     io: std.Io,
     case: route.SnapshotCase,
 ) !void {
-    var g = try case.build(allocator);
+    var g = try route.buildSnapshotGraph(case.kind, allocator);
     defer g.deinit();
 
     var sequence = try route.computeSequence(allocator, &g);

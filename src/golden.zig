@@ -1,10 +1,14 @@
-//! Golden tests over the compiler's IR boundaries. For each named circuit
-//! the logical routing output (Sequence JSON, one object per CZ stage) and
-//! the physical schedule (Hardware JSON) are compared byte-for-byte against
-//! checked-in snapshots in testdata/.
+//! End-to-end golden tests: each case runs the full pipeline (circuit ->
+//! decompose -> route -> compile) and byte-compares the logical routing
+//! output (Sequence JSON, one object per pickup round) and the physical
+//! schedule (Hardware JSON) against checked-in snapshots in testdata/.
 //!
-//! Any change to MIS/coloring/choreography shows up as a reviewable diff.
-//! Regenerate with `zig build update-snapshots`.
+//! Snapshots pin stability, not correctness: any change to MIS/coloring/
+//! choreography shows up as a reviewable diff. Regenerate with `zig build
+//! update-snapshots`. Correctness comes from verify.verify, which runs in
+//! every case, so a blessed snapshot is always a legal schedule (except a
+//! documented Case.known_violation).
+
 const std = @import("std");
 const arch = @import("arch");
 const assembly = @import("assembly");
@@ -16,11 +20,31 @@ const verify = @import("verify");
 
 pub const arch_path = "arch.toml";
 
-pub const CircuitBuilder = *const fn (std.mem.Allocator) anyerror!circuit.Circuit;
+/// One tag per golden circuit. Cases name their circuit by tag and
+/// buildCircuit dispatches exhaustively, so an unused builder or a case
+/// without a builder fails to compile.
+pub const Kind = enum {
+    bell,
+    ghz3,
+    grid,
+    qft5,
+    cycle6,
+    cyclic_aod,
+};
+
+pub fn buildCircuit(kind: Kind, gpa: std.mem.Allocator) !circuit.Circuit {
+    return switch (kind) {
+        .bell => buildBell(gpa),
+        .ghz3 => buildGhz3(gpa),
+        .grid => buildGrid(gpa),
+        .qft5 => buildQft5(gpa),
+        .cycle6 => buildCycle6(gpa),
+        .cyclic_aod => buildCyclicAod(gpa),
+    };
+}
 
 pub const Case = struct {
-    name: []const u8,
-    build: CircuitBuilder,
+    kind: Kind,
     sequence_path: []const u8,
     hardware_path: []const u8,
 
@@ -30,40 +54,36 @@ pub const Case = struct {
     known_violation: ?anyerror = null,
 };
 
+/// Walked by the per-case tests below and by `zig build update-snapshots`,
+/// so the regenerator can never drift from the tests.
 pub const cases = [_]Case{
     .{
-        .name = "bell",
-        .build = buildBell,
+        .kind = .bell,
         .sequence_path = "testdata/bell.sequence.json",
         .hardware_path = "testdata/bell.hardware.json",
     },
     .{
-        .name = "ghz-3",
-        .build = buildGhz3,
+        .kind = .ghz3,
         .sequence_path = "testdata/ghz-3.sequence.json",
         .hardware_path = "testdata/ghz-3.hardware.json",
     },
     .{
-        .name = "grid",
-        .build = buildGrid,
+        .kind = .grid,
         .sequence_path = "testdata/grid.sequence.json",
         .hardware_path = "testdata/grid.hardware.json",
     },
     .{
-        .name = "qft-5",
-        .build = buildQft5,
+        .kind = .qft5,
         .sequence_path = "testdata/qft-5.sequence.json",
         .hardware_path = "testdata/qft-5.hardware.json",
     },
     .{
-        .name = "cycle-6",
-        .build = buildCycle6,
+        .kind = .cycle6,
         .sequence_path = "testdata/cycle-6.sequence.json",
         .hardware_path = "testdata/cycle-6.hardware.json",
     },
     .{
-        .name = "cyclic-aod",
-        .build = buildCyclicAod,
+        .kind = .cyclic_aod,
         .sequence_path = "testdata/cyclic-aod.sequence.json",
         .hardware_path = "testdata/cyclic-aod.hardware.json",
     },
@@ -229,7 +249,7 @@ fn goldenCase(case: Case) !void {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
 
-    var circ = try case.build(gpa);
+    var circ = try buildCircuit(case.kind, gpa);
     defer circ.deinit();
 
     var pipe = try circuit.decompose(gpa, circ);

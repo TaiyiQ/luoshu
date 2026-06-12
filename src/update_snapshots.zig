@@ -18,7 +18,7 @@ pub fn main(init: std.process.Init) !void {
 
     // The graph snapshot cases live in route.zig, shared with its tests.
     for (route.snapshot_cases) |case| {
-        var g = try case.build(gpa);
+        var g = try route.buildSnapshotGraph(case.kind, gpa);
         defer g.deinit();
 
         var seq = try route.computeSequence(gpa, &g);
@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
     defer cfg.deinit(gpa);
 
     for (golden.cases) |case| {
-        var circ = try case.build(gpa);
+        var circ = try golden.buildCircuit(case.kind, gpa);
         defer circ.deinit();
 
         var pipe = try circuit.decompose(gpa, circ);
@@ -54,7 +54,7 @@ pub fn main(init: std.process.Init) !void {
             if (verify.verify(gpa, &hw)) |_| {
                 std.debug.print(
                     "{s}: known violation {t} no longer occurs — clear known_violation and rerun\n",
-                    .{ case.name, expected },
+                    .{ @tagName(case.kind), expected },
                 );
                 return error.KnownViolationFixed;
             } else |err| if (err != expected) return err;

@@ -5,5 +5,5 @@ run circuit="../qasm/mvp.qasm":
 test:
 	zig build test
 
-update-snapshots:
+update:
 	zig build update-snapshots

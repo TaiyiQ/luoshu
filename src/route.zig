@@ -980,18 +980,38 @@ test {
 /// Graph snapshot cases, routed and byte-compared against testdata/. The
 /// snapshot tests below and `zig build update-snapshots` both walk this
 /// table, so the regenerator can never drift from the tests.
+pub const SnapshotKind = enum {
+    mvp,
+    cycle,
+    ladder,
+    grid,
+    ghz,
+    qft,
+};
+
+pub fn buildSnapshotGraph(kind: SnapshotKind, gpa: std.mem.Allocator) !Graph {
+    return switch (kind) {
+        .mvp => buildMvpGraph(gpa),
+        .cycle => buildCycleGraph(gpa),
+        .ladder => buildLadderGraph(gpa),
+        .grid => buildGridGraph(gpa),
+        .ghz => buildGhzGraph(gpa),
+        .qft => buildQftGraph(gpa),
+    };
+}
+
 pub const SnapshotCase = struct {
-    build: *const fn (std.mem.Allocator) anyerror!Graph,
+    kind: SnapshotKind,
     path: []const u8,
 };
 
 pub const snapshot_cases = [_]SnapshotCase{
-    .{ .build = buildMvpGraph, .path = "testdata/mvp.json" }, // aod set, coloring, schedule shape
-    .{ .build = buildCycleGraph, .path = "testdata/cycle.json" },
-    .{ .build = buildLadderGraph, .path = "testdata/ladder.json" }, // parallel AOD lanes
-    .{ .build = buildGridGraph, .path = "testdata/grid.json" }, // complex MIS and gap pressure
-    .{ .build = buildGhzGraph, .path = "testdata/ghz.json" }, // binary tree
-    .{ .build = buildQftGraph, .path = "testdata/qft.json" },
+    .{ .kind = .mvp, .path = "testdata/mvp.json" }, // aod set, coloring, schedule shape
+    .{ .kind = .cycle, .path = "testdata/cycle.json" },
+    .{ .kind = .ladder, .path = "testdata/ladder.json" }, // parallel AOD lanes
+    .{ .kind = .grid, .path = "testdata/grid.json" }, // complex MIS and gap pressure
+    .{ .kind = .ghz, .path = "testdata/ghz.json" }, // binary tree
+    .{ .kind = .qft, .path = "testdata/qft.json" },
 };
 
 test "snapshots: routed graphs match testdata/" {
