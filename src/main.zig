@@ -89,7 +89,7 @@ pub fn main(init: std.process.Init) !void {
 
     var sch = try compiler.compile(init.gpa, &pipeline, cfg);
     defer sch.deinit();
-    //if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
+    if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
 
     if (opts.emit_json) |path| {
         try serialize.writeHardware(init.gpa, init.io, path, &sch);

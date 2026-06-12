@@ -1,5 +1,5 @@
 //! Regenerates every golden snapshot in testdata/: the route-level Sequence
-//! snapshots (graph -> route.compile -> JSON) and the circuit-level goldens
+//! snapshots (graph -> route.computeSequence -> JSON) and the circuit-level goldens
 //! (circuit -> Sequence JSON per stage, and -> Hardware JSON).
 //!
 //! Run via `zig build update-snapshots`, then review the diff with git.
@@ -35,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
         var g = try case.build(gpa);
         defer g.deinit();
 
-        var seq = try route.compile(gpa, &g);
+        var seq = try route.computeSequence(gpa, &g);
         defer seq.deinit();
 
         try serialize.writeSequence(gpa, io, case.path, seq.fixed, seq.moveable);

@@ -527,7 +527,7 @@ test "validate rejects an out-of-range fidelity" {
 }
 
 test "the example config loads and validates" {
-    const cfg = try load(std.testing.allocator, std.testing.io, "example/arch.toml");
+    const cfg = try load(std.testing.allocator, std.testing.io, "arch.toml");
     defer cfg.deinit(std.testing.allocator);
 }
 

@@ -6,11 +6,10 @@ const route = @import("route.zig");
 const serialize = @import("serialize");
 
 const Graph = route.Graph;
-const compile = route.compile;
 
 pub const GraphBuilder = *const fn (std.mem.Allocator) anyerror!Graph;
 
-/// Runs compile() on the graph produced by `build`, serialises the
+/// Runs computeSequence() on the graph produced by `build`, serialises the
 /// result, and compares it byte-for-byte against `snapshot_path`.
 /// Fails with a clear diff-style print if they diverge.
 pub fn snapshotTest(
@@ -22,7 +21,7 @@ pub fn snapshotTest(
     var g = try build(allocator);
     defer g.deinit();
 
-    var sequence = try compile(allocator, &g);
+    var sequence = try route.computeSequence(allocator, &g);
     defer sequence.deinit();
 
     const actual = try serialize.sequenceToJson(allocator, sequence.fixed, sequence.moveable);

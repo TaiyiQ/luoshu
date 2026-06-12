@@ -452,6 +452,103 @@ fn slmGraph(allocator: std.mem.Allocator, g: *Graph, aod_set: []const bool) !Gra
     return dep;
 }
 
+/// The SLM partner AOD `v` gates with in color class `t`, if any.
+fn activePartner(g: *const Graph, aod_set: []const bool, v: usize, t: i32) ?usize {
+    var e = g.edges[v];
+    while (e) |edge| : (e = edge.next) {
+        if (edge.color == t and !aod_set[edge.y]) return edge.y;
+    }
+    return null;
+}
+
+/// The schedule assumes a fixed physical column order for the AODs
+/// (aod.nodes[0] is the rightmost column). Two AODs active in the same
+/// color class sit at their partners' slots simultaneously, so their
+/// column order is dictated by the partners' SLM order. Reorders
+/// aod.nodes to satisfy every color class at once (topological sort over
+/// the per-class constraints); the MIS degree order survives wherever the
+/// constraints leave slack. Errors if the color classes demand
+/// contradictory orders — such a coloring cannot be laid out with rigid
+/// AOD columns.
+fn orderAodNodes(allocator: std.mem.Allocator, g: *Graph, aod: *Aod, slm_order: []const usize) !void {
+    const n = aod.nodes.items.len;
+    if (n < 2) return;
+
+    var slm_pos = std.AutoHashMap(usize, usize).init(allocator);
+    defer slm_pos.deinit();
+    for (slm_order, 0..) |q, i| try slm_pos.put(q, i);
+
+    // adj[i] contains j: nodes[i] must sit left of nodes[j].
+    var constraints = try AodConstraints.init(allocator, n);
+    defer constraints.deinit();
+
+    const in_degree = try allocator.alloc(usize, n);
+    defer allocator.free(in_degree);
+    @memset(in_degree, 0);
+
+    const Active = struct { idx: usize, slot: usize };
+    var active: std.ArrayList(Active) = .empty;
+    defer active.deinit(allocator);
+
+    const max_c = g.maxColor() catch return;
+    var t: i32 = 0;
+    while (t <= max_c) : (t += 1) {
+        active.clearRetainingCapacity();
+        for (aod.nodes.items, 0..) |v, i| {
+            const partner = activePartner(g, aod.set, v, t) orelse continue;
+            const slot = slm_pos.get(partner) orelse continue;
+            try active.append(allocator, .{ .idx = i, .slot = slot });
+        }
+
+        std.sort.heap(Active, active.items, {}, struct {
+            fn less(_: void, a: Active, b: Active) bool {
+                return a.slot < b.slot;
+            }
+        }.less);
+
+        // Consecutive pairs suffice: order is transitive.
+        for (0..@as(usize, if (active.items.len == 0) 0 else active.items.len - 1)) |i| {
+            const from = active.items[i].idx;
+            const to = active.items[i + 1].idx;
+            const before = constraints.adj[from].items.len;
+            try constraints.addConstraint(from, to);
+            if (constraints.adj[from].items.len > before) in_degree[to] += 1;
+        }
+    }
+
+    // Kahn topological sort, emitting left to right. Among free nodes pick
+    // the highest original index — the leftmost under the MIS order — so an
+    // unconstrained input keeps its original order exactly.
+    const placed = try allocator.alloc(bool, n);
+    defer allocator.free(placed);
+    @memset(placed, false);
+
+    var ordered = try std.ArrayList(usize).initCapacity(allocator, n);
+    defer ordered.deinit(allocator);
+
+    while (ordered.items.len < n) {
+        var pick: ?usize = null;
+        var i = n;
+        while (i > 0) {
+            i -= 1;
+            if (!placed[i] and in_degree[i] == 0) {
+                pick = i;
+                break;
+            }
+        }
+        const p = pick orelse return error.CyclicAodOrder;
+        placed[p] = true;
+        ordered.appendAssumeCapacity(aod.nodes.items[p]);
+        for (constraints.adj[p].items) |j| in_degree[j] -= 1;
+    }
+
+    // `ordered` reads left to right; nodes[0] must be the rightmost column.
+    std.mem.reverse(usize, ordered.items);
+    @memcpy(aod.nodes.items, ordered.items);
+
+    trace.print(">> AOD nodes ordered by SLM slots: {any}\n", .{aod.nodes.items});
+}
+
 fn topoSort(allocator: std.mem.Allocator, g: Graph, aod_set: []const bool, orig: Graph) ![]usize {
     // Only SLM qubits that participate in at least one CZ interaction.
     // Isolated qubits (orig.degree == 0) have no placement constraints.
@@ -498,6 +595,10 @@ fn topoSort(allocator: std.mem.Allocator, g: Graph, aod_set: []const bool, orig:
             }
         }
     }
+
+    // A cycle leaves nodes with nonzero in-degree unplaced; a partial order
+    // would silently produce an illegal layout downstream.
+    if (order.items.len != n_slm) return error.CyclicSlmConstraints;
 
     return order.toOwnedSlice(allocator);
 }
@@ -825,6 +926,9 @@ pub fn computeSequence(allocator: std.mem.Allocator, g: *Graph) !Sequence {
     defer allocator.free(slm_order);
     trace.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
 
+    // 4. Make the assumed AOD column order consistent with the SLM layout.
+    try orderAodNodes(allocator, g, &aod, slm_order);
+
     const resting_xs = try computeRestingPositions(allocator, g, aod, slm_order);
     defer allocator.free(resting_xs);
     trace.print("resting_xs: {any}\n", .{resting_xs});
@@ -1115,3 +1219,4 @@ pub fn qubitPositions(
     }
     std.debug.print("────────────────────────────────────\nTotal slots used: {d}\n====================================\n\n", .{max_slot + 1});
 }
+

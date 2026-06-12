@@ -12,7 +12,7 @@ const compiler = @import("compiler");
 const serialize = @import("serialize");
 const verify = @import("verify");
 
-pub const arch_path = "example/arch.toml";
+pub const arch_path = "arch.toml";
 
 pub const CircuitBuilder = *const fn (std.mem.Allocator) anyerror!circuit.Circuit;
 
@@ -46,12 +46,6 @@ pub const cases = [_]Case{
         .build = buildGrid,
         .sequence_path = "testdata/grid.sequence.json",
         .hardware_path = "testdata/grid.hardware.json",
-        // Real routing bug found by the verifier: between colors 2 and 3 the
-        // logical schedule moves AOD qubit 2 to slot 7 (its CZ partner's
-        // column) while qubit 6 rests left of it, inverting their relative
-        // x order — two AOD columns cannot cross. The edge-coloring's order
-        // constraints don't prevent this case yet.
-        .known_violation = error.AodOrderInversion,
     },
     .{
         .name = "qft-5",
