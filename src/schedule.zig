@@ -29,6 +29,13 @@ pub const Point = struct {
     y: i32,
 };
 
+/// A storage-zone trap by grid index: occupancy[row][col] in the upstream
+/// atom-rearrangement handoff maps to trap (grid.x(col), grid.y(row)).
+pub const Site = struct {
+    row: u32,
+    col: u32,
+};
+
 pub const RamanTarget = struct { qubit: u32, pos: Point };
 const Raman = struct { angle: f64, phase: f64, targets: []const RamanTarget };
 
@@ -77,27 +84,39 @@ pub const Hardware = struct {
     // Current timestep. Never touch directly: emit() stamps it, step() advances it.
     t: u32 = 0,
 
-    // Place qubits in storage zone as defined by the
-    // upstream Atom Assembly (Atom Rearrangement).
-    pub fn init(gpa: std.mem.Allocator, cfg: arch.ArchConfig, num_qubits: usize) !Hardware {
+    // Place qubits in storage zone. With `initial_sites` (the occupancy
+    // delivered by the upstream Atom Assembly / Atom Rearrangement package)
+    // qubit ids follow the given site order; without it, a procedural
+    // fallback fills the center half of the grid, compute-facing row first.
+    pub fn init(gpa: std.mem.Allocator, cfg: arch.ArchConfig, num_qubits: usize, initial_sites: ?[]const Site) !Hardware {
         const grid = cfg.storage_zone.grid();
         const num_col = grid.num_col;
         const num_row = grid.num_row;
 
-        // Center half: columns from 25% to 75% of the grid width.
-        const col_start = num_col / 4;
-        const col_end = num_col - num_col / 4;
-
         var sites: std.ArrayList(Point) = .empty;
         defer sites.deinit(gpa);
 
-        for (0..num_row) |row| {
-            const i = num_row - 1 - row;
-            for (col_start..col_end) |j| {
+        if (initial_sites) |list| {
+            for (list) |site| {
+                if (site.row >= num_row or site.col >= num_col) return error.SiteOutsideGrid;
                 try sites.append(gpa, Point{
-                    .x = grid.x(j),
-                    .y = grid.y(i),
+                    .x = grid.x(site.col),
+                    .y = grid.y(site.row),
                 });
+            }
+        } else {
+            // Center half: columns from 25% to 75% of the grid width.
+            const col_start = num_col / 4;
+            const col_end = num_col - num_col / 4;
+
+            for (0..num_row) |row| {
+                const i = num_row - 1 - row;
+                for (col_start..col_end) |j| {
+                    try sites.append(gpa, Point{
+                        .x = grid.x(j),
+                        .y = grid.y(i),
+                    });
+                }
             }
         }
 
@@ -668,7 +687,33 @@ test "init rejects more qubits than loading-window sites" {
     // The center-half window of a 1x4 grid is columns 1..3: two sites.
     try std.testing.expectError(
         error.TooManyQubits,
-        Hardware.init(std.testing.allocator, cfg, 3),
+        Hardware.init(std.testing.allocator, cfg, 3, null),
+    );
+
+    // Explicit sites lift the center-half restriction: all 4 columns usable.
+    var hw = try Hardware.init(std.testing.allocator, cfg, 3, &.{
+        .{ .row = 0, .col = 0 },
+        .{ .row = 0, .col = 1 },
+        .{ .row = 0, .col = 3 },
+    });
+    defer hw.deinit();
+    try std.testing.expectEqual(Point{ .x = 0, .y = 0 }, hw.initial[0]);
+    try std.testing.expectEqual(Point{ .x = 1000, .y = 0 }, hw.initial[1]);
+    try std.testing.expectEqual(Point{ .x = 3000, .y = 0 }, hw.initial[2]);
+
+    // But fewer sites than qubits is still oversubscription...
+    try std.testing.expectError(
+        error.TooManyQubits,
+        Hardware.init(std.testing.allocator, cfg, 3, &.{
+            .{ .row = 0, .col = 0 },
+            .{ .row = 0, .col = 1 },
+        }),
+    );
+
+    // ...and a site index outside the trap grid is rejected.
+    try std.testing.expectError(
+        error.SiteOutsideGrid,
+        Hardware.init(std.testing.allocator, cfg, 1, &.{.{ .row = 1, .col = 0 }}),
     );
 }
 

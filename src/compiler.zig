@@ -24,9 +24,11 @@ pub fn routeStage(gpa: std.mem.Allocator, cz_gates: []const circuit.Cz, num_qubi
     return route.computeSequence(gpa, &g);
 }
 
-/// Compile a staged circuit into a hardware schedule.
-pub fn compile(gpa: std.mem.Allocator, pipe: *const circuit.Pipeline, cfg: arch.ArchConfig) !schedule.Hardware {
-    var hw = try schedule.Hardware.init(gpa, cfg, pipe.num_qubits);
+/// Compile a staged circuit into a hardware schedule. `initial_sites` is the
+/// storage occupancy delivered by the upstream atom-rearrangement package
+/// (null falls back to the procedural placement in Hardware.init).
+pub fn compile(gpa: std.mem.Allocator, pipe: *const circuit.Pipeline, cfg: arch.ArchConfig, initial_sites: ?[]const schedule.Site) !schedule.Hardware {
+    var hw = try schedule.Hardware.init(gpa, cfg, pipe.num_qubits, initial_sites);
     errdefer hw.deinit();
 
     for (pipe.stages.items) |*stage| {

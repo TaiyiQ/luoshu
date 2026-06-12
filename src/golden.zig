@@ -7,6 +7,7 @@
 //! Regenerate with `zig build update-snapshots`.
 const std = @import("std");
 const arch = @import("arch");
+const assembly = @import("assembly");
 const circuit = @import("circuit");
 const compiler = @import("compiler");
 const serialize = @import("serialize");
@@ -209,7 +210,7 @@ fn goldenCase(case: Case) !void {
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    var hw = try compiler.compile(gpa, &pipe, cfg);
+    var hw = try compiler.compile(gpa, &pipe, cfg, null);
     defer hw.deinit();
 
     if (case.known_violation) |expected| {
@@ -243,6 +244,31 @@ test "golden: qft-5" {
 
 test "golden: cycle-6" {
     try goldenCase(cases[4]);
+}
+
+// Not a snapshot test: pins down that an explicit assembly handoff (square
+// 4x4 block, so qft-5's 5 qubits start spread over two storage rows) still
+// compiles to a schedule the verifier accepts.
+test "assembly: qft-5 compiles legally from example/assembly.json" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    const asm_doc = try assembly.load(gpa, io, "example/assembly.json");
+    defer asm_doc.deinit(gpa);
+
+    var circ = try buildQft5(gpa);
+    defer circ.deinit();
+
+    var pipe = try circuit.decompose(gpa, circ);
+    defer pipe.deinit();
+
+    const cfg = try arch.load(gpa, io, arch_path);
+    defer cfg.deinit(gpa);
+
+    var hw = try compiler.compile(gpa, &pipe, cfg, asm_doc.sites);
+    defer hw.deinit();
+
+    try verify.verify(gpa, &hw);
 }
 
 test {

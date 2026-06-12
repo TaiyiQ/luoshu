@@ -1219,4 +1219,3 @@ pub fn qubitPositions(
     }
     std.debug.print("────────────────────────────────────\nTotal slots used: {d}\n====================================\n\n", .{max_slot + 1});
 }
-

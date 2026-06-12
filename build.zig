@@ -34,6 +34,14 @@ pub fn build(b: *std.Build) void {
     });
     schedule_mod.addImport("arch", arch_mod);
 
+    // Upstream atom-rearrangement handoff: storage occupancy JSON -> Sites.
+    const assembly_mod = b.addModule("assembly", .{
+        .root_source_file = b.path("src/assembly.zig"),
+        .target = target,
+    });
+    assembly_mod.addImport("schedule", schedule_mod);
+    exe.root_module.addImport("assembly", assembly_mod);
+
     // Pass tracing, silent unless the driver enables it (-v).
     const trace_mod = b.addModule("trace", .{
         .root_source_file = b.path("src/trace.zig"),
@@ -81,6 +89,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
     arch_mod.addImport("testutil", testutil_mod);
+    assembly_mod.addImport("testutil", testutil_mod);
     trace_mod.addImport("testutil", testutil_mod);
     circuit_mod.addImport("testutil", testutil_mod);
     schedule_mod.addImport("testutil", testutil_mod);
@@ -96,6 +105,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
     golden_mod.addImport("arch", arch_mod);
+    golden_mod.addImport("assembly", assembly_mod);
     golden_mod.addImport("circuit", circuit_mod);
     golden_mod.addImport("compiler", compiler_mod);
     golden_mod.addImport("serialize", serialize_mod);
@@ -151,7 +161,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit and golden tests");
     const test_mods = [_]*std.Build.Module{
-        arch_mod, trace_mod, circuit_mod, schedule_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
+        arch_mod, assembly_mod, trace_mod, circuit_mod, schedule_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
     };
     for (test_mods) |mod| {
         const t = b.addTest(.{ .root_module = mod });

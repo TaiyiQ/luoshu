@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const arch = @import("arch");
+const assembly = @import("assembly");
 const circuit = @import("circuit");
 const compiler = @import("compiler");
 const draw = @import("draw");
@@ -13,6 +14,8 @@ const usage =
     \\
     \\options:
     \\  --arch <file>       architecture TOML (default: ./arch.toml)
+    \\  --assembly <file>   storage occupancy JSON from the upstream
+    \\                      atom-rearrangement package (default: procedural)
     \\  --emit-json <path>  write the hardware schedule as JSON
     \\  --draw              open the schedule visualization (default: true)
     \\  -v, --verbose       trace the compiler passes to stderr
@@ -23,6 +26,7 @@ const usage =
 const Options = struct {
     qasm_path: []const u8,
     arch_path: []const u8 = "arch.toml",
+    assembly_path: ?[]const u8 = null,
     emit_json: ?[]const u8 = null,
     draw: bool = true,
     verbose: bool = false,
@@ -51,6 +55,9 @@ fn parseArgs(arena: std.mem.Allocator, args: std.process.Args) !Options {
         } else if (std.mem.eql(u8, arg, "--arch")) {
             const v = it.next() orelse fatal("--arch expects a file", .{});
             opts.arch_path = try arena.dupe(u8, v);
+        } else if (std.mem.eql(u8, arg, "--assembly")) {
+            const v = it.next() orelse fatal("--assembly expects a file", .{});
+            opts.assembly_path = try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--emit-json")) {
             const v = it.next() orelse fatal("--emit-json expects a path", .{});
             opts.emit_json = try arena.dupe(u8, v);
@@ -87,7 +94,28 @@ pub fn main(init: std.process.Init) !void {
     defer cfg.deinit(init.gpa);
     if (opts.verbose) cfg.print();
 
-    var sch = try compiler.compile(init.gpa, &pipeline, cfg);
+    // The assembly handoff must address the storage SLM as the arch defines
+    // it, otherwise its (row, col) indices mean different trap coordinates.
+    var asm_doc: ?assembly.Assembly = null;
+    defer if (asm_doc) |a| a.deinit(init.gpa);
+    if (opts.assembly_path) |path| {
+        const a = assembly.load(init.gpa, init.io, path) catch |err|
+            fatal("cannot load assembly '{s}': {t}", .{ path, err });
+        asm_doc = a;
+        const slm = cfg.storage_zone.slm;
+        if (a.zone_id != cfg.storage_zone.zone_id or a.slm_id != slm.slm_id or
+            a.rows != slm.num_row or a.cols != slm.num_col)
+        {
+            fatal("assembly '{s}' (zone {d}, slm {d}, {d}x{d}) does not match the storage SLM (zone {d}, slm {d}, {d}x{d})", .{
+                path,        a.zone_id,                a.slm_id,   a.rows,
+                a.cols,      cfg.storage_zone.zone_id, slm.slm_id, slm.num_row,
+                slm.num_col,
+            });
+        }
+    }
+
+    const initial_sites = if (asm_doc) |a| a.sites else null;
+    var sch = try compiler.compile(init.gpa, &pipeline, cfg, initial_sites);
     defer sch.deinit();
     if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
 

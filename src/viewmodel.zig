@@ -1,5 +1,5 @@
-//! Pure per-frame precomputation over a hardware schedule (§12 in
-//! REFACTORING.md): everything draw.zig needs that is a function of the
+//! Pure per-frame precomputation over a hardware schedule.
+//! Everything draw.zig needs that is a function of the
 //! schedule alone, with no raylib in sight — so it is unit-testable here
 //! and the render loop is pure drawing.
 const std = @import("std");
@@ -21,8 +21,7 @@ pub const ViewModel = struct {
     /// positions[t][q] = settled position of qubit q at the end of frame t.
     positions: [][]Point,
 
-    /// loaded[t][q] = whether qubit q is held in the AOD at the end of
-    /// frame t (true from its load frame through the frame before its store).
+    /// loaded[t][q] = whether qubit q is held in the AOD at the end of frame t.
     loaded: [][]bool,
 
     /// Highest qubit id referenced by any op, plus one.
@@ -40,6 +39,7 @@ pub const ViewModel = struct {
             .num_qubits = 0,
             .summary = .{},
         };
+
         // Partial-failure cleanup: mark what is not yet allocated.
         for (vm.positions) |*p| p.* = &.{};
         for (vm.loaded) |*l| l.* = &.{};
@@ -47,6 +47,7 @@ pub const ViewModel = struct {
 
         const cur_pos = try gpa.dupe(Point, hw.initial);
         defer gpa.free(cur_pos);
+
         const cur_loaded = try gpa.alloc(bool, hw.placement.len);
         defer gpa.free(cur_loaded);
         @memset(cur_loaded, false);
