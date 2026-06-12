@@ -32,6 +32,27 @@ a quantum program.
 This is the highest-value change in the repo: it turns the artifact from an
 animation into a compilation.
 
+> **Status (2026-06-12):** a sibling of this bug is still live, found by the
+> new sequence-completeness property test (`route.zig`,
+> `expectSequenceCoversGraph`): **`computeSequence` silently drops CZs
+> between two SLM qubits.** Active pairs are only ever AOD-SLM, so routing
+> a graph in one round requires an *independent vertex cover* — which
+> exists only for bipartite graphs. For non-bipartite graphs the greedy
+> MIS necessarily leaves an SLM-SLM edge, and the sequence simply omits
+> that gate: the `mvp` graph loses edge (3,4) (triangle {2,3,4}), `qft`
+> (K5) loses its whole SLM-side K4. No error is raised, so
+> `routeStageRounds` never splits, the schedule choreographs the partial
+> plan, the verifier passes (the dropped pair is never claimed), and the
+> blessed `mvp.json`/`qft.json` snapshots encode the loss. The circuit-level
+> goldens dodge it only because their decomposed stages happen to be
+> bipartite. Fix direction: detect the SLM-SLM edge in `computeSequence`
+> and return an error (e.g. `error.SlmSlmEdge`) so the driver splits the
+> round, exactly as it already does for `CyclicAodOrder` — note the
+> route-level `mvp`/`qft` snapshots then need rethinking, since a single
+> `computeSequence` call can no longer route them. Tracked as
+> `known_incomplete` on the two snapshot cases; the completeness test
+> flips the day this is fixed.
+
 ### 2. Add a schedule verifier pass (`verify.zig`)
 
 There is no legality checking anywhere. The frames representation makes a

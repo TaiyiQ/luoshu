@@ -1003,21 +1003,122 @@ pub fn buildSnapshotGraph(kind: SnapshotKind, gpa: std.mem.Allocator) !Graph {
 pub const SnapshotCase = struct {
     kind: SnapshotKind,
     path: []const u8,
+
+    /// A known routing bug (the route-level sibling of
+    /// golden.Case.known_violation): this graph is non-bipartite, so no
+    /// independent vertex cover exists — the greedy MIS must leave an edge
+    /// between two SLM qubits, and computeSequence silently drops that CZ
+    /// (active pairs are only ever AOD-SLM). Asserted so the completeness
+    /// test fails loudly the day routing rejects or splits such graphs.
+    known_incomplete: bool = false,
 };
 
 pub const snapshot_cases = [_]SnapshotCase{
-    .{ .kind = .mvp, .path = "testdata/mvp.json" }, // aod set, coloring, schedule shape
+    .{ .kind = .mvp, .path = "testdata/mvp.json", .known_incomplete = true }, // aod set, coloring, schedule shape; triangle {2,3,4}
     .{ .kind = .cycle, .path = "testdata/cycle.json" },
     .{ .kind = .ladder, .path = "testdata/ladder.json" }, // parallel AOD lanes
     .{ .kind = .grid, .path = "testdata/grid.json" }, // complex MIS and gap pressure
     .{ .kind = .ghz, .path = "testdata/ghz.json" }, // binary tree
-    .{ .kind = .qft, .path = "testdata/qft.json" },
+    .{ .kind = .qft, .path = "testdata/qft.json", .known_incomplete = true }, // K5: SLM set is K4
 };
 
 test "snapshots: routed graphs match testdata/" {
     for (snapshot_cases) |case| {
         try @import("snapshot.zig").snapshotTest(std.testing.allocator, std.testing.io, case);
     }
+}
+
+// Asserts `seq` realizes `g` exactly: every edge appears as an active pair
+// — (fixed[i], moveable[t][i]) both non-null — in exactly one timeframe,
+// nothing is pulsed that is not an edge, and no qubit is both fixed and
+// moveable. A dropped edge is a CZ that never happens; a duplicated one
+// cancels itself (CZ·CZ = identity). The snapshots pin the routed bytes;
+// only this property says what would make them wrong. (Resting AODs only
+// land on slots whose fixed entry is null — see logicalSchedule — so
+// both-non-null is always an intended gate.)
+fn expectSequenceCoversGraph(gpa: std.mem.Allocator, g: *const Graph, seq: *const Sequence) !void {
+    var is_fixed = try gpa.alloc(bool, g.n);
+    defer gpa.free(is_fixed);
+    @memset(is_fixed, false);
+    for (seq.fixed) |maybe_q| {
+        if (maybe_q) |q| is_fixed[q] = true;
+    }
+
+    // Count every active pair, keyed by the normalized qubit pair.
+    var covered = std.AutoHashMap(u64, usize).init(gpa);
+    defer covered.deinit();
+
+    for (seq.moveable) |row| {
+        for (row, 0..) |maybe_q, i| {
+            const q = maybe_q orelse continue;
+            try std.testing.expect(!is_fixed[q]); // fixed/moveable disjoint
+            const partner = seq.fixed[i] orelse continue;
+            const lo: u64 = @min(q, partner);
+            const hi: u64 = @max(q, partner);
+            const gop = try covered.getOrPut(lo << 32 | hi);
+            if (!gop.found_existing) gop.value_ptr.* = 0;
+            gop.value_ptr.* += 1;
+        }
+    }
+
+    // Every edge of g covered exactly once...
+    var complete = true;
+    var n_edges: usize = 0;
+    for (g.edges, 0..) |list, u| {
+        var e = list;
+        while (e) |edge| : (e = edge.next) {
+            if (edge.y < u) continue; // undirected: count each edge once
+            const key = @as(u64, @intCast(u)) << 32 | @as(u64, @intCast(edge.y));
+            const cnt = covered.get(key) orelse 0;
+            if (cnt != 1) {
+                trace.print("edge ({d},{d}) covered {d} times\n", .{ u, edge.y, cnt });
+                complete = false;
+            }
+            n_edges += 1;
+        }
+    }
+    // ...and no pair pulsed that is not an edge.
+    if (covered.count() != n_edges) {
+        trace.print("{d} active pairs for {d} edges\n", .{ covered.count(), n_edges });
+        complete = false;
+    }
+    if (!complete) return error.SequenceIncomplete;
+}
+
+test "computeSequence covers every snapshot graph's edges exactly once" {
+    const gpa = std.testing.allocator;
+    for (snapshot_cases) |case| {
+        var g = try buildSnapshotGraph(case.kind, gpa);
+        defer g.deinit();
+
+        var seq = try computeSequence(gpa, &g);
+        defer seq.deinit();
+
+        if (case.known_incomplete) {
+            try std.testing.expectError(error.SequenceIncomplete, expectSequenceCoversGraph(gpa, &g, &seq));
+        } else {
+            try expectSequenceCoversGraph(gpa, &g, &seq);
+        }
+    }
+}
+
+test "computeSequence rejects a cyclic AOD column order" {
+    const gpa = std.testing.allocator;
+    // Five-cycle 0-1-3-4-2-0 with a pendant qubit 5 on 1 — the same
+    // interaction graph as testdata/cyclic-aod.qasm. No rigid AOD column
+    // order satisfies the coloring; the driver reacts by splitting the CZ
+    // set into rounds (compiler.routeStageRounds), so the rejection must
+    // originate here.
+    var g = try Graph.init(gpa, 6, false);
+    defer g.deinit();
+    try g.addEdge(0, 1);
+    try g.addEdge(0, 2);
+    try g.addEdge(1, 3);
+    try g.addEdge(1, 5);
+    try g.addEdge(2, 4);
+    try g.addEdge(3, 4);
+
+    try std.testing.expectError(error.CyclicAodOrder, computeSequence(gpa, &g));
 }
 
 pub fn buildMvpGraph(allocator: std.mem.Allocator) !Graph {
