@@ -21,6 +21,10 @@
 //!    moves are register-wide; only column tones move per-atom);
 //!  - blockade: during a rydberg pulse, no atom in the illuminated zone has
 //!    more than one neighbour within the blockade radius `db_nm`;
+//!  - pair intent: every routed CZ pair carried on a rydberg op lies within
+//!    `db_nm` at pulse time (a pair parked farther apart entangles nothing,
+//!    legally — this is the check that proves the pulse does what the
+//!    router asked);
 //!  - measurement: measured qubits lie inside the named zone.
 //!
 //! Any violation prints a diagnostic naming the frame and returns an error.
@@ -237,7 +241,10 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
         // Zone checks at settled positions.
         for (frame.items) |op| {
             switch (op) {
-                .rydberg => |r| try checkBlockade(t, hw.cfg, pos, r.zone),
+                .rydberg => |r| {
+                    try checkPairs(t, hw.cfg, pos, r.pairs, n);
+                    try checkBlockade(t, hw.cfg, pos, r.zone);
+                },
                 .measure => |m| {
                     const bounds = zoneBounds(hw.cfg, m.zone);
                     for (m.qubits) |raw| {
@@ -335,6 +342,35 @@ fn zoneBounds(cfg: arch.ArchConfig, zone: schedule.Zone) Bounds {
 
 fn contains(b: Bounds, p: Point) bool {
     return p.x >= b.min.x and p.x <= b.max.x and p.y >= b.min.y and p.y <= b.max.y;
+}
+
+// The dual of checkBlockade: the pulse must also reach the pairs it was
+// emitted for. A routed pair parked farther apart than the blockade radius
+// is a schedule that legally entangles nothing.
+//
+// This validates the schedule against its *own recorded claim*: the pairs
+// were computed by moveAodCompute from the same inputs as the placement,
+// so a bug that corrupts recording and placement consistently passes here,
+// and a pulse that was never emitted leaves nothing to check. That end of
+// the contract is held by schedule.zig's expectRydbergPairsWithinBlockade,
+// which derives the intent independently from (fixed, moveable) and counts
+// the pulses. Breadth here (every schedule, trusted claim); depth there
+// (one scenario, untrusted claim).
+fn checkPairs(t: usize, cfg: arch.ArchConfig, pos: []const Point, pairs: []const [2]u32, n: usize) !void {
+    const db: i64 = cfg.constraints.db_nm;
+    const db2 = db * db;
+    for (pairs) |pair| {
+        const a = try qubitIndex(t, pair[0], n);
+        const b = try qubitIndex(t, pair[1], n);
+        const dx = @as(i64, pos[a].x) - pos[b].x;
+        const dy = @as(i64, pos[a].y) - pos[b].y;
+        if (dx * dx + dy * dy > db2) {
+            vfail(t, "routed pair ({d},{d}) out of blockade range: ({d},{d}) vs ({d},{d}), db={d}nm", .{
+                a, b, pos[a].x, pos[a].y, pos[b].x, pos[b].y, cfg.constraints.db_nm,
+            });
+            return error.PairOutOfBlockadeRange;
+        }
+    }
 }
 
 // During a rydberg pulse every atom inside the illuminated zone interacts
@@ -790,6 +826,42 @@ test "accepts an isolated pair during a rydberg pulse" {
     defer hw.deinit();
 
     try addFrame(&hw, &.{.{ .rydberg = .{ .zone = .compute } }});
+
+    try verify(gpa, &hw);
+}
+
+test "catches a routed pair parked outside blockade range" {
+    const gpa = std.testing.allocator;
+    // 1000nm apart with a 300nm blockade radius: legal (no crowding), but
+    // the pulse cannot entangle the pair it was emitted for.
+    var hw = try makeHw(gpa, &.{
+        pt(1000, 6000),
+        pt(2000, 6000),
+    });
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{.{ .rydberg = .{
+        .zone = .compute,
+        .pairs = &.{.{ 0, 1 }},
+    } }});
+
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(error.PairOutOfBlockadeRange, verify(gpa, &hw));
+}
+
+test "accepts a routed pair within blockade range" {
+    const gpa = std.testing.allocator;
+    var hw = try makeHw(gpa, &.{
+        pt(1000, 6000),
+        pt(1200, 6000),
+    });
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{.{ .rydberg = .{
+        .zone = .compute,
+        .pairs = &.{.{ 0, 1 }},
+    } }});
 
     try verify(gpa, &hw);
 }

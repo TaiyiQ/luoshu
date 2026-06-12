@@ -61,6 +61,16 @@ assertion with a frame number.
 > frame 30) — two AOD columns cannot cross. The edge coloring's order
 > constraints don't cover this case. Tracked as `known_violation` on the grid
 > golden case; the test flips when the routing fix lands.
+>
+> **Update (2026-06-12):** the verifier now also checks *intent*, not just
+> legality: every rydberg op carries the routed CZ pairs it was emitted for
+> (`schedule.Rydberg.pairs`, recorded by `moveAodCompute`), and `checkPairs`
+> asserts each pair sits within `db_nm` at pulse time
+> (`PairOutOfBlockadeRange`). This closes the wrong-but-legal hole where a
+> choreography bug parks a pair too far apart to interact — the schedule
+> entangles nothing, every legality check passes, and only golden bytes
+> would flinch. Mutation-tested: a wrong-column bug in `moveAodCompute` now
+> fails all nine pipeline tests instead of zero.
 
 ### 3. The hardware config is loaded but not obeyed
 

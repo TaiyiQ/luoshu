@@ -46,7 +46,12 @@ pub const RamanGate = struct { qubit: u32, angle: f64, phase: f64 };
 const Load = struct { qubit: u32, position: Point };
 const Store = struct { qubit: u32, position: Point };
 const Move = struct { qubit: u32, src: Point, dest: Point };
-const Rydberg = struct { zone: Zone };
+const Rydberg = struct {
+    zone: Zone,
+    /// The routed CZ pairs this pulse is meant to entangle. The verifier
+    /// checks each pair sits within the blockade radius at pulse time.
+    pairs: []const [2]u32 = &.{},
+};
 const Measure = struct { zone: Zone, qubits: []u32 };
 
 pub const OpKind = union(enum) {
@@ -370,7 +375,7 @@ pub const Hardware = struct {
     // resting), so the first row fixes both the pickup order and each
     // atom's entry column: atoms are stored directly at their first
     // timeframe positions, and the first sweep iteration degenerates
-    pub fn moveAodCompute(s: *Hardware, moveable: [][]?usize) !void {
+    pub fn moveAodCompute(s: *Hardware, fixed: []const ?usize, moveable: [][]?usize) !void {
         if (moveable.len == 0) return;
 
         // to the Rydberg pulse alone.
@@ -446,8 +451,24 @@ pub const Hardware = struct {
             // This timeframe's pairs now sit within blockade range of their
             // partners: fire the entangling pulse for this color class.
             // Conflicting CZs live in different rows, so one pulse per row.
+            // The pulse records its intended pairs (slot i pairs the fixed
+            // atom in SLM[0] with this row's atom in SLM[1]) so the
+            // verifier can prove the pulse reaches what the router asked.
             if (has_qubit) {
-                try s.emit(.{ .rydberg = .{ .zone = .compute } });
+                var n_pairs: usize = 0;
+                for (row, 0..) |maybe_q, i| {
+                    if (maybe_q != null and i < fixed.len and fixed[i] != null) n_pairs += 1;
+                }
+                const pairs = try s.arena.allocator().alloc([2]u32, n_pairs);
+                var pi: usize = 0;
+                for (row, 0..) |maybe_q, i| {
+                    const q = maybe_q orelse continue;
+                    if (i >= fixed.len) continue;
+                    const partner = fixed[i] orelse continue;
+                    pairs[pi] = .{ @intCast(partner), @intCast(q) };
+                    pi += 1;
+                }
+                try s.emit(.{ .rydberg = .{ .zone = .compute, .pairs = pairs } });
                 s.step();
             }
         }
@@ -899,9 +920,17 @@ test "moveReadout keeps the AOD register in a single row across storage rows" {
 
 // Replays `frames` and, at the k-th rydberg pulse, asserts every intended
 // pair of the k-th occupied timeframe — (fixed[i], moveable[t][i]) — sits
-// within the blockade radius. The verifier cannot check this: it rejects
-// crowding (more than one neighbour in range), not a pair parked too far
-// apart to interact, so the pairing contract is pinned here.
+// within the blockade radius, and that exactly one pulse fires per
+// occupied timeframe.
+//
+// Deliberately overlaps verify.checkPairs without being redundant. The
+// verifier checks positions against the pairs *recorded on the op* —
+// the schedule's own claim — so it cannot see pairs recorded wrongly but
+// placed to match (claim and reality agree, both wrong), nor pulses that
+// were never emitted (nothing to check). This helper trusts nothing the
+// schedule wrote: it derives the intent straight from (fixed, moveable)
+// and counts the pulses itself. Verifier = breadth (every schedule,
+// trusted claim); this = depth (one scenario, untrusted claim).
 fn expectRydbergPairsWithinBlockade(
     cfg: arch.ArchConfig,
     hw: *const Hardware,
@@ -975,7 +1004,7 @@ test "moveAodCompute pairs each timeframe's qubits within blockade range" {
     var moveable = [_][]?usize{ &t0, &t1 };
 
     try hw.moveSlmCompute(&fixed);
-    try hw.moveAodCompute(&moveable);
+    try hw.moveAodCompute(&fixed, &moveable);
 
     try expectRydbergPairsWithinBlockade(cfg, &hw, &fixed, &moveable);
 }

@@ -79,7 +79,7 @@ pub fn compile(
                 if (trace.enabled) sequence.print();
 
                 try hw.moveSlmCompute(sequence.fixed);
-                try hw.moveAodCompute(sequence.moveable);
+                try hw.moveAodCompute(sequence.fixed, sequence.moveable);
                 try hw.moveAodStorage(sequence.moveable);
                 try hw.moveSlmStorage(sequence.fixed);
             }
