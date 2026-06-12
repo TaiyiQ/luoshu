@@ -897,6 +897,89 @@ test "moveReadout keeps the AOD register in a single row across storage rows" {
     for (hw.placement) |a| try std.testing.expectEqual(y_readout, a.pos.y);
 }
 
+// Replays `frames` and, at the k-th rydberg pulse, asserts every intended
+// pair of the k-th occupied timeframe — (fixed[i], moveable[t][i]) — sits
+// within the blockade radius. The verifier cannot check this: it rejects
+// crowding (more than one neighbour in range), not a pair parked too far
+// apart to interact, so the pairing contract is pinned here.
+fn expectRydbergPairsWithinBlockade(
+    cfg: arch.ArchConfig,
+    hw: *const Hardware,
+    fixed: []const ?usize,
+    moveable: []const []?usize,
+) !void {
+    const gpa = std.testing.allocator;
+    const pos = try gpa.alloc(Point, hw.initial.len);
+    defer gpa.free(pos);
+    @memcpy(pos, hw.initial);
+
+    const db: i64 = cfg.constraints.db_nm;
+    var pulse: usize = 0;
+
+    for (hw.frames.items) |frame| {
+        for (frame.items) |op| switch (op) {
+            .move => |m| pos[m.qubit] = m.dest,
+            .rydberg => {
+                var seen: usize = 0;
+                const row = for (moveable) |r| {
+                    const occupied = for (r) |q| {
+                        if (q != null) break true;
+                    } else false;
+                    if (!occupied) continue;
+                    if (seen == pulse) break r;
+                    seen += 1;
+                } else return error.UnexpectedRydbergPulse;
+
+                for (row, 0..) |maybe_q, i| {
+                    const q = maybe_q orelse continue;
+                    const partner = fixed[i] orelse continue;
+                    const dx = @as(i64, pos[q].x) - pos[partner].x;
+                    const dy = @as(i64, pos[q].y) - pos[partner].y;
+                    try std.testing.expect(dx * dx + dy * dy <= db * db);
+                }
+                pulse += 1;
+            },
+            else => {},
+        };
+    }
+
+    // Exactly one pulse per occupied timeframe.
+    var expected: usize = 0;
+    for (moveable) |r| {
+        const occupied = for (r) |q| {
+            if (q != null) break true;
+        } else false;
+        if (occupied) expected += 1;
+    }
+    try std.testing.expectEqual(expected, pulse);
+}
+
+test "moveAodCompute pairs each timeframe's qubits within blockade range" {
+    const gpa = std.testing.allocator;
+    const cfg = testShuttleCfg();
+
+    // GHZ-shaped rounds: q1 entangles with q0 (timeframe 0, column 0),
+    // then slides to column 1 to entangle with q2 (timeframe 1). Paired
+    // columns sit dr (500nm) apart, within db (1000nm); a wrong-column
+    // pairing would be a full 3000nm column separation away.
+    var hw = try Hardware.init(gpa, cfg, 3, &.{
+        .{ .row = 2, .col = 0 },
+        .{ .row = 2, .col = 1 },
+        .{ .row = 2, .col = 2 },
+    });
+    defer hw.deinit();
+
+    const fixed = [_]?usize{ 0, 2 };
+    var t0 = [_]?usize{ 1, null };
+    var t1 = [_]?usize{ null, 1 };
+    var moveable = [_][]?usize{ &t0, &t1 };
+
+    try hw.moveSlmCompute(&fixed);
+    try hw.moveAodCompute(&moveable);
+
+    try expectRydbergPairsWithinBlockade(cfg, &hw, &fixed, &moveable);
+}
+
 test {
     std.testing.refAllDecls(@This());
 }
