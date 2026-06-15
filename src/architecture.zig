@@ -116,7 +116,10 @@ fn slmGrid(zone_offset_nm: [2]i32, slm: Slm) Grid {
             zone_offset_nm[0] + slm.offset_nm[0],
             zone_offset_nm[1] + slm.offset_nm[1],
         },
-        .sep_nm = .{ @intCast(slm.sep_nm[0]), @intCast(slm.sep_nm[1]) },
+        .sep_nm = .{
+            @intCast(slm.sep_nm[0]),
+            @intCast(slm.sep_nm[1]),
+        },
         .num_row = slm.num_row,
         .num_col = slm.num_col,
     };
@@ -283,7 +286,10 @@ fn cfail(comptime fmt: []const u8, args: anytype) void {
 /// Structural legality of a converted config.
 /// Everything the scheduler assumes without checking is rejected here.
 pub fn validate(cfg: ArchConfig) ConfigError!void {
-    if (cfg.aod.max_num_row == 0 or cfg.aod.max_num_col == 0 or cfg.aod.min_sep_nm == 0) {
+    if (cfg.aod.max_num_row == 0 or
+        cfg.aod.max_num_col == 0 or
+        cfg.aod.min_sep_nm == 0)
+    {
         cfail("aod limits must be > 0 (rows={d} cols={d} min_sep={d}nm)", .{
             cfg.aod.max_num_row, cfg.aod.max_num_col, cfg.aod.min_sep_nm,
         });
@@ -309,13 +315,22 @@ pub fn validate(cfg: ArchConfig) ConfigError!void {
     // beyond the smaller grid land on traps that don't exist.
     const pair_a = cfg.compute_zone.slms[0];
     const pair_b = cfg.compute_zone.slms[1];
-    if (pair_a.num_row != pair_b.num_row or pair_a.num_col != pair_b.num_col or
-        pair_a.sep_nm[0] != pair_b.sep_nm[0] or pair_a.sep_nm[1] != pair_b.sep_nm[1])
+    if (pair_a.num_row != pair_b.num_row or
+        pair_a.num_col != pair_b.num_col or
+        pair_a.sep_nm[0] != pair_b.sep_nm[0] or
+        pair_a.sep_nm[1] != pair_b.sep_nm[1])
     {
         cfail("Rydberg pair SLMs {d} and {d} must be congruent grids, got {d}x{d} sep=({d},{d})nm vs {d}x{d} sep=({d},{d})nm", .{
-            pair_a.slm_id,    pair_b.slm_id,    pair_a.num_row, pair_a.num_col,
-            pair_a.sep_nm[0], pair_a.sep_nm[1], pair_b.num_row, pair_b.num_col,
-            pair_b.sep_nm[0], pair_b.sep_nm[1],
+            pair_a.slm_id,
+            pair_b.slm_id,
+            pair_a.num_row,
+            pair_a.num_col,
+            pair_a.sep_nm[0],
+            pair_a.sep_nm[1],
+            pair_b.num_row,
+            pair_b.num_col,
+            pair_b.sep_nm[0],
+            pair_b.sep_nm[1],
         });
         return error.MismatchedComputeSlms;
     }
@@ -357,7 +372,11 @@ pub fn validate(cfg: ArchConfig) ConfigError!void {
 }
 
 fn validateSlm(zone: []const u8, slm: Slm, dim: [2]u32) ConfigError!void {
-    if (slm.num_row == 0 or slm.num_col == 0 or slm.sep_nm[0] == 0 or slm.sep_nm[1] == 0) {
+    if (slm.num_row == 0 or
+        slm.num_col == 0 or
+        slm.sep_nm[0] == 0 or
+        slm.sep_nm[1] == 0)
+    {
         cfail("{s} slm {d}: rows, cols, and separations must be positive", .{ zone, slm.slm_id });
         return error.InvalidSlmGrid;
     }
@@ -375,14 +394,29 @@ const ZoneBox = struct { min: [2]i64, max: [2]i64 };
 
 fn zoneBox(offset_nm: [2]i32, dim_nm: [2]u32) ZoneBox {
     return .{
-        .min = .{ offset_nm[0], offset_nm[1] },
-        .max = .{ offset_nm[0] + @as(i64, dim_nm[0]), offset_nm[1] + @as(i64, dim_nm[1]) },
+        .min = .{
+            offset_nm[0],
+            offset_nm[1],
+        },
+        .max = .{
+            offset_nm[0] + @as(i64, dim_nm[0]),
+            offset_nm[1] + @as(i64, dim_nm[1]),
+        },
     };
 }
 
-fn requireGap(a_name: []const u8, a: ZoneBox, b_name: []const u8, b: ZoneBox, gap: i64) ConfigError!void {
-    const separated = a.max[0] + gap <= b.min[0] or b.max[0] + gap <= a.min[0] or
-        a.max[1] + gap <= b.min[1] or b.max[1] + gap <= a.min[1];
+fn requireGap(
+    a_name: []const u8,
+    a: ZoneBox,
+    b_name: []const u8,
+    b: ZoneBox,
+    gap: i64,
+) ConfigError!void {
+    const separated =
+        a.max[0] + gap <= b.min[0] or
+        b.max[0] + gap <= a.min[0] or
+        a.max[1] + gap <= b.min[1] or
+        b.max[1] + gap <= a.min[1];
     if (!separated) {
         cfail("{s} and {s} zones overlap or sit closer than dz={d}nm", .{ a_name, b_name, gap });
         return error.ZonesOverlap;
@@ -414,15 +448,20 @@ fn convertSlm(raw: RawSlm) Slm {
 fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
     const name = try alloc.dupe(u8, raw.platform.name);
     errdefer alloc.free(name);
+
     const version = try alloc.dupe(u8, raw.platform.version);
     errdefer alloc.free(version);
+
     const slms = try alloc.alloc(Slm, raw.compute_zone.slms.len);
     for (raw.compute_zone.slms, 0..) |raw_slm, i| {
         slms[i] = convertSlm(raw_slm);
     }
 
     return .{
-        .platform = .{ .name = name, .version = version },
+        .platform = .{
+            .name = name,
+            .version = version,
+        },
         .aod = .{
             .aod_id = raw.aod.aod_id,
             .min_sep_nm = umToNm(raw.aod.min_sep_um),
@@ -431,22 +470,40 @@ fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
         },
         .storage_zone = .{
             .zone_id = raw.storage_zone.zone_id,
-            .offset_nm = .{ umToNmSigned(raw.storage_zone.offset_um[0]), umToNmSigned(raw.storage_zone.offset_um[1]) },
-            .dimension_nm = .{ umToNm(raw.storage_zone.dimension_um[0]), umToNm(raw.storage_zone.dimension_um[1]) },
+            .offset_nm = .{
+                umToNmSigned(raw.storage_zone.offset_um[0]),
+                umToNmSigned(raw.storage_zone.offset_um[1]),
+            },
+            .dimension_nm = .{
+                umToNm(raw.storage_zone.dimension_um[0]),
+                umToNm(raw.storage_zone.dimension_um[1]),
+            },
             .slm = convertSlm(raw.storage_zone.slm),
         },
         .compute_zone = .{
             .zone_id = raw.compute_zone.zone_id,
-            .offset_nm = .{ umToNmSigned(raw.compute_zone.offset_um[0]), umToNmSigned(raw.compute_zone.offset_um[1]) },
-            .dimension_nm = .{ umToNm(raw.compute_zone.dimension_um[0]), umToNm(raw.compute_zone.dimension_um[1]) },
+            .offset_nm = .{
+                umToNmSigned(raw.compute_zone.offset_um[0]),
+                umToNmSigned(raw.compute_zone.offset_um[1]),
+            },
+            .dimension_nm = .{
+                umToNm(raw.compute_zone.dimension_um[0]),
+                umToNm(raw.compute_zone.dimension_um[1]),
+            },
             .dr_nm = umToNm(raw.compute_zone.dr_um),
             .dw_nm = umToNm(raw.compute_zone.dw_um),
             .slms = slms,
         },
         .readout_zone = .{
             .zone_id = raw.readout_zone.zone_id,
-            .offset_nm = .{ umToNmSigned(raw.readout_zone.offset_um[0]), umToNmSigned(raw.readout_zone.offset_um[1]) },
-            .dimension_nm = .{ umToNm(raw.readout_zone.dimension_um[0]), umToNm(raw.readout_zone.dimension_um[1]) },
+            .offset_nm = .{
+                umToNmSigned(raw.readout_zone.offset_um[0]),
+                umToNmSigned(raw.readout_zone.offset_um[1]),
+            },
+            .dimension_nm = .{
+                umToNm(raw.readout_zone.dimension_um[0]),
+                umToNm(raw.readout_zone.dimension_um[1]),
+            },
             .slm = convertSlm(raw.readout_zone.slm),
         },
         .constraints = .{
@@ -470,18 +527,58 @@ const test_slm = Slm{
 };
 
 var test_compute_slms = [2]Slm{
-    .{ .slm_id = 1, .num_row = 2, .num_col = 2, .sep_nm = .{ 10000, 10000 }, .offset_nm = .{ 0, 0 } },
-    .{ .slm_id = 2, .num_row = 2, .num_col = 2, .sep_nm = .{ 10000, 10000 }, .offset_nm = .{ 0, 2000 } },
+    .{
+        .slm_id = 1,
+        .num_row = 2,
+        .num_col = 2,
+        .sep_nm = .{ 10000, 10000 },
+        .offset_nm = .{ 0, 0 },
+    },
+    .{
+        .slm_id = 2,
+        .num_row = 2,
+        .num_col = 2,
+        .sep_nm = .{ 10000, 10000 },
+        .offset_nm = .{ 0, 2000 },
+    },
 };
 
 fn testCfg() ArchConfig {
     return .{
         .platform = .{ .name = "test", .version = "0" },
-        .aod = .{ .aod_id = 0, .min_sep_nm = 1500, .max_num_row = 4, .max_num_col = 8 },
-        .storage_zone = .{ .zone_id = 0, .offset_nm = .{ 0, 0 }, .dimension_nm = .{ 12000, 4000 }, .slm = test_slm },
-        .compute_zone = .{ .zone_id = 1, .offset_nm = .{ 0, 10000 }, .dimension_nm = .{ 20000, 14000 }, .dr_nm = 2000, .dw_nm = 10000, .slms = &test_compute_slms },
-        .readout_zone = .{ .zone_id = 2, .offset_nm = .{ 0, 30000 }, .dimension_nm = .{ 12000, 4000 }, .slm = test_slm },
-        .constraints = .{ .db_nm = 3000, .dz_nm = 3000, .one_qubit_gate_fidelity = 0.999, .two_qubit_gate_fidelity = 0.995, .readout_fidelity = 0.99 },
+        .aod = .{
+            .aod_id = 0,
+            .min_sep_nm = 1500,
+            .max_num_row = 4,
+            .max_num_col = 8,
+        },
+        .storage_zone = .{
+            .zone_id = 0,
+            .offset_nm = .{ 0, 0 },
+            .dimension_nm = .{ 12000, 4000 },
+            .slm = test_slm,
+        },
+        .compute_zone = .{
+            .zone_id = 1,
+            .offset_nm = .{ 0, 10000 },
+            .dimension_nm = .{ 20000, 14000 },
+            .dr_nm = 2000,
+            .dw_nm = 10000,
+            .slms = &test_compute_slms,
+        },
+        .readout_zone = .{
+            .zone_id = 2,
+            .offset_nm = .{ 0, 30000 },
+            .dimension_nm = .{ 12000, 4000 },
+            .slm = test_slm,
+        },
+        .constraints = .{
+            .db_nm = 3000,
+            .dz_nm = 3000,
+            .one_qubit_gate_fidelity = 0.999,
+            .two_qubit_gate_fidelity = 0.995,
+            .readout_fidelity = 0.99,
+        },
     };
 }
 

@@ -47,6 +47,7 @@ pub fn parse(gpa: std.mem.Allocator, src: []const u8) !Assembly {
     const parsed = try std.json.parseFromSlice(Raw, gpa, src, .{
         .ignore_unknown_fields = true,
     });
+
     defer parsed.deinit();
     const raw = parsed.value;
 
@@ -110,12 +111,20 @@ fn cfail(comptime fmt: []const u8, args: anytype) void {
 /// Prints a diagnostic and returns an error; the driver turns it fatal.
 pub fn check(a: Assembly, cfg: arch.ArchConfig, num_qubits: usize) CheckError!void {
     const slm = cfg.storage_zone.slm;
-    if (a.zone_id != cfg.storage_zone.zone_id or a.slm_id != slm.slm_id or
-        a.rows != slm.num_row or a.cols != slm.num_col)
+    if (a.zone_id != cfg.storage_zone.zone_id or
+        a.slm_id != slm.slm_id or
+        a.rows != slm.num_row or
+        a.cols != slm.num_col)
     {
         cfail("handoff (zone {d}, slm {d}, {d}x{d}) does not match the storage SLM (zone {d}, slm {d}, {d}x{d})", .{
-            a.zone_id,                a.slm_id,   a.rows,      a.cols,
-            cfg.storage_zone.zone_id, slm.slm_id, slm.num_row, slm.num_col,
+            a.zone_id,
+            a.slm_id,
+            a.rows,
+            a.cols,
+            cfg.storage_zone.zone_id,
+            slm.slm_id,
+            slm.num_row,
+            slm.num_col,
         });
         return error.StorageSlmMismatch;
     }
@@ -169,7 +178,10 @@ test "parse rejects an atom count that disagrees with the occupancy" {
         "\"num_atoms\": 4",
     );
     defer std.testing.allocator.free(doc);
-    try std.testing.expectError(error.AtomCountMismatch, parse(std.testing.allocator, doc));
+    try std.testing.expectError(
+        error.AtomCountMismatch,
+        parse(std.testing.allocator, doc),
+    );
 }
 
 test "parse rejects an occupancy matrix that disagrees with rows/cols" {
@@ -181,7 +193,10 @@ test "parse rejects an occupancy matrix that disagrees with rows/cols" {
         "\"cols\": 5",
     );
     defer std.testing.allocator.free(doc);
-    try std.testing.expectError(error.MalformedOccupancy, parse(std.testing.allocator, doc));
+    try std.testing.expectError(
+        error.MalformedOccupancy,
+        parse(std.testing.allocator, doc),
+    );
 }
 
 test "parse rejects occupancy cells other than 0 and 1" {
@@ -193,7 +208,10 @@ test "parse rejects occupancy cells other than 0 and 1" {
         "[0,2,1,0]",
     );
     defer std.testing.allocator.free(doc);
-    try std.testing.expectError(error.Overflow, parse(std.testing.allocator, doc));
+    try std.testing.expectError(
+        error.Overflow,
+        parse(std.testing.allocator, doc),
+    );
 }
 
 test "the example assembly file loads" {
@@ -209,7 +227,10 @@ test "the example assembly file loads" {
     try std.testing.expectEqual(@as(usize, 50), a.sites.len);
     // 5x10 centered block (rows 2..6, cols 50..59): first qubit sits in the
     // highest occupied row (compute-facing) at the block's left edge.
-    try std.testing.expectEqual(schedule.Site{ .row = 6, .col = 50 }, a.sites[0]);
+    try std.testing.expectEqual(
+        schedule.Site{ .row = 6, .col = 50 },
+        a.sites[0],
+    );
 }
 
 var test_no_slms: [0]arch.Slm = .{};
@@ -217,13 +238,27 @@ var test_no_slms: [0]arch.Slm = .{};
 // Storage SLM congruent with test_doc: zone 0, slm 0, 3x4.
 fn testCfg() arch.ArchConfig {
     return .{
-        .platform = .{ .name = "test", .version = "0" },
-        .aod = .{ .aod_id = 0, .min_sep_nm = 0, .max_num_row = 1, .max_num_col = 1 },
+        .platform = .{
+            .name = "test",
+            .version = "0",
+        },
+        .aod = .{
+            .aod_id = 0,
+            .min_sep_nm = 0,
+            .max_num_row = 1,
+            .max_num_col = 1,
+        },
         .storage_zone = .{
             .zone_id = 0,
             .offset_nm = .{ 0, 0 },
             .dimension_nm = .{ 4000, 3000 },
-            .slm = .{ .slm_id = 0, .num_row = 3, .num_col = 4, .sep_nm = .{ 1000, 1000 }, .offset_nm = .{ 0, 0 } },
+            .slm = .{
+                .slm_id = 0,
+                .num_row = 3,
+                .num_col = 4,
+                .sep_nm = .{ 1000, 1000 },
+                .offset_nm = .{ 0, 0 },
+            },
         },
         .compute_zone = .{
             .zone_id = 1,
@@ -237,7 +272,13 @@ fn testCfg() arch.ArchConfig {
             .zone_id = 2,
             .offset_nm = .{ 0, 12000 },
             .dimension_nm = .{ 4000, 1000 },
-            .slm = .{ .slm_id = 3, .num_row = 1, .num_col = 4, .sep_nm = .{ 1000, 1000 }, .offset_nm = .{ 0, 0 } },
+            .slm = .{
+                .slm_id = 3,
+                .num_row = 1,
+                .num_col = 4,
+                .sep_nm = .{ 1000, 1000 },
+                .offset_nm = .{ 0, 0 },
+            },
         },
         .constraints = .{
             .db_nm = 1000,
@@ -264,7 +305,10 @@ test "check rejects a handoff that mismatches the storage SLM" {
 
     quiet = true;
     defer quiet = false;
-    try std.testing.expectError(error.StorageSlmMismatch, check(a, cfg, 3));
+    try std.testing.expectError(
+        error.StorageSlmMismatch,
+        check(a, cfg, 3),
+    );
 }
 
 test "check rejects a circuit needing more qubits than delivered atoms" {
@@ -273,7 +317,10 @@ test "check rejects a circuit needing more qubits than delivered atoms" {
 
     quiet = true;
     defer quiet = false;
-    try std.testing.expectError(error.NotEnoughAtoms, check(a, testCfg(), 4));
+    try std.testing.expectError(
+        error.NotEnoughAtoms,
+        check(a, testCfg(), 4),
+    );
 }
 
 test {

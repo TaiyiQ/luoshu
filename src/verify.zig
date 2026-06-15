@@ -54,6 +54,7 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
 
     const start_pos = try gpa.alloc(Point, n);
     defer gpa.free(start_pos);
+
     const start_trap = try gpa.alloc(Trap, n);
     defer gpa.free(start_trap);
 
@@ -297,12 +298,16 @@ fn eql(a: Point, b: Point) bool {
 fn onOpenSegment(p: Point, a: Point, b: Point) bool {
     if (a.y == b.y) {
         if (p.y != a.y) return false;
+
         return p.x > @min(a.x, b.x) and p.x < @max(a.x, b.x);
     }
+
     if (a.x == b.x) {
         if (p.x != a.x) return false;
+
         return p.y > @min(a.y, b.y) and p.y < @max(a.y, b.y);
     }
+
     return false; // diagonal moves are rejected before path checks
 }
 
@@ -341,7 +346,10 @@ fn zoneBounds(cfg: arch.ArchConfig, zone: schedule.Zone) Bounds {
 }
 
 fn contains(b: Bounds, p: Point) bool {
-    return p.x >= b.min.x and p.x <= b.max.x and p.y >= b.min.y and p.y <= b.max.y;
+    return p.x >= b.min.x and
+        p.x <= b.max.x and
+        p.y >= b.min.y and
+        p.y <= b.max.y;
 }
 
 // The dual of checkBlockade: the pulse must also reach the pairs it was
@@ -359,11 +367,14 @@ fn contains(b: Bounds, p: Point) bool {
 fn checkPairs(t: usize, cfg: arch.ArchConfig, pos: []const Point, pairs: []const [2]u32, n: usize) !void {
     const db: i64 = cfg.constraints.db_nm;
     const db2 = db * db;
+
     for (pairs) |pair| {
         const a = try qubitIndex(t, pair[0], n);
         const b = try qubitIndex(t, pair[1], n);
+
         const dx = @as(i64, pos[a].x) - pos[b].x;
         const dy = @as(i64, pos[a].y) - pos[b].y;
+
         if (dx * dx + dy * dy > db2) {
             vfail(t, "routed pair ({d},{d}) out of blockade range: ({d},{d}) vs ({d},{d}), db={d}nm", .{
                 a, b, pos[a].x, pos[a].y, pos[b].x, pos[b].y, cfg.constraints.db_nm,
@@ -383,13 +394,17 @@ fn checkBlockade(t: usize, cfg: arch.ArchConfig, pos: []const Point, zone: sched
 
     for (pos, 0..) |pa, a| {
         if (!contains(bounds, pa)) continue;
+
         var neighbors: usize = 0;
         for (pos, 0..) |pb, b| {
             if (a == b or !contains(bounds, pb)) continue;
+
             const dx = @as(i64, pa.x) - pb.x;
             const dy = @as(i64, pa.y) - pb.y;
+
             if (dx * dx + dy * dy <= db2) neighbors += 1;
         }
+
         if (neighbors > 1) {
             vfail(t, "blockade violation: qubit {d} at ({d},{d}) has {d} atoms within {d}nm", .{
                 a, pa.x, pa.y, neighbors, cfg.constraints.db_nm,
@@ -413,8 +428,12 @@ fn testCfg() arch.ArchConfig {
         .sep_nm = .{ 1000, 1000 },
         .offset_nm = .{ 0, 0 },
     };
+
     return .{
-        .platform = .{ .name = "test", .version = "0" },
+        .platform = .{
+            .name = "test",
+            .version = "0",
+        },
         .aod = .{
             .aod_id = 0,
             .min_sep_nm = 100,
@@ -474,29 +493,39 @@ fn pt(x: i32, y: i32) Point {
 
 test "accepts a legal load-move-store round trip" {
     const gpa = std.testing.allocator;
+
     var hw = try makeHw(gpa, &.{ pt(0, 0), pt(1000, 0) });
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{
-        .load = .{
-            .qubit = 0,
-            .position = pt(0, 0),
+    try addFrame(&hw, &.{
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
         },
-    }});
-    try addFrame(&hw, &.{.{
-        .move = .{
-            .qubit = 0,
-            .src = pt(0, 0),
-            .dest = pt(0, 500),
+    });
+
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(0, 0),
+                .dest = pt(0, 500),
+            },
         },
-    }});
-    try addFrame(&hw, &.{.{
-        .move = .{
-            .qubit = 0,
-            .src = pt(0, 500),
-            .dest = pt(2000, 500),
+    });
+
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(0, 500),
+                .dest = pt(2000, 500),
+            },
         },
-    }});
+    });
+
     try addFrame(&hw, &.{
         .{
             .move = .{
@@ -518,6 +547,7 @@ test "accepts a legal load-move-store round trip" {
 
 test "catches a load while already in the AOD" {
     const gpa = std.testing.allocator;
+
     var hw = try makeHw(gpa, &.{pt(0, 0)});
     defer hw.deinit();
 
@@ -538,6 +568,7 @@ test "catches a load while already in the AOD" {
 
     quiet = true;
     defer quiet = false;
+
     try std.testing.expectError(error.LoadWhileInAod, verify(gpa, &hw));
 }
 
@@ -546,16 +577,19 @@ test "catches a move of a stored atom" {
     var hw = try makeHw(gpa, &.{pt(0, 0)});
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{
-        .move = .{
-            .qubit = 0,
-            .src = pt(0, 0),
-            .dest = pt(1000, 0),
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(0, 0),
+                .dest = pt(1000, 0),
+            },
         },
-    }});
+    });
 
     quiet = true;
     defer quiet = false;
+
     try std.testing.expectError(error.MoveWhileStored, verify(gpa, &hw));
 }
 
@@ -580,36 +614,45 @@ test "catches a move whose source disagrees with the replayed position" {
 
     quiet = true;
     defer quiet = false;
+
     try std.testing.expectError(error.MoveSourceMismatch, verify(gpa, &hw));
 }
 
 test "catches a sweep through an occupied trap site" {
     const gpa = std.testing.allocator;
+
     var hw = try makeHw(gpa, &.{ pt(0, 0), pt(2000, 0) });
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{
-        .load = .{
-            .qubit = 1,
-            .position = pt(2000, 0),
+    try addFrame(&hw, &.{
+        .{
+            .load = .{
+                .qubit = 1,
+                .position = pt(2000, 0),
+            },
         },
-    }});
+    });
+
     // Qubit 1 sweeps left through qubit 0's trap at (0,0).
-    try addFrame(&hw, &.{.{
-        .move = .{
-            .qubit = 1,
-            .src = pt(2000, 0),
-            .dest = pt(-2000, 0),
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 1,
+                .src = pt(2000, 0),
+                .dest = pt(-2000, 0),
+            },
         },
-    }});
+    });
 
     quiet = true;
     defer quiet = false;
+
     try std.testing.expectError(error.MoveThroughOccupiedSite, verify(gpa, &hw));
 }
 
 test "atoms loaded in the same frame are not path obstacles" {
     const gpa = std.testing.allocator;
+
     var hw = try makeHw(gpa, &.{ pt(0, 0), pt(2000, 0) });
     defer hw.deinit();
 
@@ -643,9 +686,20 @@ test "atoms loaded in the same frame are not path obstacles" {
             },
         },
     });
+
     try addFrame(&hw, &.{
-        .{ .store = .{ .qubit = 0, .position = pt(-3000, 0) } },
-        .{ .store = .{ .qubit = 1, .position = pt(-2000, 0) } },
+        .{
+            .store = .{
+                .qubit = 0,
+                .position = pt(-3000, 0),
+            },
+        },
+        .{
+            .store = .{
+                .qubit = 1,
+                .position = pt(-2000, 0),
+            },
+        },
     });
 
     try verify(gpa, &hw);
@@ -653,30 +707,38 @@ test "atoms loaded in the same frame are not path obstacles" {
 
 test "catches two atoms on the same site at end of frame" {
     const gpa = std.testing.allocator;
+
     var hw = try makeHw(gpa, &.{ pt(0, 0), pt(1000, 0) });
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{
-        .load = .{
-            .qubit = 1,
-            .position = pt(1000, 0),
+    try addFrame(&hw, &.{
+        .{
+            .load = .{
+                .qubit = 1,
+                .position = pt(1000, 0),
+            },
         },
-    }});
-    try addFrame(&hw, &.{.{
-        .move = .{
-            .qubit = 1,
-            .src = pt(1000, 0),
-            .dest = pt(0, 0),
+    });
+
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 1,
+                .src = pt(1000, 0),
+                .dest = pt(0, 0),
+            },
         },
-    }});
+    });
 
     quiet = true;
     defer quiet = false;
+
     try std.testing.expectError(error.SiteConflict, verify(gpa, &hw));
 }
 
 test "catches an AOD order inversion" {
     const gpa = std.testing.allocator;
+
     var hw = try makeHw(gpa, &.{ pt(0, 0), pt(2000, 0) });
     defer hw.deinit();
 
@@ -694,6 +756,7 @@ test "catches an AOD order inversion" {
             },
         },
     });
+
     // The two AOD columns cross: 0 < 2000 before, 3000 > 1000 after.
     try addFrame(&hw, &.{
         .{
@@ -714,11 +777,13 @@ test "catches an AOD order inversion" {
 
     quiet = true;
     defer quiet = false;
+
     try std.testing.expectError(error.AodOrderInversion, verify(gpa, &hw));
 }
 
 test "catches AOD columns closer than the minimum separation" {
     const gpa = std.testing.allocator;
+
     var hw = try makeHw(gpa, &.{ pt(0, 0), pt(1000, 0) });
     defer hw.deinit();
 
@@ -736,62 +801,128 @@ test "catches AOD columns closer than the minimum separation" {
             },
         },
     });
+
     // 50nm between the two AOD columns; testCfg's min_sep_nm is 100.
-    try addFrame(&hw, &.{.{
-        .move = .{
-            .qubit = 1,
-            .src = pt(1000, 0),
-            .dest = pt(50, 0),
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 1,
+                .src = pt(1000, 0),
+                .dest = pt(50, 0),
+            },
         },
-    }});
+    });
 
     quiet = true;
     defer quiet = false;
+
     try std.testing.expectError(error.AodSeparationViolation, verify(gpa, &hw));
 }
 
 test "catches more AOD columns than the hardware has" {
     const gpa = std.testing.allocator;
+
     // Five distinct columns; testCfg's AOD is 4x4.
-    var hw = try makeHw(gpa, &.{ pt(0, 0), pt(1000, 0), pt(2000, 0), pt(3000, 0), pt(4000, 0) });
+    var hw = try makeHw(gpa, &.{
+        pt(0, 0),
+        pt(1000, 0),
+        pt(2000, 0),
+        pt(3000, 0),
+        pt(4000, 0),
+    });
     defer hw.deinit();
 
     try addFrame(&hw, &.{
-        .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
-        .{ .load = .{ .qubit = 1, .position = pt(1000, 0) } },
-        .{ .load = .{ .qubit = 2, .position = pt(2000, 0) } },
-        .{ .load = .{ .qubit = 3, .position = pt(3000, 0) } },
-        .{ .load = .{ .qubit = 4, .position = pt(4000, 0) } },
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
+        },
+        .{
+            .load = .{
+                .qubit = 1,
+                .position = pt(1000, 0),
+            },
+        },
+        .{
+            .load = .{
+                .qubit = 2,
+                .position = pt(2000, 0),
+            },
+        },
+        .{
+            .load = .{
+                .qubit = 3,
+                .position = pt(3000, 0),
+            },
+        },
+        .{
+            .load = .{
+                .qubit = 4,
+                .position = pt(4000, 0),
+            },
+        },
     });
 
     quiet = true;
     defer quiet = false;
+
     try std.testing.expectError(error.AodCapacityExceeded, verify(gpa, &hw));
 }
 
 test "catches an AOD register split across rows" {
     const gpa = std.testing.allocator;
+
     var hw = try makeHw(gpa, &.{ pt(0, 0), pt(1000, 0) });
     defer hw.deinit();
 
     try addFrame(&hw, &.{
-        .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
-        .{ .load = .{ .qubit = 1, .position = pt(1000, 0) } },
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
+        },
+        .{
+            .load = .{
+                .qubit = 1,
+                .position = pt(1000, 0),
+            },
+        },
     });
+
     // Qubit 1 rises alone: the register would need a second row tone.
-    try addFrame(&hw, &.{.{ .move = .{ .qubit = 1, .src = pt(1000, 0), .dest = pt(1000, 1000) } }});
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 1,
+                .src = pt(1000, 0),
+                .dest = pt(1000, 1000),
+            },
+        },
+    });
 
     quiet = true;
     defer quiet = false;
+
     try std.testing.expectError(error.AodRowSplit, verify(gpa, &hw));
 }
 
 test "catches an atom left in the AOD at end of schedule" {
     const gpa = std.testing.allocator;
+
     var hw = try makeHw(gpa, &.{pt(0, 0)});
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{ .load = .{ .qubit = 0, .position = pt(0, 0) } }});
+    try addFrame(&hw, &.{
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
+        },
+    });
 
     quiet = true;
     defer quiet = false;
@@ -800,6 +931,7 @@ test "catches an atom left in the AOD at end of schedule" {
 
 test "catches a blockade violation during a rydberg pulse" {
     const gpa = std.testing.allocator;
+
     // Three atoms in a 200nm chain inside the compute zone: the middle one
     // has two neighbours within the 300nm blockade radius.
     var hw = try makeHw(gpa, &.{
@@ -813,11 +945,13 @@ test "catches a blockade violation during a rydberg pulse" {
 
     quiet = true;
     defer quiet = false;
+
     try std.testing.expectError(error.BlockadeViolation, verify(gpa, &hw));
 }
 
 test "accepts an isolated pair during a rydberg pulse" {
     const gpa = std.testing.allocator;
+
     var hw = try makeHw(gpa, &.{
         pt(1000, 6000),
         pt(1200, 6000),
@@ -832,6 +966,7 @@ test "accepts an isolated pair during a rydberg pulse" {
 
 test "catches a routed pair parked outside blockade range" {
     const gpa = std.testing.allocator;
+
     // 1000nm apart with a 300nm blockade radius: legal (no crowding), but
     // the pulse cannot entangle the pair it was emitted for.
     var hw = try makeHw(gpa, &.{
@@ -840,48 +975,62 @@ test "catches a routed pair parked outside blockade range" {
     });
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{ .rydberg = .{
-        .zone = .compute,
-        .pairs = &.{.{ 0, 1 }},
-    } }});
+    try addFrame(&hw, &.{
+        .{
+            .rydberg = .{
+                .zone = .compute,
+                .pairs = &.{.{ 0, 1 }},
+            },
+        },
+    });
 
     quiet = true;
     defer quiet = false;
+
     try std.testing.expectError(error.PairOutOfBlockadeRange, verify(gpa, &hw));
 }
 
 test "accepts a routed pair within blockade range" {
     const gpa = std.testing.allocator;
+
     var hw = try makeHw(gpa, &.{
         pt(1000, 6000),
         pt(1200, 6000),
     });
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{ .rydberg = .{
-        .zone = .compute,
-        .pairs = &.{.{ 0, 1 }},
-    } }});
+    try addFrame(&hw, &.{
+        .{
+            .rydberg = .{
+                .zone = .compute,
+                .pairs = &.{.{ 0, 1 }},
+            },
+        },
+    });
 
     try verify(gpa, &hw);
 }
 
 test "catches a measurement outside its zone" {
     const gpa = std.testing.allocator;
+
     var measured = [_]u32{0};
     // Atom sits in storage, but the op claims a readout-zone measurement.
     var hw = try makeHw(gpa, &.{pt(0, 0)});
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{
-        .measure = .{
-            .zone = .readout,
-            .qubits = try hw.arena.allocator().dupe(u32, &measured),
+    try addFrame(&hw, &.{
+        .{
+            .measure = .{
+                .zone = .readout,
+                .qubits = try hw.arena.allocator().dupe(u32, &measured),
+            },
         },
-    }});
+    });
 
     quiet = true;
     defer quiet = false;
+
     try std.testing.expectError(error.MeasureOutsideZone, verify(gpa, &hw));
 }
 

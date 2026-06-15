@@ -2,6 +2,7 @@
 //! Everything draw.zig needs that is a function of the
 //! schedule alone, with no raylib in sight — so it is unit-testable here
 //! and the render loop is pure drawing.
+
 const std = @import("std");
 const schedule = @import("schedule");
 
@@ -79,6 +80,7 @@ pub const ViewModel = struct {
                     },
                 }
             }
+
             vm.positions[t] = try gpa.dupe(Point, cur_pos);
             vm.loaded[t] = try gpa.dupe(bool, cur_loaded);
         }
@@ -89,6 +91,7 @@ pub const ViewModel = struct {
     pub fn deinit(vm: *ViewModel) void {
         for (vm.positions) |p| vm.gpa.free(p);
         vm.gpa.free(vm.positions);
+
         for (vm.loaded) |l| vm.gpa.free(l);
         vm.gpa.free(vm.loaded);
     }
@@ -112,11 +115,15 @@ fn testHw(gpa: std.mem.Allocator, initial: []const Point) !schedule.Hardware {
         .sep_nm = .{ 1000, 1000 },
         .offset_nm = .{ 0, 0 },
     };
+
     var hw = schedule.Hardware{
         .gpa = gpa,
         .arena = .init(gpa),
         .cfg = .{
-            .platform = .{ .name = "test", .version = "0" },
+            .platform = .{
+                .name = "test",
+                .version = "0",
+            },
             .aod = .{
                 .aod_id = 0,
                 .min_sep_nm = 100,
@@ -152,12 +159,17 @@ fn testHw(gpa: std.mem.Allocator, initial: []const Point) !schedule.Hardware {
             },
         },
     };
+
     const a = hw.arena.allocator();
+
     hw.initial = try a.dupe(Point, initial);
+
     hw.placement = try a.alloc(schedule.Atom, initial.len);
+
     for (hw.placement, initial, 0..) |*p, pos, i| {
         p.* = .{ .id = @intCast(i), .pos = pos };
     }
+
     return hw;
 }
 
@@ -174,35 +186,47 @@ fn pt(x: i32, y: i32) Point {
 
 test "positions track moves and loaded is monotone between load and store" {
     const gpa = std.testing.allocator;
+
     var hw = try testHw(gpa, &.{ pt(0, 0), pt(1000, 0) });
     defer hw.deinit();
 
-    try addFrame(&hw, &.{.{
-        .load = .{
-            .qubit = 0,
-            .position = pt(0, 0),
+    try addFrame(&hw, &.{
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
         },
-    }});
-    try addFrame(&hw, &.{.{
-        .move = .{
-            .qubit = 0,
-            .src = pt(0, 0),
-            .dest = pt(0, 500),
+    });
+
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(0, 0),
+                .dest = pt(0, 500),
+            },
         },
-    }});
-    try addFrame(&hw, &.{.{
-        .move = .{
-            .qubit = 0,
-            .src = pt(0, 500),
-            .dest = pt(2000, 500),
+    });
+
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(0, 500),
+                .dest = pt(2000, 500),
+            },
         },
-    }});
-    try addFrame(&hw, &.{.{
-        .store = .{
-            .qubit = 0,
-            .position = pt(2000, 500),
+    });
+
+    try addFrame(&hw, &.{
+        .{
+            .store = .{
+                .qubit = 0,
+                .position = pt(2000, 500),
+            },
         },
-    }});
+    });
 
     var vm = try ViewModel.init(gpa, &hw);
     defer vm.deinit();
@@ -215,7 +239,12 @@ test "positions track moves and loaded is monotone between load and store" {
     }
 
     // Positions settle to each frame's move destination; qubit 1 never moves.
-    const expected_pos = [_]Point{ pt(0, 0), pt(0, 500), pt(2000, 500), pt(2000, 500) };
+    const expected_pos = [_]Point{
+        pt(0, 0),
+        pt(0, 500),
+        pt(2000, 500),
+        pt(2000, 500),
+    };
     for (vm.positions, expected_pos) |frame_pos, want| {
         try std.testing.expectEqual(want, frame_pos[0]);
         try std.testing.expectEqual(pt(1000, 0), frame_pos[1]);
@@ -227,36 +256,59 @@ test "positions track moves and loaded is monotone between load and store" {
 
 test "summary counts ops and num_qubits spans all op kinds" {
     const gpa = std.testing.allocator;
+
     var hw = try testHw(gpa, &.{ pt(0, 0), pt(1000, 0), pt(2000, 0) });
     defer hw.deinit();
 
     const a = hw.arena.allocator();
-    const targets = try a.dupe(schedule.RamanTarget, &.{.{ .qubit = 1, .pos = pt(1000, 0) }});
+
+    const targets = try a.dupe(schedule.RamanTarget, &.{
+        .{
+            .qubit = 1,
+            .pos = pt(1000, 0),
+        },
+    });
     const qubits = try a.dupe(u32, &.{ 0, 1, 2 });
 
-    try addFrame(&hw, &.{.{
-        .raman = .{
-            .angle = 0.5,
-            .phase = 0,
-            .targets = targets,
+    try addFrame(&hw, &.{
+        .{
+            .raman = .{
+                .angle = 0.5,
+                .phase = 0,
+                .targets = targets,
+            },
         },
-    }});
-    try addFrame(&hw, &.{.{
-        .rydberg = .{
-            .zone = .compute,
+    });
+
+    try addFrame(&hw, &.{
+        .{
+            .rydberg = .{
+                .zone = .compute,
+            },
         },
-    }});
-    try addFrame(&hw, &.{.{
-        .measure = .{
-            .zone = .storage,
-            .qubits = qubits,
+    });
+
+    try addFrame(&hw, &.{
+        .{
+            .measure = .{
+                .zone = .storage,
+                .qubits = qubits,
+            },
         },
-    }});
+    });
 
     var vm = try ViewModel.init(gpa, &hw);
     defer vm.deinit();
 
-    try std.testing.expectEqual(Summary{ .raman = 1, .rydberg = 1, .measure = 1 }, vm.summary);
+    try std.testing.expectEqual(
+        Summary{
+            .raman = 1,
+            .rydberg = 1,
+            .measure = 1,
+        },
+        vm.summary,
+    );
+
     try std.testing.expectEqual(@as(usize, 3), vm.num_qubits);
 }
 

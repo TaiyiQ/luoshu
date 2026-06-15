@@ -36,16 +36,41 @@ pub const Site = struct {
     col: u32,
 };
 
-pub const RamanTarget = struct { qubit: u32, pos: Point };
-const Raman = struct { angle: f64, phase: f64, targets: []const RamanTarget };
+pub const RamanTarget = struct {
+    qubit: u32,
+    pos: Point,
+};
+
+const Raman = struct {
+    angle: f64,
+    phase: f64,
+    targets: []const RamanTarget,
+};
 
 /// One single-qubit rotation request, as handed over by the driver
 /// (a front-end U gate maps theta -> angle, phi -> phase).
-pub const RamanGate = struct { qubit: u32, angle: f64, phase: f64 };
+pub const RamanGate = struct {
+    qubit: u32,
+    angle: f64,
+    phase: f64,
+};
 
-const Load = struct { qubit: u32, position: Point };
-const Store = struct { qubit: u32, position: Point };
-const Move = struct { qubit: u32, src: Point, dest: Point };
+const Load = struct {
+    qubit: u32,
+    position: Point,
+};
+
+const Store = struct {
+    qubit: u32,
+    position: Point,
+};
+
+const Move = struct {
+    qubit: u32,
+    src: Point,
+    dest: Point,
+};
+
 const Rydberg = struct {
     zone: Zone,
     /// The routed CZ pairs this pulse is meant to entangle. The verifier
@@ -93,7 +118,12 @@ pub const Hardware = struct {
     // delivered by the upstream Atom Assembly / Atom Rearrangement package)
     // qubit ids follow the given site order; without it, a procedural
     // fallback fills the center half of the grid, compute-facing row first.
-    pub fn init(gpa: std.mem.Allocator, cfg: arch.ArchConfig, num_qubits: usize, initial_sites: ?[]const Site) !Hardware {
+    pub fn init(
+        gpa: std.mem.Allocator,
+        cfg: arch.ArchConfig,
+        num_qubits: usize,
+        initial_sites: ?[]const Site,
+    ) !Hardware {
         const grid = cfg.storage_zone.grid();
         const num_col = grid.num_col;
         const num_row = grid.num_row;
@@ -178,7 +208,13 @@ pub const Hardware = struct {
         const src = a.pos;
         a.pos.x += dx;
         a.pos.y += dy;
-        try s.emit(.{ .move = .{ .qubit = a.id, .src = src, .dest = a.pos } });
+        try s.emit(.{
+            .move = .{
+                .qubit = a.id,
+                .src = src,
+                .dest = a.pos,
+            },
+        });
     }
 
     // ── Schedule construction ────────────────────────────────────────────
@@ -715,12 +751,16 @@ fn occupiedStorageX(
 ) !std.AutoHashMap(i32, void) {
     var ret_set = std.AutoHashMap(usize, void).init(gpa);
     defer ret_set.deinit();
+
     for (returning) |q| try ret_set.put(q, {});
+
     var occ = std.AutoHashMap(i32, void).init(gpa);
+
     for (placement, 0..) |atom, i| {
         if (ret_set.contains(i)) continue;
         if (atom.pos.y == y_target) try occ.put(atom.pos.x, {});
     }
+
     return occ;
 }
 
@@ -785,9 +825,19 @@ test "init rejects more qubits than loading-window sites" {
         .{ .row = 0, .col = 3 },
     });
     defer hw.deinit();
-    try std.testing.expectEqual(Point{ .x = 0, .y = 0 }, hw.initial[0]);
-    try std.testing.expectEqual(Point{ .x = 1000, .y = 0 }, hw.initial[1]);
-    try std.testing.expectEqual(Point{ .x = 3000, .y = 0 }, hw.initial[2]);
+
+    try std.testing.expectEqual(
+        Point{ .x = 0, .y = 0 },
+        hw.initial[0],
+    );
+    try std.testing.expectEqual(
+        Point{ .x = 1000, .y = 0 },
+        hw.initial[1],
+    );
+    try std.testing.expectEqual(
+        Point{ .x = 3000, .y = 0 },
+        hw.initial[2],
+    );
 
     // But fewer sites than qubits is still oversubscription...
     try std.testing.expectError(
@@ -979,20 +1029,26 @@ fn expectRydbergPairsWithinBlockade(
             .move => |m| pos[m.qubit] = m.dest,
             .rydberg => {
                 var seen: usize = 0;
+
                 const row = for (moveable) |r| {
                     const occupied = for (r) |q| {
                         if (q != null) break true;
                     } else false;
+
                     if (!occupied) continue;
+
                     if (seen == pulse) break r;
+
                     seen += 1;
                 } else return error.UnexpectedRydbergPulse;
 
                 for (row, 0..) |maybe_q, i| {
                     const q = maybe_q orelse continue;
                     const partner = fixed[i] orelse continue;
+
                     const dx = @as(i64, pos[q].x) - pos[partner].x;
                     const dy = @as(i64, pos[q].y) - pos[partner].y;
+
                     try std.testing.expect(dx * dx + dy * dy <= db * db);
                 }
                 pulse += 1;
@@ -1007,8 +1063,10 @@ fn expectRydbergPairsWithinBlockade(
         const occupied = for (r) |q| {
             if (q != null) break true;
         } else false;
+
         if (occupied) expected += 1;
     }
+
     try std.testing.expectEqual(expected, pulse);
 }
 
