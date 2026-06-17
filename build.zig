@@ -34,6 +34,14 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("circuit", circuit_mod);
 
+    // OpenQASM front-end: parses .qasm text into a circuit.Circuit.
+    const qasm_mod = b.addModule("qasm", .{
+        .root_source_file = b.path("src/qasm.zig"),
+        .target = target,
+    });
+    qasm_mod.addImport("circuit", circuit_mod);
+    exe.root_module.addImport("qasm", qasm_mod);
+
     const schedule_mod = b.addModule("schedule", .{
         .root_source_file = b.path("src/schedule.zig"),
         .target = target,
@@ -99,6 +107,7 @@ pub fn build(b: *std.Build) void {
     golden_mod.addImport("assembly", assembly_mod);
     golden_mod.addImport("route", route_mod);
     golden_mod.addImport("circuit", circuit_mod);
+    golden_mod.addImport("qasm", qasm_mod);
     golden_mod.addImport("compiler", compiler_mod);
     golden_mod.addImport("serialize", serialize_mod);
     golden_mod.addImport("verify", verify_mod);
@@ -151,7 +160,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit and golden tests");
     const test_mods = [_]*std.Build.Module{
-        arch_mod, assembly_mod, trace_mod, circuit_mod, schedule_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
+        arch_mod, assembly_mod, trace_mod, circuit_mod, qasm_mod, schedule_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
     };
     for (test_mods) |mod| {
         const t = b.addTest(.{ .root_module = mod });

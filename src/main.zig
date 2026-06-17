@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const arch = @import("arch");
 const assembly = @import("assembly");
 const circuit = @import("circuit");
+const qasm = @import("qasm");
 const compiler = @import("compiler");
 const draw = @import("draw");
 const serialize = @import("serialize");
@@ -14,7 +15,7 @@ pub fn main(init: std.process.Init) !void {
     const opts = try cli.parseArgs(init.arena.allocator(), init.minimal.args);
     trace.enabled = opts.verbose;
 
-    var circ = circuit.load(init.gpa, init.io, opts.qasm_path) catch |err|
+    var circ = qasm.load(init.gpa, init.io, opts.qasm_path) catch |err|
         cli.fatal("cannot load circuit '{s}': {t}", .{ opts.qasm_path, err });
     defer circ.deinit();
 

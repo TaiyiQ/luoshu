@@ -13,6 +13,7 @@ const std = @import("std");
 const arch = @import("arch");
 const assembly = @import("assembly");
 const circuit = @import("circuit");
+const qasm = @import("qasm");
 const compiler = @import("compiler");
 const route = @import("route");
 const serialize = @import("serialize");
@@ -327,7 +328,7 @@ test "assembly: qft-5 compiles legally from example/assembly.json" {
     try verify.verify(gpa, &hw);
 }
 
-/// The CLI input path: parse a vendored .qasm with circuit.load (the case
+/// The CLI input path: parse a vendored .qasm with qasm.load (the case
 /// builders construct Circuits directly, bypassing the parser) and require
 /// a schedule the verifier accepts. Not a snapshot test, so it pins the
 /// parser-to-schedule path without freezing its output.
@@ -335,7 +336,7 @@ fn qasmCompilesLegally(path: []const u8) !void {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
 
-    var circ = try circuit.load(gpa, io, path);
+    var circ = try qasm.load(gpa, io, path);
     defer circ.deinit();
 
     var pipe = try circuit.decompose(gpa, circ);

@@ -26,3 +26,5 @@ cz q[1], q[3];
 cz q[1], q[5];
 cz q[2], q[4];
 cz q[3], q[4];
+
+measure q;
