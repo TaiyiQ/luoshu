@@ -9,8 +9,24 @@ const circuit = @import("circuit");
 const Circuit = circuit.Circuit;
 const PI = std.math.pi;
 
+/// A parse failure located in the source: a static `reason` plus the 1-based
+/// line/column it occurred at. Carries no slices into the source, so it stays
+/// valid after the source buffer is freed.
+pub const Diagnostic = struct {
+    reason: []const u8,
+    line: usize,
+    col: usize,
+};
+
 /// Loads and parses an OpenQASM circuit from a file.
 pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Circuit {
+    var diag: ?Diagnostic = null;
+    return loadDiag(gpa, io, path, &diag);
+}
+
+/// Like `load`, but on a parse error writes a located `Diagnostic` to `diag`
+/// (left untouched on I/O errors, which carry no source location).
+pub fn loadDiag(gpa: std.mem.Allocator, io: std.Io, path: []const u8, diag: *?Diagnostic) !Circuit {
     const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
     defer file.close(io);
 
@@ -23,18 +39,58 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Circuit {
     defer gpa.free(src);
 
     var parser = QasmParser.init(gpa, src);
-    return try parser.parse();
+    return parser.parse() catch |err| {
+        const loc = lineCol(src, parser.pos);
+        diag.* = .{
+            .reason = parser.reason orelse defaultReason(err),
+            .line = loc.line,
+            .col = loc.col,
+        };
+        return err;
+    };
+}
+
+/// The 1-based line and column of byte offset `pos` within `src`.
+fn lineCol(src: []const u8, pos: usize) struct { line: usize, col: usize } {
+    var line: usize = 1;
+    var col: usize = 1;
+    const end = @min(pos, src.len);
+    for (src[0..end]) |c| {
+        if (c == '\n') {
+            line += 1;
+            col = 1;
+        } else col += 1;
+    }
+    return .{ .line = line, .col = col };
+}
+
+/// A fallback reason for errors raised without a specific `reason` message.
+fn defaultReason(err: anyerror) []const u8 {
+    return switch (err) {
+        error.NoMeasurement => "circuit has no measurement",
+        error.UnknownRegister => "reference to an undeclared register",
+        error.InvalidCharacter, error.Overflow => "invalid numeric literal",
+        error.ParseError => "invalid syntax",
+        else => "could not parse circuit",
+    };
 }
 
 pub const QasmParser = struct {
-    const Register = struct { name: []const u8, base: usize };
+    const Register = struct { name: []const u8, base: usize, width: usize };
+    const BitReg = struct { name: []const u8, width: usize };
 
     gpa: std.mem.Allocator,
     src: []const u8,
     pos: usize,
     reg: std.ArrayList(Register),
+    // Classical bit registers, tracked only to width-check measurements.
+    bits: std.ArrayList(BitReg),
     total_qubits: usize,
     saw_measure: bool,
+    // A static, human-readable reason for the most recent failure, when the
+    // generic error name (e.g. "ParseError") is not specific enough. `load`
+    // pairs it with the source location computed from `pos`.
+    reason: ?[]const u8,
 
     pub fn init(gpa: std.mem.Allocator, src: []const u8) QasmParser {
         return .{
@@ -42,17 +98,23 @@ pub const QasmParser = struct {
             .src = src,
             .pos = 0,
             .reg = .empty,
+            .bits = .empty,
             .total_qubits = 0,
             .saw_measure = false,
+            .reason = null,
         };
+    }
+
+    // Records `reason` and raises a parse error. The location is recovered
+    // later from `pos`, which sits at the offending token.
+    fn fail(s: *QasmParser, reason: []const u8) error{ParseError} {
+        s.reason = reason;
+        return error.ParseError;
     }
 
     pub fn parse(s: *QasmParser) !Circuit {
         defer s.reg.deinit(s.gpa);
-
-        s.scanMeasurements();
-
-        if (!s.saw_measure) return error.NoMeasurement;
+        defer s.bits.deinit(s.gpa);
 
         try s.collectDeclarations();
 
@@ -61,6 +123,10 @@ pub const QasmParser = struct {
         errdefer circ.deinit();
 
         try s.parseGates(&circ);
+
+        // A program with no readout is not a runnable circuit. `saw_measure`
+        // is set by parseGates as it validates each `measure` statement.
+        if (!s.saw_measure) return error.NoMeasurement;
 
         return circ;
     }
@@ -128,24 +194,76 @@ pub const QasmParser = struct {
         return null;
     }
 
-    // A program with no `measure` produces no readout, so flag the keyword
-    // wherever it appears: leading a statement ("measure q;") or on the right
-    // of an assignment ("c = measure q;"). A whole-source token scan catches
-    // both forms without threading the check through every statement shape.
-    fn scanMeasurements(s: *QasmParser) void {
-        var i: usize = 0;
-        while (i < s.src.len) {
-            const c = s.src[i];
-            if (std.ascii.isAlphabetic(c) or c == '_') {
-                const start = i;
-                while (i < s.src.len and
-                    (std.ascii.isAlphanumeric(s.src[i]) or s.src[i] == '_')) i += 1;
-                if (std.mem.eql(u8, s.src[start..i], "measure")) {
-                    s.saw_measure = true;
-                    return;
-                }
-            } else i += 1;
+    fn qubitReg(s: *QasmParser, name: []const u8) ?Register {
+        for (s.reg.items) |reg| {
+            if (std.mem.eql(u8, reg.name, name)) return reg;
         }
+        return null;
+    }
+
+    fn bitRegWidth(s: *QasmParser, name: []const u8) ?usize {
+        for (s.bits.items) |b| {
+            if (std.mem.eql(u8, b.name, name)) return b.width;
+        }
+        return null;
+    }
+
+    // Validates the qubit operand of a `measure`, flags that the program
+    // produces a readout, and returns how many qubits it measures: 1 for an
+    // indexed (`q[0]`) or physical (`$0`) qubit, or the register width for a
+    // whole register (`q`). Anything else — notably `measure[q]`, which is not
+    // valid OpenQASM — errors. The measurement is not added to the IR (it
+    // carries no readout), so this is purely a syntax/width check; the caller
+    // consumes the rest of the statement, including any `-> bit` target.
+    fn parseMeasureOperand(s: *QasmParser) !usize {
+        s.skipWs();
+        var width: usize = 1; // a physical or indexed qubit is a single qubit
+        if (s.pos < s.src.len and s.src[s.pos] == '$') {
+            s.pos += 1;
+            _ = try s.readUint();
+        } else {
+            const name = s.readIdent();
+            if (name.len == 0) return s.fail("expected a qubit to measure, e.g. `measure q;`");
+            const reg = s.qubitReg(name) orelse {
+                s.reason = "measurement of an undeclared register";
+                return error.UnknownRegister;
+            };
+            s.skipWs();
+            if (s.pos < s.src.len and s.src[s.pos] == '[') {
+                s.pos += 1;
+                _ = try s.readUint();
+                try s.consume(']');
+            } else width = reg.width; // a whole register measures all its qubits
+        }
+        s.saw_measure = true;
+        return width;
+    }
+
+    // The classical target of a measuring assignment. `width` is its bit
+    // count — 1 for a single bit (`c[0]`, indexed) or the declared register
+    // width for a whole register (`c`) — or null when the target register was
+    // not declared, so its width is unknown and the caller skips the check.
+    const MeasureLhs = struct { width: ?usize };
+
+    // Probes whether the current statement is `<target>[idx]? = measure ...`,
+    // with the target identifier (`name`) already consumed by the caller.
+    // Returns null if it is not a measuring assignment; otherwise describes the
+    // target and leaves pos just past `measure` so the operand can be parsed.
+    fn assignmentMeasure(s: *QasmParser, name: []const u8) ?MeasureLhs {
+        s.skipWs();
+        var indexed = false;
+        // An optional index on the classical target, e.g. `c[0] = ...`.
+        if (s.pos < s.src.len and s.src[s.pos] == '[') {
+            indexed = true;
+            while (s.pos < s.src.len and s.src[s.pos] != ']' and s.src[s.pos] != ';') s.pos += 1;
+            if (s.pos < s.src.len and s.src[s.pos] == ']') s.pos += 1;
+            s.skipWs();
+        }
+        if (s.pos >= s.src.len or s.src[s.pos] != '=') return null;
+        s.pos += 1;
+        s.skipWsAndComments();
+        if (!std.mem.eql(u8, s.readIdent(), "measure")) return null;
+        return .{ .width = if (indexed) 1 else s.bitRegWidth(name) };
     }
 
     fn scanPhysicalQubits(s: *QasmParser) void {
@@ -181,8 +299,21 @@ pub const QasmParser = struct {
                 try s.consume(']');
                 s.skipWs();
                 const name = s.readIdent();
-                try s.reg.append(s.gpa, .{ .name = name, .base = s.total_qubits });
+                try s.reg.append(s.gpa, .{ .name = name, .base = s.total_qubits, .width = n });
                 s.total_qubits += n;
+            } else if (std.mem.eql(u8, word, "bit")) {
+                // `bit[n] c;` declares an n-wide register; `bit c;` a single
+                // bit. Recorded only so measurements can be width-checked.
+                s.skipWs();
+                var width: usize = 1;
+                if (s.pos < s.src.len and s.src[s.pos] == '[') {
+                    s.pos += 1;
+                    width = try s.readUint();
+                    try s.consume(']');
+                }
+                s.skipWs();
+                const name = s.readIdent();
+                if (name.len != 0) try s.bits.append(s.gpa, .{ .name = name, .width = width });
             }
             s.skipToSemicolon();
         }
@@ -372,6 +503,22 @@ pub const QasmParser = struct {
                 const q = try s.parseQubitRef();
                 try s.consume(';');
                 try circ.sx(q);
+            } else if (std.mem.eql(u8, word, "measure")) {
+                // Leading form: `measure q;` or `measure q -> c;`.
+                _ = try s.parseMeasureOperand();
+                s.skipToSemicolon();
+            } else if (s.assignmentMeasure(word)) |lhs| {
+                // Assignment form: `c = measure q;` (the leading `word` was
+                // the classical target). The number of qubits measured must
+                // match the target bit register's width, so e.g. measuring a
+                // whole register into a single bit, or a single qubit into a
+                // wider register, is a mismatch.
+                const qubits = try s.parseMeasureOperand();
+                if (lhs.width) |bits| {
+                    if (qubits != bits)
+                        return s.fail("measurement width does not match the target bit register");
+                }
+                s.skipToSemicolon();
             } else {
                 s.skipToSemicolon();
             }
@@ -432,6 +579,85 @@ test "QasmParser errors when the program never measures" {
     ;
     var p = QasmParser.init(std.testing.allocator, src);
     try std.testing.expectError(error.NoMeasurement, p.parse());
+}
+
+test "QasmParser rejects measure with a bracketed operand" {
+    // `measure[q]` is not valid OpenQASM: the qubit operand follows the
+    // keyword as `measure q`, it is not subscripted onto `measure`.
+    const assign = "qubit[2] q;\nc = measure[q];\n";
+    var pa = QasmParser.init(std.testing.allocator, assign);
+    try std.testing.expectError(error.ParseError, pa.parse());
+
+    const lead = "qubit[2] q;\nmeasure[q];\n";
+    var pl = QasmParser.init(std.testing.allocator, lead);
+    try std.testing.expectError(error.ParseError, pl.parse());
+}
+
+test "QasmParser accepts the assignment and arrow measure forms" {
+    const assign = "qubit[2] q;\nbit[2] c;\nc = measure q;\n";
+    var pa = QasmParser.init(std.testing.allocator, assign);
+    var ca = try pa.parse();
+    ca.deinit();
+
+    const arrow = "qubit[2] q;\nmeasure q[0] -> c[0];\n";
+    var pr = QasmParser.init(std.testing.allocator, arrow);
+    var cr = try pr.parse();
+    cr.deinit();
+
+    // A single-bit target with a single-qubit operand matches in width.
+    const indexed = "qubit[2] q;\nbit[2] c;\nc[1] = measure q[1];\n";
+    var pi = QasmParser.init(std.testing.allocator, indexed);
+    var ci = try pi.parse();
+    ci.deinit();
+}
+
+test "QasmParser rejects measuring a register into a single bit" {
+    // `c[1]` is one bit but `q` is the whole 2-qubit register: a width mismatch.
+    const src = "qubit[2] q;\nbit[2] c;\nc[1] = measure q;\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    try std.testing.expectError(error.ParseError, p.parse());
+    try std.testing.expect(p.reason != null);
+}
+
+test "QasmParser rejects a measurement narrower than its bit register" {
+    // `c` is 6 bits but `q[1]` measures a single qubit: a width mismatch.
+    const src = "qubit[2] q;\nbit[6] c;\nc = measure q[1];\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    try std.testing.expectError(error.ParseError, p.parse());
+    try std.testing.expect(p.reason != null);
+}
+
+test "QasmParser rejects a register measurement whose widths differ" {
+    // Whole-register to whole-register, but 3 qubits into 2 bits.
+    const src = "qubit[3] q;\nbit[2] c;\nc = measure q;\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    try std.testing.expectError(error.ParseError, p.parse());
+    try std.testing.expect(p.reason != null);
+}
+
+test "lineCol maps byte offsets to 1-based line and column" {
+    const src = "ab\ncde\n";
+    const cases = [_]struct { pos: usize, line: usize, col: usize }{
+        .{ .pos = 0, .line = 1, .col = 1 },
+        .{ .pos = 1, .line = 1, .col = 2 },
+        .{ .pos = 3, .line = 2, .col = 1 }, // just past '\n'
+        .{ .pos = 5, .line = 2, .col = 3 },
+    };
+    for (cases) |c| {
+        const loc = lineCol(src, c.pos);
+        try std.testing.expectEqual(c.line, loc.line);
+        try std.testing.expectEqual(c.col, loc.col);
+    }
+}
+
+test "parser records the failure location at the offending token" {
+    // The offending '[' sits at column 12 of line 2 ("c = measure[q];").
+    const src = "qubit[2] q;\nc = measure[q];\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    try std.testing.expectError(error.ParseError, p.parse());
+    const loc = lineCol(src, p.pos);
+    try std.testing.expectEqual(2, loc.line);
+    try std.testing.expectEqual(12, loc.col);
 }
 
 test "QasmParser lowers cx to H-CZ-H on the target" {

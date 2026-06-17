@@ -15,8 +15,12 @@ pub fn main(init: std.process.Init) !void {
     const opts = try cli.parseArgs(init.arena.allocator(), init.minimal.args);
     trace.enabled = opts.verbose;
 
-    var circ = qasm.load(init.gpa, init.io, opts.qasm_path) catch |err|
+    var diag: ?qasm.Diagnostic = null;
+    var circ = qasm.loadDiag(init.gpa, init.io, opts.qasm_path, &diag) catch |err| {
+        if (diag) |d|
+            cli.fatal("{s}:{d}:{d}: {t}: {s}", .{ opts.qasm_path, d.line, d.col, err, d.reason });
         cli.fatal("cannot load circuit '{s}': {t}", .{ opts.qasm_path, err });
+    };
     defer circ.deinit();
 
     var pipeline = try circuit.decompose(init.gpa, circ);
