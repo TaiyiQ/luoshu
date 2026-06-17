@@ -2,6 +2,7 @@
 //! parses a `.qasm` source into a `circuit.Circuit` via the builder API,
 //! lowering each statement to native U/CZ gates. Depends on `circuit` (the
 //! IR) and std; nothing reads back into the parser.
+//! https://openqasm.com/versions/3.0/index.html
 
 const std = @import("std");
 const circuit = @import("circuit");
@@ -103,6 +104,10 @@ pub const QasmParser = struct {
     // Optional, caller-owned sink for non-fatal warnings (e.g. a discarded
     // measurement). Left null when the caller does not collect warnings.
     warn_sink: ?*std.ArrayList(Diagnostic),
+    // Qubits already measured, by flat index, for re-measurement and
+    // use-after-measurement warnings. Only populated when warnings are
+    // collected (see `markMeasured`).
+    measured: std.AutoHashMap(u32, void),
 
     pub fn init(gpa: std.mem.Allocator, src: []const u8) QasmParser {
         return .{
@@ -115,6 +120,7 @@ pub const QasmParser = struct {
             .saw_measure = false,
             .reason = null,
             .warn_sink = null,
+            .measured = std.AutoHashMap(u32, void).init(gpa),
         };
     }
 
@@ -134,9 +140,22 @@ pub const QasmParser = struct {
         sink.append(s.gpa, .{ .reason = reason, .line = loc.line, .col = loc.col }) catch {};
     }
 
+    // Records qubit `q` as measured. A no-op (and no allocation) when warnings
+    // are not collected, since the set only feeds warnings; dropping an entry
+    // on allocation failure merely misses a warning, which is harmless.
+    fn markMeasured(s: *QasmParser, q: u32) void {
+        if (s.warn_sink == null) return;
+        s.measured.put(q, {}) catch {};
+    }
+
+    fn isMeasured(s: *QasmParser, q: u32) bool {
+        return s.warn_sink != null and s.measured.contains(q);
+    }
+
     pub fn parse(s: *QasmParser) !Circuit {
         defer s.reg.deinit(s.gpa);
         defer s.bits.deinit(s.gpa);
+        defer s.measured.deinit();
 
         try s.collectDeclarations();
 
@@ -203,9 +222,24 @@ pub const QasmParser = struct {
         return std.fmt.parseInt(usize, s.src[start..s.pos], 10);
     }
 
+    // Requires the next token to be `c`. On a miss the diagnostic names the
+    // expected delimiter and points just past the previous token (where it
+    // should be), rather than at whatever was found instead.
     fn consume(s: *QasmParser, c: u8) !void {
+        const after_prev = s.pos;
         s.skipWs();
-        if (s.pos >= s.src.len or s.src[s.pos] != c) return error.ParseError;
+        if (s.pos >= s.src.len or s.src[s.pos] != c) {
+            s.pos = after_prev;
+            return s.fail(switch (c) {
+                '[' => "expected '['",
+                ']' => "expected ']'",
+                '(' => "expected '('",
+                ')' => "expected ')'",
+                ',' => "expected ','",
+                ';' => "expected ';'",
+                else => "unexpected token",
+            });
+        }
         s.pos += 1;
     }
 
@@ -223,19 +257,27 @@ pub const QasmParser = struct {
         return null;
     }
 
+    // A register name is unique across both namespaces, so a redeclaration —
+    // qubit or bit, same kind or not — collides with an earlier one.
+    fn declared(s: *QasmParser, name: []const u8) bool {
+        return s.qubitReg(name) != null or s.bitRegWidth(name) != null;
+    }
+
     // Validates the qubit operand of a `measure`, flags that the program
-    // produces a readout, and returns how many qubits it measures: 1 for an
-    // indexed (`q[0]`) or physical (`$0`) qubit, or the register width for a
-    // whole register (`q`). Anything else — notably `measure[q]`, which is not
-    // valid OpenQASM — errors. The measurement is not added to the IR (it
-    // carries no readout), so this is purely a syntax/width check; the caller
-    // consumes the rest of the statement, including any `-> bit` target.
-    fn parseMeasureOperand(s: *QasmParser) !usize {
+    // produces a readout, records the measured qubits, and returns how many it
+    // measures: 1 for an indexed (`q[0]`) or physical (`$0`) qubit, or the
+    // register width for a whole register (`q`). Anything else — notably
+    // `measure[q]`, which is not valid OpenQASM — errors. The measurement is
+    // not added to the IR (it carries no readout), so this is a syntax/width
+    // check plus measurement tracking; the caller consumes the rest of the
+    // statement, including any `-> bit` target. `stmt_at` locates warnings.
+    fn parseMeasureOperand(s: *QasmParser, stmt_at: usize) !usize {
         s.skipWs();
-        var width: usize = 1; // a physical or indexed qubit is a single qubit
+        var first: u32 = 0; // flat index of the first measured qubit
+        var count: usize = 1; // a physical or indexed qubit is a single qubit
         if (s.pos < s.src.len and s.src[s.pos] == '$') {
             s.pos += 1;
-            _ = try s.readUint();
+            first = @intCast(try s.readUint());
         } else {
             const name = s.readIdent();
             if (name.len == 0) return s.fail("expected a qubit to measure, e.g. `measure q;`");
@@ -249,10 +291,24 @@ pub const QasmParser = struct {
                 const idx = try s.readUint();
                 try s.consume(']');
                 if (idx >= reg.width) return s.fail("qubit index out of range");
-            } else width = reg.width; // a whole register measures all its qubits
+                first = @intCast(reg.base + idx);
+            } else {
+                first = @intCast(reg.base);
+                count = reg.width; // a whole register measures all its qubits
+            }
         }
         s.saw_measure = true;
-        return width;
+
+        // Track the measured qubits; warn once if any was already measured.
+        var remeasured = false;
+        for (0..count) |k| {
+            const q = first + @as(u32, @intCast(k));
+            if (s.isMeasured(q)) remeasured = true;
+            s.markMeasured(q);
+        }
+        if (remeasured) s.warn(stmt_at, "qubit measured more than once");
+
+        return count;
     }
 
     // The classical target of a measuring assignment. `width` is its bit
@@ -265,20 +321,40 @@ pub const QasmParser = struct {
     // with the target identifier (`name`) already consumed by the caller.
     // Returns null if it is not a measuring assignment; otherwise describes the
     // target and leaves pos just past `measure` so the operand can be parsed.
-    fn assignmentMeasure(s: *QasmParser, name: []const u8) ?MeasureLhs {
+    // The bit index is bounds-checked only once the statement is confirmed to
+    // be a measurement, so a non-measuring `c[5] = ...` never errors here.
+    fn assignmentMeasure(s: *QasmParser, name: []const u8) !?MeasureLhs {
         s.skipWs();
         var indexed = false;
+        var idx: usize = 0;
+        var idx_at: usize = 0;
         // An optional index on the classical target, e.g. `c[0] = ...`.
         if (s.pos < s.src.len and s.src[s.pos] == '[') {
             indexed = true;
-            while (s.pos < s.src.len and s.src[s.pos] != ']' and s.src[s.pos] != ';') s.pos += 1;
-            if (s.pos < s.src.len and s.src[s.pos] == ']') s.pos += 1;
+            s.pos += 1;
+            s.skipWs();
+            idx_at = s.pos;
+            // A non-numeric index (e.g. a loop variable) is not a form we
+            // model: treat the statement as a non-measuring assignment.
+            idx = s.readUint() catch return null;
+            s.skipWs();
+            if (s.pos >= s.src.len or s.src[s.pos] != ']') return null;
+            s.pos += 1;
             s.skipWs();
         }
         if (s.pos >= s.src.len or s.src[s.pos] != '=') return null;
         s.pos += 1;
         s.skipWsAndComments();
         if (!std.mem.eql(u8, s.readIdent(), "measure")) return null;
+        // Confirmed a measuring assignment: the index now must be in range.
+        if (indexed) {
+            if (s.bitRegWidth(name)) |w| {
+                if (idx >= w) {
+                    s.pos = idx_at; // point the diagnostic at the index
+                    return s.fail("bit index out of range");
+                }
+            }
+        }
         return .{ .width = if (indexed) 1 else s.bitRegWidth(name) };
     }
 
@@ -303,6 +379,7 @@ pub const QasmParser = struct {
         while (s.pos < s.src.len) {
             s.skipWsAndComments();
             if (s.pos >= s.src.len) break;
+            const decl_at = s.pos;
             const word = s.readIdent();
             if (word.len == 0) {
                 s.pos += 1;
@@ -315,8 +392,17 @@ pub const QasmParser = struct {
                 try s.consume(']');
                 s.skipWs();
                 const name = s.readIdent();
-                try s.reg.append(s.gpa, .{ .name = name, .base = s.total_qubits, .width = n });
-                s.total_qubits += n;
+                if (name.len == 0) return s.fail("expected a register name");
+                try s.consume(';');
+                // A redeclaration is dropped (the first binding wins); warn so
+                // its qubits don't silently go unallocated.
+                if (s.declared(name)) {
+                    s.warn(decl_at, "register redeclared");
+                } else {
+                    try s.reg.append(s.gpa, .{ .name = name, .base = s.total_qubits, .width = n });
+                    s.total_qubits += n;
+                }
+                continue;
             } else if (std.mem.eql(u8, word, "bit")) {
                 // `bit[n] c;` declares an n-wide register; `bit c;` a single
                 // bit. Recorded only so measurements can be width-checked.
@@ -329,7 +415,13 @@ pub const QasmParser = struct {
                 }
                 s.skipWs();
                 const name = s.readIdent();
-                if (name.len != 0) try s.bits.append(s.gpa, .{ .name = name, .width = width });
+                if (name.len == 0) return s.fail("expected a register name");
+                try s.consume(';');
+                if (s.declared(name))
+                    s.warn(decl_at, "register redeclared")
+                else
+                    try s.bits.append(s.gpa, .{ .name = name, .width = width });
+                continue;
             }
             s.skipToSemicolon();
         }
@@ -337,17 +429,22 @@ pub const QasmParser = struct {
 
     fn parseQubitRef(s: *QasmParser) !u32 {
         s.skipWs();
-        if (s.pos < s.src.len and s.src[s.pos] == '$') {
-            s.pos += 1;
-            return @intCast(try s.readUint());
-        }
-        const name = s.readIdent();
-        try s.consume('[');
-        const idx = try s.readUint();
-        try s.consume(']');
-        const reg = s.qubitReg(name) orelse return error.UnknownRegister;
-        if (idx >= reg.width) return s.fail("qubit index out of range");
-        return @intCast(reg.base + idx);
+        const at = s.pos;
+        const q: u32 = blk: {
+            if (s.pos < s.src.len and s.src[s.pos] == '$') {
+                s.pos += 1;
+                break :blk @intCast(try s.readUint());
+            }
+            const name = s.readIdent();
+            try s.consume('[');
+            const idx = try s.readUint();
+            try s.consume(']');
+            const reg = s.qubitReg(name) orelse return error.UnknownRegister;
+            if (idx >= reg.width) return s.fail("qubit index out of range");
+            break :blk @intCast(reg.base + idx);
+        };
+        if (s.isMeasured(q)) s.warn(at, "operation on an already-measured qubit");
+        return q;
     }
 
     const ExprError = error{ ParseError, InvalidCharacter };
@@ -510,12 +607,22 @@ pub const QasmParser = struct {
                 try s.consume(',');
                 const target = try s.parseQubitRef();
                 try s.consume(';');
+                // A two-qubit gate on one qubit is ill-formed: the operands
+                // must be distinct qubits.
+                if (control == target) {
+                    s.pos = stmt_start;
+                    return s.fail("two-qubit gate on a single qubit");
+                }
                 try circ.cz(control, target);
             } else if (std.mem.eql(u8, word, "cx")) {
                 const control = try s.parseQubitRef();
                 try s.consume(',');
                 const target = try s.parseQubitRef();
                 try s.consume(';');
+                if (control == target) {
+                    s.pos = stmt_start;
+                    return s.fail("two-qubit gate on a single qubit");
+                }
                 try circ.cx(control, target);
             } else if (std.mem.eql(u8, word, "sx")) {
                 const q = try s.parseQubitRef();
@@ -524,47 +631,136 @@ pub const QasmParser = struct {
             } else if (std.mem.eql(u8, word, "measure")) {
                 // Leading form: `measure q;` (result discarded) or
                 // `measure q -> c;` (routed to a classical bit).
-                _ = try s.parseMeasureOperand();
+                _ = try s.parseMeasureOperand(stmt_start);
                 s.skipWs();
                 const routed = s.pos + 1 < s.src.len and s.src[s.pos] == '-' and s.src[s.pos + 1] == '>';
                 if (!routed) s.warn(stmt_start, "measurement result is discarded");
                 s.skipToSemicolon();
-            } else if (s.assignmentMeasure(word)) |lhs| {
+            } else if (try s.assignmentMeasure(word)) |lhs| {
                 // Assignment form: `c = measure q;` (the leading `word` was
                 // the classical target). The number of qubits measured must
                 // match the target bit register's width, so e.g. measuring a
                 // whole register into a single bit, or a single qubit into a
                 // wider register, is a mismatch.
-                const qubits = try s.parseMeasureOperand();
+                const qubits = try s.parseMeasureOperand(stmt_start);
                 if (lhs.width) |bits| {
                     if (qubits != bits)
                         return s.fail("measurement width does not match the target bit register");
                 }
                 s.skipToSemicolon();
-            } else {
-                // Anything else is dropped. Warn so a mistyped or unsupported
-                // operation doesn't silently change the compiled circuit; the
-                // location pins the offending statement.
-                s.warn(stmt_start, if (isUnsupportedConstruct(word))
-                    "unsupported OpenQASM construct ignored"
-                else
-                    "unrecognized statement ignored");
+            } else if (isIgnorableDirective(word)) {
+                // Safe to drop: these don't change the measured result, so a
+                // warning suffices.
+                s.warn(stmt_start, "directive ignored");
                 s.skipToSemicolon();
+            } else {
+                // Everything else is an operation we cannot faithfully compile.
+                // Dropping it would emit a schedule that doesn't match the
+                // source, so this is an error, not a warning. Offer a spelling
+                // hint when the word is a near-miss of a keyword — but not for
+                // an assignment (`c[0] = …`), where the leading word is a real
+                // target name used classically, not a mistyped gate.
+                s.pos = stmt_start;
+                if (!s.isAssignmentStmt(stmt_start)) {
+                    if (nearestKeyword(word)) |hint| return s.fail(hint);
+                }
+                if (isUnsupportedConstruct(word)) return s.fail("unsupported OpenQASM construct");
+                return s.fail("unrecognized statement");
             }
         }
     }
 
-    // OpenQASM keywords this compiler recognizes but does not implement, kept
-    // separate so they read as "unsupported" rather than "unrecognized" (a
-    // likely typo or unknown gate).
+    // True when the statement beginning at `from` contains an `=` before its
+    // terminator — i.e. it assigns to its leading identifier (a classical op
+    // we don't model) rather than calling it like a gate. The arrow form
+    // `measure q -> c;` never reaches here, so a bare `=` is unambiguous.
+    fn isAssignmentStmt(s: *QasmParser, from: usize) bool {
+        var i = from;
+        while (i < s.src.len and s.src[i] != ';') : (i += 1) {
+            if (s.src[i] == '=') return true;
+        }
+        return false;
+    }
+
+    // Directives with no effect on the measured result: dropping them is safe,
+    // so they warn rather than error. (`gphase` is a global phase; `barrier`
+    // and `delay` are scheduling/timing hints this compiler does not model.)
+    fn isIgnorableDirective(word: []const u8) bool {
+        const kws = [_][]const u8{ "barrier", "delay", "gphase" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+        return false;
+    }
+
+    // OpenQASM keywords this compiler recognizes but cannot compile, named so
+    // the error reads as "unsupported" rather than "unrecognized" (a typo or
+    // unknown gate). Dropping any of these would change the result.
     fn isUnsupportedConstruct(word: []const u8) bool {
         const kws = [_][]const u8{
-            "if",      "for",   "while", "gate", "def",
-            "defcal",  "cal",   "reset", "barrier", "box",
-            "delay",   "gphase", "creg",  "qreg",
+            "if",  "for", "while", "gate", "def",
+            "defcal", "cal", "reset", "box", "creg", "qreg",
         };
         for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
         return false;
+    }
+
+    // Keywords worth suggesting when a leading word is a near-miss. Each
+    // carries its full hint so the (static) message needs no allocation, and
+    // gates read as "unknown gate" while the rest read as "unrecognized
+    // statement". Members of a gate family (the controlled gates, the
+    // rotations) share a hint that lists all of them, since a typo like `c`
+    // or `r` is equally close to each. Single-char gates (`h`, `x`, …) are
+    // omitted: at one edit they collide with too much to guess usefully.
+    const Suggestion = struct { word: []const u8, hint: []const u8 };
+    fn suggestStmt(comptime w: []const u8) Suggestion {
+        return .{ .word = w, .hint = "unrecognized statement; did you mean '" ++ w ++ "'?" };
+    }
+    fn suggestGate(comptime w: []const u8, comptime hint: []const u8) Suggestion {
+        return .{ .word = w, .hint = "unknown gate; did you mean " ++ hint ++ "?" };
+    }
+    const suggestions = [_]Suggestion{
+        suggestStmt("qubit"), suggestStmt("bit"), suggestStmt("measure"), suggestStmt("include"),
+        suggestGate("cx", "'cx' or 'cz'"), suggestGate("cz", "'cx' or 'cz'"),
+        suggestGate("rx", "'rx', 'ry', or 'rz'"), suggestGate("ry", "'rx', 'ry', or 'rz'"), suggestGate("rz", "'rx', 'ry', or 'rz'"),
+        suggestGate("sx", "'sx'"),
+    };
+
+    // Returns a "did you mean …?" hint when `word` is within one edit of a
+    // suggestable keyword, else null. The keyword must be at least 2 chars so
+    // a single-char typo target doesn't collide spuriously. Ties favor the
+    // earlier table entry.
+    fn nearestKeyword(word: []const u8) ?[]const u8 {
+        var best: ?Suggestion = null;
+        var best_d: usize = std.math.maxInt(usize);
+        for (suggestions) |s| {
+            const d = editDistance(word, s.word);
+            if (d < best_d) {
+                best_d = d;
+                best = s;
+            }
+        }
+        if (best) |s| {
+            if (best_d <= 1 and s.word.len >= 2) return s.hint;
+        }
+        return null;
+    }
+
+    // Levenshtein distance via a single rolling row. Caps inputs the buffer
+    // can't hold (only short identifiers are ever compared here).
+    fn editDistance(a: []const u8, b: []const u8) usize {
+        var row: [64]usize = undefined;
+        if (b.len + 1 > row.len) return std.math.maxInt(usize);
+        for (0..b.len + 1) |j| row[j] = j;
+        for (a, 0..) |ca, i| {
+            var prev = row[0]; // distance for the previous diagonal cell
+            row[0] = i + 1;
+            for (b, 0..) |cb, j| {
+                const above = row[j + 1];
+                const cost: usize = if (ca == cb) 0 else 1;
+                row[j + 1] = @min(@min(row[j + 1] + 1, row[j] + 1), prev + cost);
+                prev = above;
+            }
+        }
+        return row[b.len];
     }
 };
 
@@ -696,8 +892,9 @@ test "QasmParser does not warn when a measurement is routed to a bit" {
     var warns: std.ArrayList(Diagnostic) = .empty;
     defer warns.deinit(std.testing.allocator);
 
-    // Both the arrow form and the assignment form keep the result.
-    const src = "qubit[2] q;\nbit[2] c;\nmeasure q -> c;\nc = measure q;\n";
+    // Both the arrow form and the assignment form keep the result. Distinct
+    // registers keep this from also tripping the remeasurement warning.
+    const src = "qubit[2] a;\nqubit[2] b;\nbit[2] c;\nmeasure a -> c;\nc = measure b;\n";
     var p = QasmParser.init(std.testing.allocator, src);
     p.warn_sink = &warns;
     var circ = try p.parse();
@@ -718,24 +915,165 @@ test "QasmParser errors on an out-of-range qubit index" {
     try std.testing.expectError(error.ParseError, pm.parse());
 }
 
-test "QasmParser warns on dropped unknown gates and unsupported constructs" {
+test "QasmParser errors on an out-of-range bit index in a measurement target" {
+    // c[5] is out of range for a 2-bit register.
+    const src = "qubit[2] q;\nbit[2] c;\nc[5] = measure q[0];\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    try std.testing.expectError(error.ParseError, p.parse());
+    try std.testing.expectEqualStrings("bit index out of range", p.reason.?);
+}
+
+test "QasmParser does not bit-index-check a non-measuring assignment" {
+    // `c[5]` is out of range, but this is not a measurement, so the bit-index
+    // check must not fire. The statement is still unsupported, so it errors —
+    // but as an unrecognized statement, not as a bit index out of range.
+    const src = "qubit[2] q;\nbit[2] c;\nc[5] = q;\nmeasure q;\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    try std.testing.expectError(error.ParseError, p.parse());
+    try std.testing.expectEqualStrings("unrecognized statement", p.reason.?);
+}
+
+test "QasmParser warns on (and drops) an ignorable directive" {
     var warns: std.ArrayList(Diagnostic) = .empty;
     defer warns.deinit(std.testing.allocator);
 
-    // `swap` is an unknown gate; `barrier` is a recognized-but-unsupported
-    // construct. Both are dropped, each with its own warning. The routed
-    // measurement keeps its result, so it adds no warning of its own.
-    const src = "qubit[2] q;\nbit[2] c;\nswap q[0], q[1];\nbarrier q;\nc = measure q;\n";
+    // `barrier` has no effect on the measured result, so it is dropped with a
+    // warning rather than erroring.
+    const src = "qubit[2] q;\nbit[2] c;\ncz q[0], q[1];\nbarrier q;\nc = measure q;\n";
     var p = QasmParser.init(std.testing.allocator, src);
     p.warn_sink = &warns;
     var circ = try p.parse();
     circ.deinit();
 
+    try std.testing.expectEqual(1, warns.items.len);
+    try std.testing.expectEqualStrings("directive ignored", warns.items[0].reason);
+    try std.testing.expectEqual(4, warns.items[0].line);
+}
+
+test "QasmParser errors with a suggestion on a mistyped keyword" {
+    // `it` is one edit from `bit`, so it is treated as a typo, not dropped.
+    const src = "it[8] c;\nmeasure c;\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    try std.testing.expectError(error.ParseError, p.parse());
+    try std.testing.expectEqualStrings("unrecognized statement; did you mean 'bit'?", p.reason.?);
+
+    // A mistyped `measure` is caught the same way rather than silently dropped.
+    const meas = "qubit[2] q;\nmeasur q;\n";
+    var pm = QasmParser.init(std.testing.allocator, meas);
+    try std.testing.expectError(error.ParseError, pm.parse());
+    try std.testing.expectEqualStrings("unrecognized statement; did you mean 'measure'?", pm.reason.?);
+
+    // A mistyped two-qubit gate reads as an unknown gate with a guess — even
+    // when `c` is also a declared register, since the gate-shaped call (no
+    // `=`) is not an assignment to that register.
+    const cgate = "qubit[3] q;\nbit[3] c;\nc q[1], q[2];\nmeasure q;\n";
+    var pc = QasmParser.init(std.testing.allocator, cgate);
+    try std.testing.expectError(error.ParseError, pc.parse());
+    try std.testing.expectEqualStrings("unknown gate; did you mean 'cx' or 'cz'?", pc.reason.?);
+}
+
+test "QasmParser errors on an operation it cannot compile" {
+    // An unknown gate would change the circuit if dropped, so it errors. Far
+    // from any keyword, it gets no spelling suggestion.
+    const swap = "qubit[2] q;\nswap q[0], q[1];\nmeasure q;\n";
+    var ps = QasmParser.init(std.testing.allocator, swap);
+    try std.testing.expectError(error.ParseError, ps.parse());
+    try std.testing.expectEqualStrings("unrecognized statement", ps.reason.?);
+
+    // A recognized-but-unsupported construct errors with its own message.
+    const reset = "qubit[2] q;\nreset q;\nmeasure q;\n";
+    var pr = QasmParser.init(std.testing.allocator, reset);
+    try std.testing.expectError(error.ParseError, pr.parse());
+    try std.testing.expectEqualStrings("unsupported OpenQASM construct", pr.reason.?);
+}
+
+test "QasmParser errors on a two-qubit gate on a single qubit" {
+    // A self-targeting CZ/CX is ill-formed: its operands must differ.
+    const cz = "qubit[2] q;\ncz q[0], q[0];\nmeasure q;\n";
+    var pz = QasmParser.init(std.testing.allocator, cz);
+    try std.testing.expectError(error.ParseError, pz.parse());
+    try std.testing.expectEqualStrings("two-qubit gate on a single qubit", pz.reason.?);
+
+    const cx = "qubit[2] q;\ncx q[1], q[1];\nmeasure q;\n";
+    var px = QasmParser.init(std.testing.allocator, cx);
+    try std.testing.expectError(error.ParseError, px.parse());
+}
+
+test "QasmParser names the missing delimiter in a declaration" {
+    // Missing the closing ']'.
+    const close = "qubit[8 q;\nmeasure q;\n";
+    var pc = QasmParser.init(std.testing.allocator, close);
+    try std.testing.expectError(error.ParseError, pc.parse());
+    try std.testing.expectEqualStrings("expected ']'", pc.reason.?);
+
+    // Missing the opening '['.
+    const open = "qubit 8] q;\nmeasure q;\n";
+    var po = QasmParser.init(std.testing.allocator, open);
+    try std.testing.expectError(error.ParseError, po.parse());
+    try std.testing.expectEqualStrings("expected '['", po.reason.?);
+}
+
+test "QasmParser errors on a declaration missing its semicolon" {
+    // `qubit[8] q` with no terminating ';'.
+    const at_eof = "qubit[8] q\n";
+    var pe = QasmParser.init(std.testing.allocator, at_eof);
+    try std.testing.expectError(error.ParseError, pe.parse());
+    try std.testing.expectEqualStrings("expected ';'", pe.reason.?);
+
+    // The following statement must not be silently swallowed in place of the
+    // missing ';'.
+    const before_stmt = "qubit[2] q\nmeasure q;\n";
+    var pn = QasmParser.init(std.testing.allocator, before_stmt);
+    try std.testing.expectError(error.ParseError, pn.parse());
+}
+
+test "QasmParser warns on a redeclared register" {
+    var warns: std.ArrayList(Diagnostic) = .empty;
+    defer warns.deinit(std.testing.allocator);
+
+    const src = "qubit[2] q;\nqubit[3] q;\nbit[2] c;\nc = measure q;\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    p.warn_sink = &warns;
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    // The first declaration wins (2 qubits); the second is dropped with a warn.
+    try std.testing.expectEqual(2, circ.n);
+    try std.testing.expectEqual(1, warns.items.len);
+    try std.testing.expectEqualStrings("register redeclared", warns.items[0].reason);
+    try std.testing.expectEqual(2, warns.items[0].line);
+}
+
+test "QasmParser warns on operating after measurement and on remeasurement" {
+    var warns: std.ArrayList(Diagnostic) = .empty;
+    defer warns.deinit(std.testing.allocator);
+
+    // measure q (both qubits) → h q[0] is post-measure → measure q[1] is a
+    // second measurement of an already-measured qubit. Both measurements are
+    // routed so only the use-after/remeasure warnings remain.
+    const src = "qubit[2] q;\nbit[2] c;\nmeasure q -> c;\nh q[0];\nmeasure q[1] -> c[1];\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    p.warn_sink = &warns;
+    var circ = try p.parse();
+    defer circ.deinit();
+
     try std.testing.expectEqual(2, warns.items.len);
-    try std.testing.expectEqualStrings("unrecognized statement ignored", warns.items[0].reason);
-    try std.testing.expectEqual(3, warns.items[0].line);
-    try std.testing.expectEqualStrings("unsupported OpenQASM construct ignored", warns.items[1].reason);
-    try std.testing.expectEqual(4, warns.items[1].line);
+    try std.testing.expectEqualStrings("operation on an already-measured qubit", warns.items[0].reason);
+    try std.testing.expectEqualStrings("qubit measured more than once", warns.items[1].reason);
+}
+
+test "QasmParser does not warn on measurement tracking in legal order" {
+    var warns: std.ArrayList(Diagnostic) = .empty;
+    defer warns.deinit(std.testing.allocator);
+
+    // All gates precede the measurement, and each qubit is measured once.
+    const src = "qubit[2] q;\nbit[2] c;\nh q[0];\ncz q[0], q[1];\nc = measure q;\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    p.warn_sink = &warns;
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(0, warns.items.len);
 }
 
 test "lineCol maps byte offsets to 1-based line and column" {
