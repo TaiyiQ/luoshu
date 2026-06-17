@@ -16,12 +16,16 @@ pub fn main(init: std.process.Init) !void {
     trace.enabled = opts.verbose;
 
     var diag: ?qasm.Diagnostic = null;
-    var circ = qasm.loadDiag(init.gpa, init.io, opts.qasm_path, &diag) catch |err| {
+    var warnings: std.ArrayList(qasm.Diagnostic) = .empty;
+    defer warnings.deinit(init.gpa);
+    var circ = qasm.loadDiag(init.gpa, init.io, opts.qasm_path, &diag, &warnings) catch |err| {
         if (diag) |d|
             cli.fatal("{s}:{d}:{d}: {t}: {s}", .{ opts.qasm_path, d.line, d.col, err, d.reason });
         cli.fatal("cannot load circuit '{s}': {t}", .{ opts.qasm_path, err });
     };
     defer circ.deinit();
+    for (warnings.items) |w|
+        std.debug.print("gatecomp: {s}:{d}:{d}: warning: {s}\n", .{ opts.qasm_path, w.line, w.col, w.reason });
 
     var pipeline = try circuit.decompose(init.gpa, circ);
     defer pipeline.deinit();

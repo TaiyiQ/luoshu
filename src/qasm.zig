@@ -21,12 +21,20 @@ pub const Diagnostic = struct {
 /// Loads and parses an OpenQASM circuit from a file.
 pub fn load(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !Circuit {
     var diag: ?Diagnostic = null;
-    return loadDiag(gpa, io, path, &diag);
+    return loadDiag(gpa, io, path, &diag, null);
 }
 
 /// Like `load`, but on a parse error writes a located `Diagnostic` to `diag`
-/// (left untouched on I/O errors, which carry no source location).
-pub fn loadDiag(gpa: std.mem.Allocator, io: std.Io, path: []const u8, diag: *?Diagnostic) !Circuit {
+/// (left untouched on I/O errors, which carry no source location), and appends
+/// any non-fatal warnings to `warnings` when a list is supplied. `warnings` is
+/// caller-owned; its `Diagnostic`s hold no slices into the source.
+pub fn loadDiag(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    diag: *?Diagnostic,
+    warnings: ?*std.ArrayList(Diagnostic),
+) !Circuit {
     const file = try std.Io.Dir.cwd().openFile(io, path, .{ .mode = .read_only });
     defer file.close(io);
 
@@ -39,6 +47,7 @@ pub fn loadDiag(gpa: std.mem.Allocator, io: std.Io, path: []const u8, diag: *?Di
     defer gpa.free(src);
 
     var parser = QasmParser.init(gpa, src);
+    parser.warn_sink = warnings;
     return parser.parse() catch |err| {
         const loc = lineCol(src, parser.pos);
         diag.* = .{
@@ -91,6 +100,9 @@ pub const QasmParser = struct {
     // generic error name (e.g. "ParseError") is not specific enough. `load`
     // pairs it with the source location computed from `pos`.
     reason: ?[]const u8,
+    // Optional, caller-owned sink for non-fatal warnings (e.g. a discarded
+    // measurement). Left null when the caller does not collect warnings.
+    warn_sink: ?*std.ArrayList(Diagnostic),
 
     pub fn init(gpa: std.mem.Allocator, src: []const u8) QasmParser {
         return .{
@@ -102,6 +114,7 @@ pub const QasmParser = struct {
             .total_qubits = 0,
             .saw_measure = false,
             .reason = null,
+            .warn_sink = null,
         };
     }
 
@@ -110,6 +123,15 @@ pub const QasmParser = struct {
     fn fail(s: *QasmParser, reason: []const u8) error{ParseError} {
         s.reason = reason;
         return error.ParseError;
+    }
+
+    // Appends a located, non-fatal warning at byte offset `at` when a sink is
+    // set; a no-op otherwise. Dropping a warning on allocation failure is
+    // harmless, so the append error is ignored.
+    fn warn(s: *QasmParser, at: usize, reason: []const u8) void {
+        const sink = s.warn_sink orelse return;
+        const loc = lineCol(s.src, at);
+        sink.append(s.gpa, .{ .reason = reason, .line = loc.line, .col = loc.col }) catch {};
     }
 
     pub fn parse(s: *QasmParser) !Circuit {
@@ -187,13 +209,6 @@ pub const QasmParser = struct {
         s.pos += 1;
     }
 
-    fn findRegister(s: *QasmParser, name: []const u8) ?usize {
-        for (s.reg.items) |reg| {
-            if (std.mem.eql(u8, reg.name, name)) return reg.base;
-        }
-        return null;
-    }
-
     fn qubitReg(s: *QasmParser, name: []const u8) ?Register {
         for (s.reg.items) |reg| {
             if (std.mem.eql(u8, reg.name, name)) return reg;
@@ -231,8 +246,9 @@ pub const QasmParser = struct {
             s.skipWs();
             if (s.pos < s.src.len and s.src[s.pos] == '[') {
                 s.pos += 1;
-                _ = try s.readUint();
+                const idx = try s.readUint();
                 try s.consume(']');
+                if (idx >= reg.width) return s.fail("qubit index out of range");
             } else width = reg.width; // a whole register measures all its qubits
         }
         s.saw_measure = true;
@@ -329,8 +345,9 @@ pub const QasmParser = struct {
         try s.consume('[');
         const idx = try s.readUint();
         try s.consume(']');
-        const base = s.findRegister(name) orelse return error.UnknownRegister;
-        return @intCast(base + idx);
+        const reg = s.qubitReg(name) orelse return error.UnknownRegister;
+        if (idx >= reg.width) return s.fail("qubit index out of range");
+        return @intCast(reg.base + idx);
     }
 
     const ExprError = error{ ParseError, InvalidCharacter };
@@ -417,6 +434,7 @@ pub const QasmParser = struct {
         while (s.pos < s.src.len) {
             s.skipWsAndComments();
             if (s.pos >= s.src.len) break;
+            const stmt_start = s.pos;
             const word = s.readIdent();
             if (word.len == 0) {
                 s.pos += 1;
@@ -504,8 +522,12 @@ pub const QasmParser = struct {
                 try s.consume(';');
                 try circ.sx(q);
             } else if (std.mem.eql(u8, word, "measure")) {
-                // Leading form: `measure q;` or `measure q -> c;`.
+                // Leading form: `measure q;` (result discarded) or
+                // `measure q -> c;` (routed to a classical bit).
                 _ = try s.parseMeasureOperand();
+                s.skipWs();
+                const routed = s.pos + 1 < s.src.len and s.src[s.pos] == '-' and s.src[s.pos + 1] == '>';
+                if (!routed) s.warn(stmt_start, "measurement result is discarded");
                 s.skipToSemicolon();
             } else if (s.assignmentMeasure(word)) |lhs| {
                 // Assignment form: `c = measure q;` (the leading `word` was
@@ -520,9 +542,29 @@ pub const QasmParser = struct {
                 }
                 s.skipToSemicolon();
             } else {
+                // Anything else is dropped. Warn so a mistyped or unsupported
+                // operation doesn't silently change the compiled circuit; the
+                // location pins the offending statement.
+                s.warn(stmt_start, if (isUnsupportedConstruct(word))
+                    "unsupported OpenQASM construct ignored"
+                else
+                    "unrecognized statement ignored");
                 s.skipToSemicolon();
             }
         }
+    }
+
+    // OpenQASM keywords this compiler recognizes but does not implement, kept
+    // separate so they read as "unsupported" rather than "unrecognized" (a
+    // likely typo or unknown gate).
+    fn isUnsupportedConstruct(word: []const u8) bool {
+        const kws = [_][]const u8{
+            "if",      "for",   "while", "gate", "def",
+            "defcal",  "cal",   "reset", "barrier", "box",
+            "delay",   "gphase", "creg",  "qreg",
+        };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+        return false;
     }
 };
 
@@ -633,6 +675,67 @@ test "QasmParser rejects a register measurement whose widths differ" {
     var p = QasmParser.init(std.testing.allocator, src);
     try std.testing.expectError(error.ParseError, p.parse());
     try std.testing.expect(p.reason != null);
+}
+
+test "QasmParser warns when a measurement result is discarded" {
+    var warns: std.ArrayList(Diagnostic) = .empty;
+    defer warns.deinit(std.testing.allocator);
+
+    // Bare `measure q;` on line 2 throws its result away.
+    const src = "qubit[2] q;\nmeasure q;\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    p.warn_sink = &warns;
+    var circ = try p.parse();
+    circ.deinit();
+
+    try std.testing.expectEqual(1, warns.items.len);
+    try std.testing.expectEqual(2, warns.items[0].line);
+}
+
+test "QasmParser does not warn when a measurement is routed to a bit" {
+    var warns: std.ArrayList(Diagnostic) = .empty;
+    defer warns.deinit(std.testing.allocator);
+
+    // Both the arrow form and the assignment form keep the result.
+    const src = "qubit[2] q;\nbit[2] c;\nmeasure q -> c;\nc = measure q;\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    p.warn_sink = &warns;
+    var circ = try p.parse();
+    circ.deinit();
+
+    try std.testing.expectEqual(0, warns.items.len);
+}
+
+test "QasmParser errors on an out-of-range qubit index" {
+    // q[2] is out of range for a 2-qubit register.
+    const gate = "qubit[2] q;\nh q[2];\nmeasure q;\n";
+    var pg = QasmParser.init(std.testing.allocator, gate);
+    try std.testing.expectError(error.ParseError, pg.parse());
+
+    // Same check applies to a measured single qubit.
+    const meas = "qubit[2] q;\nmeasure q[2];\n";
+    var pm = QasmParser.init(std.testing.allocator, meas);
+    try std.testing.expectError(error.ParseError, pm.parse());
+}
+
+test "QasmParser warns on dropped unknown gates and unsupported constructs" {
+    var warns: std.ArrayList(Diagnostic) = .empty;
+    defer warns.deinit(std.testing.allocator);
+
+    // `swap` is an unknown gate; `barrier` is a recognized-but-unsupported
+    // construct. Both are dropped, each with its own warning. The routed
+    // measurement keeps its result, so it adds no warning of its own.
+    const src = "qubit[2] q;\nbit[2] c;\nswap q[0], q[1];\nbarrier q;\nc = measure q;\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    p.warn_sink = &warns;
+    var circ = try p.parse();
+    circ.deinit();
+
+    try std.testing.expectEqual(2, warns.items.len);
+    try std.testing.expectEqualStrings("unrecognized statement ignored", warns.items[0].reason);
+    try std.testing.expectEqual(3, warns.items[0].line);
+    try std.testing.expectEqualStrings("unsupported OpenQASM construct ignored", warns.items[1].reason);
+    try std.testing.expectEqual(4, warns.items[1].line);
 }
 
 test "lineCol maps byte offsets to 1-based line and column" {
