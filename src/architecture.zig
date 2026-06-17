@@ -338,9 +338,18 @@ pub fn validate(cfg: ArchConfig) ConfigError!void {
     // Zones must not overlap, and must keep the configured inter-zone gap so
     // the Rydberg laser cannot stray into storage or readout.
     const dz: i64 = cfg.constraints.dz_nm;
-    const storage = zoneBox(cfg.storage_zone.offset_nm, cfg.storage_zone.dimension_nm);
-    const compute = zoneBox(cfg.compute_zone.offset_nm, cfg.compute_zone.dimension_nm);
-    const readout = zoneBox(cfg.readout_zone.offset_nm, cfg.readout_zone.dimension_nm);
+    const storage = zoneBox(
+        cfg.storage_zone.offset_nm,
+        cfg.storage_zone.dimension_nm,
+    );
+    const compute = zoneBox(
+        cfg.compute_zone.offset_nm,
+        cfg.compute_zone.dimension_nm,
+    );
+    const readout = zoneBox(
+        cfg.readout_zone.offset_nm,
+        cfg.readout_zone.dimension_nm,
+    );
     try requireGap("storage", storage, "compute", compute, dz);
     try requireGap("compute", compute, "readout", readout, dz);
     try requireGap("storage", storage, "readout", readout, dz);
@@ -440,8 +449,14 @@ fn convertSlm(raw: RawSlm) Slm {
         .slm_id = raw.slm_id,
         .num_row = raw.num_row,
         .num_col = raw.num_col,
-        .sep_nm = .{ umToNm(raw.sep_um[0]), umToNm(raw.sep_um[1]) },
-        .offset_nm = .{ umToNmSigned(raw.offset_um[0]), umToNmSigned(raw.offset_um[1]) },
+        .sep_nm = .{
+            umToNm(raw.sep_um[0]),
+            umToNm(raw.sep_um[1]),
+        },
+        .offset_nm = .{
+            umToNmSigned(raw.offset_um[0]),
+            umToNmSigned(raw.offset_um[1]),
+        },
     };
 }
 

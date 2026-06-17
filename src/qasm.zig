@@ -86,8 +86,40 @@ fn defaultReason(err: anyerror) []const u8 {
 }
 
 pub const QasmParser = struct {
-    const Register = struct { name: []const u8, base: usize, width: usize };
-    const BitReg = struct { name: []const u8, width: usize };
+    const Register = struct {
+        name: []const u8,
+        base: usize,
+        width: usize,
+    };
+
+    const BitReg = struct {
+        name: []const u8,
+        width: usize,
+    };
+
+    // The most operands (angle parameters or qubits) a single `gate`
+    // definition or call may carry. Generously above anything real hardware
+    // gatesets use; exceeding it errors rather than silently truncating.
+    const max_operands = 16;
+
+    // A user `gate` definition. `params` and `qubits` are the formal angle and
+    // qubit parameter names; `body` is the source between its braces. All four
+    // borrow from the source buffer, so a def outlives parsing only as long as
+    // the source does. A call is compiled by re-parsing `body` with the formals
+    // bound to the call's actual arguments (see `invokeUserGate`).
+    const GateDef = struct {
+        name: []const u8,
+        params: [][]const u8,
+        qubits: [][]const u8,
+        body: []const u8,
+    };
+
+    // Binds a gate's formal angle/qubit parameters to a call's actual values
+    // while its body is expanded. `parsePrimary` resolves a bare identifier
+    // against `args`; `parseQubitRef` resolves a bare operand against `qubits`.
+    const Arg = struct { name: []const u8, value: f64 };
+    const Binding = struct { name: []const u8, qubit: u32 };
+    const Env = struct { args: []const Arg, qubits: []const Binding };
 
     gpa: std.mem.Allocator,
     src: []const u8,
@@ -95,6 +127,15 @@ pub const QasmParser = struct {
     reg: std.ArrayList(Register),
     // Classical bit registers, tracked only to width-check measurements.
     bits: std.ArrayList(BitReg),
+    // User `gate` definitions, in declaration order; a call resolves against
+    // these before the built-in gates, so a definition shadows a built-in.
+    gates: std.ArrayList(GateDef),
+    // The formal-to-actual bindings for the gate body currently being
+    // expanded, or null at the top level. Set/restored by `invokeUserGate`.
+    env: ?*const Env,
+    // Nesting depth of gate expansion, guarding against deep or cyclic
+    // definitions (which would otherwise overflow the stack).
+    expand_depth: usize,
     total_qubits: usize,
     saw_measure: bool,
     // A static, human-readable reason for the most recent failure, when the
@@ -116,6 +157,9 @@ pub const QasmParser = struct {
             .pos = 0,
             .reg = .empty,
             .bits = .empty,
+            .gates = .empty,
+            .env = null,
+            .expand_depth = 0,
             .total_qubits = 0,
             .saw_measure = false,
             .reason = null,
@@ -156,6 +200,13 @@ pub const QasmParser = struct {
         defer s.reg.deinit(s.gpa);
         defer s.bits.deinit(s.gpa);
         defer s.measured.deinit();
+        defer {
+            for (s.gates.items) |g| {
+                s.gpa.free(g.params);
+                s.gpa.free(g.qubits);
+            }
+            s.gates.deinit(s.gpa);
+        }
 
         try s.collectDeclarations();
 
@@ -204,6 +255,30 @@ pub const QasmParser = struct {
             } else s.pos += 1;
         }
         if (s.pos < s.src.len) s.pos += 1;
+    }
+
+    // Skips a brace-delimited body, advancing past the matching `}` of the next
+    // `{`. Used in the declaration pass to step over a `gate` body whole, so its
+    // contents are not mistaken for top-level declarations. Tracks nesting so a
+    // body with inner braces is consumed in one go.
+    fn skipBlock(s: *QasmParser) !void {
+        while (s.pos < s.src.len and s.src[s.pos] != '{') s.pos += 1;
+        if (s.pos >= s.src.len) return s.fail("expected '{' to open a gate body");
+        var depth: usize = 0;
+        while (s.pos < s.src.len) : (s.pos += 1) {
+            switch (s.src[s.pos]) {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if (depth == 0) {
+                        s.pos += 1;
+                        return;
+                    }
+                },
+                else => {},
+            }
+        }
+        return s.fail("unterminated gate body");
     }
 
     fn readIdent(s: *QasmParser) []const u8 {
@@ -422,6 +497,11 @@ pub const QasmParser = struct {
                 else
                     try s.bits.append(s.gpa, .{ .name = name, .width = width });
                 continue;
+            } else if (std.mem.eql(u8, word, "gate")) {
+                // A gate body is parsed for real in the gate pass; here it is
+                // skipped whole so its statements aren't read as declarations.
+                try s.skipBlock();
+                continue;
             }
             s.skipToSemicolon();
         }
@@ -436,6 +516,11 @@ pub const QasmParser = struct {
                 break :blk @intCast(try s.readUint());
             }
             const name = s.readIdent();
+            // Inside a gate body, a bare operand is a formal qubit parameter
+            // bound to the call's actual qubit (no register index follows).
+            if (s.env) |env| {
+                for (env.qubits) |b| if (std.mem.eql(u8, b.name, name)) break :blk b.qubit;
+            }
             try s.consume('[');
             const idx = try s.readUint();
             try s.consume(']');
@@ -507,9 +592,14 @@ pub const QasmParser = struct {
             try s.consume(')');
             return val;
         }
-        if (std.ascii.isAlphabetic(s.src[s.pos])) {
+        if (std.ascii.isAlphabetic(s.src[s.pos]) or s.src[s.pos] == '_') {
             const word = s.readIdent();
             if (std.mem.eql(u8, word, "pi")) return PI;
+            // Inside a gate body, a bare identifier is a formal angle parameter
+            // bound to the call's actual argument.
+            if (s.env) |env| {
+                for (env.args) |a| if (std.mem.eql(u8, a.name, word)) return a.value;
+            }
             return error.ParseError;
         }
 
@@ -525,6 +615,153 @@ pub const QasmParser = struct {
         }
         if (start == s.pos) return error.ParseError;
         return std.fmt.parseFloat(f64, s.src[start..s.pos]);
+    }
+
+    fn findGate(s: *QasmParser, name: []const u8) ?GateDef {
+        for (s.gates.items) |g| {
+            if (std.mem.eql(u8, g.name, name)) return g;
+        }
+        return null;
+    }
+
+    // Parses a `gate NAME(p0, p1, …) q0, q1, … { … }` definition (the `gate`
+    // keyword already consumed) and records it. The signature's names and the
+    // brace-delimited body are kept as slices into the source; a later call
+    // re-parses the body with the formals bound (see `invokeUserGate`).
+    fn parseGateDef(s: *QasmParser) !void {
+        s.skipWs();
+        const name = s.readIdent();
+        if (name.len == 0) return s.fail("expected a gate name");
+
+        var params: [max_operands][]const u8 = undefined;
+        var nparams: usize = 0;
+        s.skipWs();
+        if (s.pos < s.src.len and s.src[s.pos] == '(') {
+            s.pos += 1;
+            s.skipWs();
+            if (s.pos < s.src.len and s.src[s.pos] != ')') {
+                while (true) {
+                    s.skipWs();
+                    const p = s.readIdent();
+                    if (p.len == 0) return s.fail("expected a gate parameter name");
+                    if (nparams >= max_operands) return s.fail("too many gate parameters");
+                    params[nparams] = p;
+                    nparams += 1;
+                    s.skipWs();
+                    if (s.pos < s.src.len and s.src[s.pos] == ',') {
+                        s.pos += 1;
+                        continue;
+                    }
+                    break;
+                }
+            }
+            try s.consume(')');
+        }
+
+        var qubits: [max_operands][]const u8 = undefined;
+        var nqubits: usize = 0;
+        while (true) {
+            s.skipWs();
+            if (s.pos >= s.src.len) return s.fail("expected '{' to open a gate body");
+            if (s.src[s.pos] == '{') break;
+            const q = s.readIdent();
+            if (q.len == 0) return s.fail("expected a gate qubit parameter");
+            if (nqubits >= max_operands) return s.fail("too many gate qubits");
+            qubits[nqubits] = q;
+            nqubits += 1;
+            s.skipWs();
+            if (s.pos < s.src.len and s.src[s.pos] == ',') s.pos += 1;
+        }
+
+        // Capture the body between the braces, tracking nesting depth.
+        s.pos += 1; // step over '{'
+        const body_start = s.pos;
+        var depth: usize = 1;
+        while (s.pos < s.src.len and depth > 0) : (s.pos += 1) {
+            switch (s.src[s.pos]) {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                else => {},
+            }
+        }
+        if (depth != 0) return s.fail("unterminated gate body");
+        const body = s.src[body_start .. s.pos - 1]; // exclude closing '}'
+
+        const param_names = try s.gpa.alloc([]const u8, nparams);
+        errdefer s.gpa.free(param_names);
+        @memcpy(param_names, params[0..nparams]);
+        const qubit_names = try s.gpa.alloc([]const u8, nqubits);
+        errdefer s.gpa.free(qubit_names);
+        @memcpy(qubit_names, qubits[0..nqubits]);
+
+        try s.gates.append(s.gpa, .{
+            .name = name,
+            .params = param_names,
+            .qubits = qubit_names,
+            .body = body,
+        });
+    }
+
+    // Compiles a call to user gate `def` (its name already consumed): reads the
+    // actual angle arguments and qubit operands, binds them to the formals, and
+    // re-parses the body against that binding, emitting its native gates into
+    // `circ`. Nested calls recurse through `parseGates`. The error set is spelled
+    // out because that mutual recursion cannot infer it.
+    fn invokeUserGate(
+        s: *QasmParser,
+        circ: *Circuit,
+        def: GateDef,
+    ) error{ ParseError, InvalidCharacter, Overflow, UnknownRegister, OutOfMemory }!void {
+        if (s.expand_depth >= 64) return s.fail("gate expansion too deep");
+
+        var argbuf: [max_operands]Arg = undefined;
+        var nargs: usize = 0;
+        s.skipWs();
+        if (s.pos < s.src.len and s.src[s.pos] == '(') {
+            s.pos += 1;
+            s.skipWs();
+            if (s.pos < s.src.len and s.src[s.pos] != ')') {
+                while (true) {
+                    const val = try s.parseExpr();
+                    if (nargs >= def.params.len) return s.fail("too many gate arguments");
+                    argbuf[nargs] = .{ .name = def.params[nargs], .value = val };
+                    nargs += 1;
+                    s.skipWs();
+                    if (s.pos < s.src.len and s.src[s.pos] == ',') {
+                        s.pos += 1;
+                        continue;
+                    }
+                    break;
+                }
+            }
+            try s.consume(')');
+        }
+        if (nargs != def.params.len) return s.fail("wrong number of gate arguments");
+
+        var qbuf: [max_operands]Binding = undefined;
+        for (0..def.qubits.len) |i| {
+            if (i > 0) try s.consume(',');
+            qbuf[i] = .{ .name = def.qubits[i], .qubit = try s.parseQubitRef() };
+        }
+        try s.consume(';');
+
+        // Expand the body with the formals bound, restoring the caller's source
+        // cursor and environment afterward (and on error).
+        const env = Env{ .args = argbuf[0..nargs], .qubits = qbuf[0..def.qubits.len] };
+        const saved_src = s.src;
+        const saved_pos = s.pos;
+        const saved_env = s.env;
+        s.src = def.body;
+        s.pos = 0;
+        s.env = &env;
+        s.expand_depth += 1;
+        defer {
+            s.expand_depth -= 1;
+            s.src = saved_src;
+            s.pos = saved_pos;
+            s.env = saved_env;
+        }
+        try s.parseGates(circ);
     }
 
     fn parseGates(s: *QasmParser, circ: *Circuit) !void {
@@ -544,6 +781,12 @@ pub const QasmParser = struct {
                 std.mem.eql(u8, word, "bit"))
             {
                 s.skipToSemicolon();
+            } else if (std.mem.eql(u8, word, "gate")) {
+                try s.parseGateDef();
+            } else if (s.findGate(word)) |def| {
+                // A user-defined gate is compiled by expanding its body; this
+                // is checked before the built-ins so a definition shadows them.
+                try s.invokeUserGate(circ, def);
             } else if (std.mem.eql(u8, word, "h")) {
                 const q = try s.parseQubitRef();
                 try s.consume(';');
@@ -581,7 +824,7 @@ pub const QasmParser = struct {
                 const q = try s.parseQubitRef();
                 try s.consume(';');
                 try circ.rz(q, angle);
-            } else if (std.mem.eql(u8, word, "u")) {
+            } else if (std.mem.eql(u8, word, "u") or std.mem.eql(u8, word, "U")) {
                 try s.consume('(');
                 const theta = try s.parseExpr();
                 try s.consume(',');
@@ -696,8 +939,8 @@ pub const QasmParser = struct {
     // unknown gate). Dropping any of these would change the result.
     fn isUnsupportedConstruct(word: []const u8) bool {
         const kws = [_][]const u8{
-            "if",  "for", "while", "gate", "def",
-            "defcal", "cal", "reset", "box", "creg", "qreg",
+            "if",  "for",   "while", "def",  "defcal",
+            "cal", "reset", "box",   "creg", "qreg",
         };
         for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
         return false;
@@ -718,10 +961,9 @@ pub const QasmParser = struct {
         return .{ .word = w, .hint = "unknown gate; did you mean " ++ hint ++ "?" };
     }
     const suggestions = [_]Suggestion{
-        suggestStmt("qubit"), suggestStmt("bit"), suggestStmt("measure"), suggestStmt("include"),
-        suggestGate("cx", "'cx' or 'cz'"), suggestGate("cz", "'cx' or 'cz'"),
-        suggestGate("rx", "'rx', 'ry', or 'rz'"), suggestGate("ry", "'rx', 'ry', or 'rz'"), suggestGate("rz", "'rx', 'ry', or 'rz'"),
-        suggestGate("sx", "'sx'"),
+        suggestStmt("qubit"),                     suggestStmt("bit"),                suggestStmt("measure"),                   suggestStmt("include"),
+        suggestGate("cx", "'cx' or 'cz'"),        suggestGate("cz", "'cx' or 'cz'"), suggestGate("rx", "'rx', 'ry', or 'rz'"), suggestGate("ry", "'rx', 'ry', or 'rz'"),
+        suggestGate("rz", "'rx', 'ry', or 'rz'"), suggestGate("sx", "'sx'"),
     };
 
     // Returns a "did you mean …?" hint when `word` is within one edit of a
@@ -791,6 +1033,73 @@ test "QasmParser flattens a register and parses gate arguments" {
     const cz_gate = circ.gates.items[1].cz;
     try std.testing.expectEqual(0, cz_gate.control);
     try std.testing.expectEqual(1, cz_gate.target);
+}
+
+test "QasmParser expands a user-defined gate" {
+    // A `gate` definition compiles by inlining its body with the call's angle
+    // arguments and qubit operand substituted for the formals. This `r` matches
+    // the built-in decomposition, so the call must lower to the same U gate.
+    const src =
+        \\OPENQASM 3.0;
+        \\gate r(p0, p1) _gate_q_0 {
+        \\  U(p0, -pi/2 + p1, pi/2 - p1) _gate_q_0;
+        \\}
+        \\qubit[1] q;
+        \\bit[1] c;
+        \\r(pi/2, pi/2) q[0];
+        \\c = measure q;
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(1, circ.gates.items.len);
+    const g = circ.gates.items[0].u;
+    try std.testing.expectEqual(0, g.qubit);
+    try std.testing.expectEqual(PI / 2.0, g.theta); // p0
+    try std.testing.expectEqual(0.0, g.phi); // -pi/2 + p1
+    try std.testing.expectEqual(0.0, g.lambda); // pi/2 - p1
+}
+
+test "QasmParser binds gate qubit operands by position" {
+    // The body's operands name the formals; a call binds them positionally, so
+    // `cz a, b` with the call `mycz q[2], q[0]` controls q[2] onto q[0].
+    const src =
+        \\gate mycz a, b {
+        \\  cz a, b;
+        \\}
+        \\qubit[3] q;
+        \\mycz q[2], q[0];
+        \\measure q[0];
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(1, circ.gates.items.len);
+    const cz_gate = circ.gates.items[0].cz;
+    try std.testing.expectEqual(2, cz_gate.control);
+    try std.testing.expectEqual(0, cz_gate.target);
+}
+
+test "QasmParser expands nested user-defined gates" {
+    // A gate body may call another user gate; expansion recurses until it
+    // bottoms out in built-ins. `flop` -> `flip` -> built-in `x` -> U(pi,0,pi).
+    const src =
+        \\gate flip a { x a; }
+        \\gate flop b { flip b; }
+        \\qubit[1] q;
+        \\flop q[0];
+        \\measure q[0];
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(1, circ.gates.items.len);
+    const g = circ.gates.items[0].u;
+    try std.testing.expectEqual(0, g.qubit);
+    try std.testing.expectEqual(PI, g.theta);
 }
 
 test "QasmParser assigns later reg higher base indices" {

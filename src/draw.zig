@@ -1263,6 +1263,7 @@ fn drawCzGate(cz: circuit.Cz, x: f32, dy: f32, y_offset: f32) void {
 pub fn pipeline(c: circuit.Circuit, p: ?circuit.Pipeline) !void {
     const screenWidth = 800;
     const screenHeight = 450;
+    rl.setTraceLogLevel(.err);
     rl.initWindow(screenWidth, screenHeight, "circuit");
     defer rl.closeWindow();
     rl.setTargetFPS(60);
