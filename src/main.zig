@@ -1,61 +1,67 @@
 const std = @import("std");
-const toml = @import("toml");
+const builtin = @import("builtin");
 const arch = @import("arch");
+const assembly = @import("assembly");
 const circuit = @import("circuit");
-const route = @import("route");
-const schedule = @import("schedule");
+const qasm = @import("qasm");
+const compiler = @import("compiler");
 const draw = @import("draw");
+const serialize = @import("serialize");
+const trace = @import("trace");
+const verify = @import("verify");
+const cli = @import("cli");
 
 pub fn main(init: std.process.Init) !void {
-    var circ = try loadCircuit(init.gpa, init.io);
+    const opts = try cli.parseArgs(init.arena.allocator(), init.minimal.args);
+    trace.enabled = opts.verbose;
+
+    var diag: ?qasm.Diagnostic = null;
+    var warnings: std.ArrayList(qasm.Diagnostic) = .empty;
+    defer warnings.deinit(init.gpa);
+    var circ = qasm.loadDiag(init.gpa, init.io, opts.qasm_path, &diag, &warnings) catch |err| {
+        if (diag) |d|
+            cli.fatal("{s}:{d}:{d}: {t}: {s}", .{ opts.qasm_path, d.line, d.col, err, d.reason });
+        cli.fatal("cannot load circuit '{s}': {t}", .{ opts.qasm_path, err });
+    };
     defer circ.deinit();
+    for (warnings.items) |w|
+        std.debug.print("gatecomp: {s}:{d}:{d}: warning: {s}\n", .{ opts.qasm_path, w.line, w.col, w.reason });
 
     var pipeline = try circuit.decompose(init.gpa, circ);
     defer pipeline.deinit();
 
-    const cfg = try loadArch(init.gpa, init.io);
+    const cfg = arch.load(init.gpa, init.io, opts.arch_path) catch |err|
+        cli.fatal("cannot load architecture '{s}': {t}", .{ opts.arch_path, err });
     defer cfg.deinit(init.gpa);
+    if (opts.verbose) cfg.print();
 
-    var sched = try pipeline.compile(cfg);
-    defer sched.deinit();
-    //try sched.writeToFile(init.gpa, init.io, "./zig-out/physical.json");
+    var asm_doc: ?assembly.Assembly = null;
+    defer if (asm_doc) |a| a.deinit(init.gpa);
+    if (opts.asm_path) |path| {
+        const a = assembly.load(init.gpa, init.io, path) catch |err|
+            cli.fatal("cannot load assembly '{s}': {t}", .{ path, err });
+        asm_doc = a;
+        // The detailed diagnostic (which field disagrees) prints in check.
+        assembly.check(a, cfg, pipeline.num_qubits) catch |err|
+            cli.fatal("assembly '{s}' rejected: {t}", .{ path, err });
+    }
 
-    try draw.pipeline(circ, null); // Draw original circuit.
-    try draw.pipeline(circ, pipeline);
-    try draw.stageGraph(circ, pipeline);
-    try draw.physical(init.gpa, cfg, sched);
+    const initial_sites = if (asm_doc) |a| a.sites else null;
+    var sch = try compiler.compile(init.gpa, &pipeline, cfg, initial_sites);
+    defer sch.deinit();
 
-    std.debug.print(">> Gate compilation completed\n", .{});
-}
+    if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
 
-fn loadCircuit(allocator: std.mem.Allocator, io: std.Io) !circuit.Circuit {
-    const cwd = std.Io.Dir.cwd();
-    const file = try cwd.openFile(io, "./example/mvp.qasm", .{ .mode = .read_only });
-    //const file = try cwd.openFile(io, "./example/ghz-test.qasm", .{ .mode = .read_only });
-    //const file = try cwd.openFile(io, "./example/mvp-v2.qasm", .{ .mode = .read_only });
-    defer file.close(io);
+    if (opts.out) |path| {
+        try serialize.writeHardware(init.gpa, init.io, path, &sch);
+    }
 
-    var read_buf: [4096]u8 = undefined;
-    var fr = file.reader(io, &read_buf);
-    const reader = &fr.interface;
-
-    // Reads everything to EOF into allocator-owned memory. No truncation,
-    // no "must fill exactly N bytes" error.
-    const src = try reader.allocRemaining(allocator, .unlimited);
-    defer allocator.free(src);
-
-    var parser = circuit.QasmParser.init(allocator, src);
-    const circ = try parser.parse();
-
-    return circ;
-}
-
-fn loadArch(allocator: std.mem.Allocator, io: std.Io) !arch.ArchConfig {
-    var parser = toml.Parser(arch.RawArchConfig).init(allocator);
-    defer parser.deinit();
-
-    var raw = try parser.parseFile(io, "./example/arch.toml");
-    defer raw.deinit();
-
-    return try arch.convertConfig(raw.value, allocator);
+    if (opts.draw) {
+        // Draw original circuit.
+        try draw.pipeline(circ, null);
+        // Draw circuit decomposed into stages.
+        try draw.pipeline(circ, pipeline);
+        // Draw arch layout and compiled schedule.
+        try draw.physical(init.gpa, cfg, sch);
+    }
 }

@@ -3,9 +3,60 @@ const rl = @import("raylib");
 const schedule = @import("schedule");
 const arch_mod = @import("arch");
 const circuit = @import("circuit");
+const viewmodel = @import("viewmodel");
 
 const Point = schedule.Point;
-const Op = schedule.Op;
+const OpKind = schedule.OpKind;
+const Summary = viewmodel.Summary;
+
+// Enumerate every SLM trap site across storage and compute zones. These are drawn
+// as background indicators in the visualization.
+pub fn allSlmSites(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig) ![]const Point {
+    var sites: std.ArrayList(Point) = .empty;
+
+    {
+        const slm = layout.storage_zone.slm;
+        const x0 = layout.storage_zone.offset_nm[0] + slm.offset_nm[0];
+        const y0 = layout.storage_zone.offset_nm[1] + slm.offset_nm[1];
+        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
+        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
+        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
+            try sites.append(gpa, .{
+                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
+                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
+            });
+        };
+    }
+
+    for (layout.compute_zone.slms) |slm| {
+        const x0 = layout.compute_zone.offset_nm[0] + slm.offset_nm[0];
+        const y0 = layout.compute_zone.offset_nm[1] + slm.offset_nm[1];
+        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
+        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
+        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
+            try sites.append(gpa, .{
+                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
+                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
+            });
+        };
+    }
+
+    {
+        const slm = layout.readout_zone.slm;
+        const x0 = layout.readout_zone.offset_nm[0] + slm.offset_nm[0];
+        const y0 = layout.readout_zone.offset_nm[1] + slm.offset_nm[1];
+        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
+        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
+        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
+            try sites.append(gpa, .{
+                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
+                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
+            });
+        };
+    }
+
+    return try sites.toOwnedSlice(gpa);
+}
 
 const palette = struct {
     pub const bg = rl.Color{ .r = 48, .g = 52, .b = 70, .a = 255 };
@@ -25,6 +76,7 @@ const palette = struct {
     pub const divider = rl.Color{ .r = 65, .g = 69, .b = 89, .a = 255 };
     pub const zone_storage = rl.Color{ .r = 56, .g = 62, .b = 82, .a = 80 };
     pub const zone_compute = rl.Color{ .r = 46, .g = 70, .b = 66, .a = 90 };
+    pub const zone_readout = rl.Color{ .r = 72, .g = 56, .b = 80, .a = 90 };
     pub const zone_compute_active = rl.Color{ .r = 65, .g = 130, .b = 120, .a = 120 };
     pub const zone_border = rl.Color{ .r = 115, .g = 121, .b = 148, .a = 100 };
     pub const qload_fill = rl.Color{ .r = 147, .g = 154, .b = 183, .a = 255 };
@@ -118,8 +170,8 @@ fn computeBoundingBox(slots: []const Point) BBox {
 // -----------------------------------------------------------------------
 // Per-op accent colors
 // -----------------------------------------------------------------------
-fn opColors(op: Op) struct { fill: rl.Color, stroke: rl.Color } {
-    return switch (op.kind) {
+fn opColors(op: OpKind) struct { fill: rl.Color, stroke: rl.Color } {
+    return switch (op) {
         .move => .{
             .fill = palette.qact_fill,
             .stroke = palette.qact_stroke,
@@ -147,7 +199,7 @@ fn opColors(op: Op) struct { fill: rl.Color, stroke: rl.Color } {
     };
 }
 
-fn opAccent(op: Op) rl.Color {
+fn opAccent(op: OpKind) rl.Color {
     return opColors(op).fill;
 }
 
@@ -258,7 +310,14 @@ fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
     rl.drawRectangleRoundedLinesEx(rec, 0.06, 8, 1.0, palette.zone_border);
 }
 
-fn drawAodHighlight(cam: Camera, positions: []const Point, loaded: []const bool, ops: []const Op, op_t: u32, sw: f32, sh: f32) void {
+fn drawAodHighlight(
+    cam: Camera,
+    positions: []const Point,
+    loaded: []const bool,
+    frame_ops: []const OpKind,
+    sw: f32,
+    sh: f32,
+) void {
     const fill = rl.Color{ .r = palette.qact_fill.r, .g = palette.qact_fill.g, .b = palette.qact_fill.b, .a = 15 };
     const edge = rl.Color{ .r = palette.qact_fill.r, .g = palette.qact_fill.g, .b = palette.qact_fill.b, .a = 55 };
     const hw = ATOM_R * cam.zoom;
@@ -273,8 +332,8 @@ fn drawAodHighlight(cam: Camera, positions: []const Point, loaded: []const bool,
 
         // Vertical column — only at the timestep this atom is loaded (picked up).
         var being_loaded = false;
-        for (ops) |op| {
-            if (op.t == op_t and op.kind == .load and op.kind.load.qubit == @as(u32, @intCast(id))) {
+        for (frame_ops) |op| {
+            if (op == .load and op.load.qubit == @as(u32, @intCast(id))) {
                 being_loaded = true;
                 break;
             }
@@ -286,7 +345,12 @@ fn drawAodHighlight(cam: Camera, positions: []const Point, loaded: []const bool,
     }
 }
 
-fn drawSlot(cam: Camera, slot: Point, positions: []const Point, loaded: []const bool) void {
+fn drawSlot(
+    cam: Camera,
+    slot: Point,
+    positions: []const Point,
+    loaded: []const bool,
+) void {
     const screen = cam.worldToScreen(toVec(slot));
     const screen_radius = ATOM_R * cam.zoom;
 
@@ -306,7 +370,16 @@ fn drawSlot(cam: Camera, slot: Point, positions: []const Point, loaded: []const 
     }
 }
 
-fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, active: bool, loaded: bool, fill: rl.Color, stroke: rl.Color) void {
+fn drawQubit(
+    cam: Camera,
+    font: rl.Font,
+    pos: Point,
+    id: usize,
+    active: bool,
+    loaded: bool,
+    fill: rl.Color,
+    stroke: rl.Color,
+) void {
     const screen = cam.worldToScreen(toVec(pos));
     const screen_radius = (if (loaded) ATOM_R_LOADED else ATOM_R) * cam.zoom;
 
@@ -370,16 +443,9 @@ fn sectionLabel(font: rl.Font, label: [:0]const u8, y: f32) void {
     rl.drawTextEx(font, label, .{ .x = PAD, .y = y }, FS_SECTION, 2.0, palette.text_sub);
 }
 
-const Summary = struct {
-    move: u32,
-    raman: u32,
-    rydberg: u32,
-    measure: u32,
-};
-
 fn drawPanel(
     font: rl.Font,
-    op: Op,
+    op: OpKind,
     frame: usize,
     total: usize,
     active: []const bool,
@@ -466,7 +532,7 @@ fn drawPanel(
             .a = 28,
         });
         rl.drawRectangleRoundedLinesEx(rec, 0.3, 8, 1.5, accent);
-        const name: [:0]const u8 = @tagName(op.kind);
+        const name: [:0]const u8 = @tagName(op);
         const tw = rl.measureTextEx(font, name, FS_BADGE, 1.0).x;
         rl.drawTextEx(
             font,
@@ -481,7 +547,7 @@ fn drawPanel(
 
     // ── Zone indicator ────────────────────────────────────────────
     {
-        const zone_str: [:0]const u8 = switch (op.kind) {
+        const zone_str: [:0]const u8 = switch (op) {
             .move => "-",
             .rydberg => |r| @tagName(r.zone),
             .measure => |m| @tagName(m.zone),
@@ -713,82 +779,20 @@ fn drawPanel(
 // -----------------------------------------------------------------------
 // Main interactive slideshow
 // -----------------------------------------------------------------------
-pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Physical) !void {
-    if (s.placement.len == 0 or s.ops.len == 0) return;
+pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Hardware) !void {
+    if (s.placement.len == 0 or s.frames.items.len == 0) return;
 
-    var max_t: u32 = 0;
-    for (s.ops) |op| max_t = @max(max_t, op.t);
-    const frame_count = @as(usize, max_t) + 1;
+    // Frames are never empty and never have gaps; frame index == timestep.
+    const frame_count = s.frames.items.len;
 
-    var frame_positions = try allocator.alloc([]Point, frame_count);
-    defer {
-        for (frame_positions) |fp| allocator.free(fp);
-        allocator.free(frame_positions);
-    }
-    {
-        const cur = try allocator.alloc(Point, s.placement.len);
-        for (s.placement, 0..) |atom, i| cur[i] = atom.pos;
-        defer allocator.free(cur);
-        for (0..frame_count) |t| {
-            for (s.ops) |op| {
-                if (op.t == @as(u32, @intCast(t)) and op.kind == .move) {
-                    cur[op.kind.move.qubit] = op.kind.move.dest;
-                }
-            }
-            frame_positions[t] = try allocator.dupe(Point, cur);
-        }
-    }
-
-    var frame_loaded = try allocator.alloc([]bool, frame_count);
-    defer {
-        for (frame_loaded) |fl| allocator.free(fl);
-        allocator.free(frame_loaded);
-    }
-    {
-        const cur = try allocator.alloc(bool, s.placement.len);
-        defer allocator.free(cur);
-        @memset(cur, false);
-        for (0..frame_count) |t| {
-            for (s.ops) |op| {
-                if (op.t != @as(u32, @intCast(t))) continue;
-                switch (op.kind) {
-                    .load => |ld| cur[ld.qubit] = true,
-                    .store => |st| cur[st.qubit] = false,
-                    else => {},
-                }
-            }
-            frame_loaded[t] = try allocator.dupe(bool, cur);
-        }
-    }
-
-    // Count logical qubits and op types across the full schedule.
-    var num_qubits: usize = 0;
-    var summary = Summary{ .move = 0, .raman = 0, .rydberg = 0, .measure = 0 };
-    for (s.ops) |op| {
-        switch (op.kind) {
-            .move => |m| {
-                summary.move += 1;
-                num_qubits = @max(num_qubits, m.qubit + 1);
-            },
-            .raman => |r| {
-                summary.raman += 1;
-                for (r.targets) |t| {
-                    num_qubits = @max(num_qubits, t.qubit + 1);
-                }
-            },
-            .rydberg => {
-                summary.rydberg += 1;
-            },
-            .measure => |m| {
-                summary.measure += 1;
-                for (m.qubits) |q| {
-                    num_qubits = @max(num_qubits, q + 1);
-                }
-            },
-            .load => |ld| num_qubits = @max(num_qubits, ld.qubit + 1),
-            .store => |st| num_qubits = @max(num_qubits, st.qubit + 1),
-        }
-    }
+    // Per-frame positions/loaded flags plus schedule-wide counts: pure
+    // functions of the schedule, precomputed and tested in viewmodel.zig.
+    var vm = try viewmodel.ViewModel.init(gpa, &s);
+    defer vm.deinit();
+    const frame_positions = vm.positions;
+    const frame_loaded = vm.loaded;
+    const num_qubits = vm.num_qubits;
+    const summary = vm.summary;
 
     // Zone rects in world-space (nm).
     const sz = layout.storage_zone;
@@ -804,6 +808,9 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         compute_rect.y1 = @max(compute_rect.y1, r.y1);
     }
 
+    const rz = layout.readout_zone;
+    const readout_rect = slmZoneRect(rz.offset_nm[0], rz.offset_nm[1], rz.slm);
+
     rl.setConfigFlags(.{
         .fullscreen_mode = false,
         .window_resizable = true,
@@ -811,7 +818,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         .window_highdpi = true,
     });
     rl.setTraceLogLevel(.err);
-    rl.initWindow(1280, 800, "Physical schedule");
+    rl.initWindow(1280, 800, "Hardware schedule");
     defer rl.closeWindow();
     rl.setTargetFPS(60);
 
@@ -826,7 +833,10 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     const screen_w = rl.getScreenWidth();
     const screen_h = rl.getScreenHeight();
 
-    const bbox = computeBoundingBox(s.sites);
+    const sites = try allSlmSites(s.gpa, layout);
+    defer s.gpa.free(sites);
+
+    const bbox = computeBoundingBox(sites);
     var camera = Camera{};
     camera.fitToRect(bbox, @floatFromInt(screen_w), @floatFromInt(screen_h));
 
@@ -841,16 +851,16 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
     var panel_scroll: f32 = 0;
     var panel_content_h: f32 = 0;
 
-    const hold_delay: f32 = 0.3;  // seconds before repeat starts
-    const hold_rate: f32 = 0.06;  // seconds between repeat steps
+    const hold_delay: f32 = 0.3; // seconds before repeat starts
+    const hold_rate: f32 = 0.06; // seconds between repeat steps
     var hold_k: f32 = 0.0;
     var hold_j: f32 = 0.0;
 
-    var active = try allocator.alloc(bool, s.placement.len);
-    defer allocator.free(active);
+    var active = try gpa.alloc(bool, s.placement.len);
+    defer gpa.free(active);
 
-    var draw_positions = try allocator.alloc(Point, s.placement.len);
-    defer allocator.free(draw_positions);
+    var draw_positions = try gpa.alloc(Point, s.placement.len);
+    defer gpa.free(draw_positions);
 
     while (!rl.windowShouldClose()) {
         const dt = rl.getFrameTime();
@@ -936,23 +946,17 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
             }
         }
 
-        const op_t: u32 = @intCast(frame);
+        // Ops executing at this timestep (frames are never empty).
+        const frame_ops = s.frames.items[frame].items;
 
         // First op at this timestep — used for badge/colors/panel display.
-        var primary_op: Op = s.ops[0];
-        for (s.ops) |op| {
-            if (op.t == op_t) {
-                primary_op = op;
-                break;
-            }
-        }
+        const primary_op: OpKind = frame_ops[0];
 
         var any_move = false;
         var any_raman = false;
-        for (s.ops) |op| {
-            if (op.t != op_t) continue;
-            if (op.kind == .move) any_move = true;
-            if (op.kind == .raman) any_raman = true;
+        for (frame_ops) |op| {
+            if (op == .move) any_move = true;
+            if (op == .raman) any_raman = true;
         }
 
         // Throttle to 15 FPS on static frames — saves GPU/CPU when stepping manually.
@@ -964,9 +968,8 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
 
         // Active qubits = union across all ops at this timestep.
         @memset(active, false);
-        for (s.ops) |op| {
-            if (op.t != op_t) continue;
-            switch (op.kind) {
+        for (frame_ops) |op| {
+            switch (op) {
                 .move => |m| active[m.qubit] = true,
                 .raman => |r| for (r.targets) |tgt| {
                     active[tgt.qubit] = true;
@@ -976,7 +979,20 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
                 },
                 .load => |ld| active[ld.qubit] = true,
                 .store => |st| active[st.qubit] = true,
-                .rydberg => {},
+                // A rydberg pulse illuminates a whole zone: every atom
+                // currently inside it participates.
+                .rydberg => |r| {
+                    const zr = switch (r.zone) {
+                        .storage => storage_rect,
+                        .compute => compute_rect,
+                        .readout => readout_rect,
+                    };
+                    for (frame_positions[frame], 0..) |p, q| {
+                        if (p.x >= zr.x0 and p.x <= zr.x1 and
+                            p.y >= zr.y0 and p.y <= zr.y1)
+                            active[q] = true;
+                    }
+                },
             }
         }
 
@@ -984,6 +1000,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
 
         drawZone(camera, storage_rect, palette.zone_storage);
         drawZone(camera, compute_rect, palette.zone_compute);
+        drawZone(camera, readout_rect, palette.zone_readout);
 
         @memcpy(draw_positions, frame_positions[frame]);
 
@@ -1001,9 +1018,9 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         };
 
         // Animate all moves at this timestep simultaneously.
-        for (s.ops) |op| {
-            if (op.t != op_t or op.kind != .move) continue;
-            const a = op.kind.move;
+        for (frame_ops) |op| {
+            if (op != .move) continue;
+            const a = op.move;
             const sv = toVec(a.src);
             const ev = toVec(a.dest);
             draw_positions[a.qubit] = .{
@@ -1014,15 +1031,15 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
 
         const sw: f32 = @floatFromInt(rl.getScreenWidth());
         const sh: f32 = @floatFromInt(rl.getScreenHeight());
-        drawAodHighlight(camera, draw_positions, frame_loaded[frame], s.ops, op_t, sw, sh);
+        drawAodHighlight(camera, draw_positions, frame_loaded[frame], frame_ops, sw, sh);
 
-        for (s.sites) |slot| drawSlot(camera, slot, draw_positions, frame_loaded[frame]);
+        for (sites) |slot| drawSlot(camera, slot, draw_positions, frame_loaded[frame]);
 
         // Ghost, tail, and ripple for every move at this timestep.
-        for (s.ops) |op| {
-            if (op.t != op_t or op.kind != .move) continue;
-            const a = op.kind.move;
-            const src_is_site = for (s.sites) |site| {
+        for (frame_ops) |op| {
+            if (op != .move) continue;
+            const a = op.move;
+            const src_is_site = for (sites) |site| {
                 if (site.x == a.src.x and site.y == a.src.y) break true;
             } else false;
             if (src_is_site) drawGhostQubit(camera, a.src, opColors(primary_op).fill);
@@ -1030,7 +1047,7 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
             drawArrivalRipple(camera, a.dest, settle_t, opColors(primary_op).fill);
         }
 
-        if (primary_op.kind == .rydberg) {
+        if (primary_op == .rydberg) {
             const fill = opColors(primary_op).fill;
             const db: i64 = layout.constraints.db_nm;
             const db2 = db * db;
@@ -1052,8 +1069,8 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
             // Atoms being stored this frame render red, not with the generic op color.
             var fill = colors.fill;
             var stroke = colors.stroke;
-            for (s.ops) |op| {
-                if (op.t == op_t and op.kind == .store and op.kind.store.qubit == @as(u32, @intCast(id))) {
+            for (frame_ops) |op| {
+                if (op == .store and op.store.qubit == @as(u32, @intCast(id))) {
                     fill = palette.qstore_fill;
                     stroke = palette.qstore_stroke;
                     break;
@@ -1063,9 +1080,9 @@ pub fn physical(allocator: std.mem.Allocator, layout: arch_mod.ArchConfig, s: sc
         }
 
         // Red glow overlay for every atom deposited into SLM at this timestep.
-        for (s.ops) |op| {
-            if (op.t == op_t and op.kind == .store) {
-                drawStoreFlash(camera, op.kind.store.position, palette.qstore_fill);
+        for (frame_ops) |op| {
+            if (op == .store) {
+                drawStoreFlash(camera, op.store.position, palette.qstore_fill);
             }
         }
 
@@ -1230,6 +1247,17 @@ fn drawUGate(u: circuit.U, x: f32, dy: f32, y_offset: f32, font_size: i32) void 
     rl.drawText("U", @intFromFloat(x - 6), @intFromFloat(qy - 10), font_size, .white);
 }
 
+fn drawResetGate(r: circuit.Reset, x: f32, dy: f32, y_offset: f32, font_size: i32) void {
+    const box: f32 = 40;
+    const qy = wireY(r.qubit, dy, y_offset);
+    rl.drawRectangleV(
+        .{ .x = x - box / 2, .y = qy - box / 2 },
+        .{ .x = box, .y = box },
+        .maroon,
+    );
+    rl.drawText("R", @intFromFloat(x - 6), @intFromFloat(qy - 10), font_size, .white);
+}
+
 fn drawCzGate(cz: circuit.Cz, x: f32, dy: f32, y_offset: f32) void {
     const radius: f32 = 8;
     const cy = wireY(cz.control, dy, y_offset);
@@ -1246,6 +1274,7 @@ fn drawCzGate(cz: circuit.Cz, x: f32, dy: f32, y_offset: f32) void {
 pub fn pipeline(c: circuit.Circuit, p: ?circuit.Pipeline) !void {
     const screenWidth = 800;
     const screenHeight = 450;
+    rl.setTraceLogLevel(.err);
     rl.initWindow(screenWidth, screenHeight, "circuit");
     defer rl.closeWindow();
     rl.setTargetFPS(60);
@@ -1315,6 +1344,7 @@ pub fn pipeline(c: circuit.Circuit, p: ?circuit.Pipeline) !void {
                 switch (gate) {
                     .u => |g| drawUGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size),
                     .cz => |g| drawCzGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset),
+                    .reset => |g| drawResetGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size),
                 }
                 col += 1;
             }

@@ -18,3 +18,5 @@ cz q[0], q[1];
 // Second H on q[1] completes CNOT(0,1)
 ry(pi/2) q[1];
 rx(pi)   q[1];
+
+c = measure q;
