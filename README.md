@@ -30,9 +30,11 @@ zig build run -- ../qasm/mvp.qasm --out schedule.json
 
 ## Visualizer
 
-`--draw` (on by default) opens three windows in sequence — close each to advance:
-the parsed circuit (U, CZ, reset `R`), the same circuit grouped into parallel
-stages, then the compiled schedule animated on the atom grid.
+`--draw` (on by default) opens a set of windows in sequence - close each to advance:
+
+1. The OpenQASM parsed **circuit** (`U`, `CZ`, reset `R`).
+2. The same circuit decomposed into **stages**.
+3. The compiled schedule animated on the input **architecture**.
 
 | View             | Control                | Action                          |
 | ---------------- | ---------------------- | ------------------------------- |
