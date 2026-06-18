@@ -230,6 +230,14 @@ pub const Circuit = struct {
         try s.h(target);
     }
 
+    // Rzz(theta) = exp(-i*theta/2 * Z⊗Z), the two-qubit ZZ rotation, via the
+    // textbook CX–Rz–CX decomposition (up to global phase, like the rest).
+    pub fn rzz(s: *Circuit, a: u32, b: u32, theta: f64) !void {
+        try s.cx(a, b);
+        try s.rz(b, theta);
+        try s.cx(a, b);
+    }
+
     pub fn sx(s: *Circuit, q: u32) !void {
         try s.gates.append(s.gpa, .{ .u = .{
             .qubit = q,

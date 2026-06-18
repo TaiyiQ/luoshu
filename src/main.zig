@@ -52,7 +52,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
 
-    if (opts.output) |path| {
+    if (opts.out) |path| {
         try serialize.writeHardware(init.gpa, init.io, path, &sch);
     }
 

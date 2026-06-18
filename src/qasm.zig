@@ -121,8 +121,37 @@ pub const QasmParser = struct {
     const Binding = struct { name: []const u8, qubit: u32 };
     const Env = struct { args: []const Arg, qubits: []const Binding };
 
+    // A named classical value (a `const`/variable, a `def` classical parameter,
+    // or a `for` loop variable). All classical types — int, float, angle, … —
+    // are evaluated to f64; subscripts and loop bounds round to an integer.
+    // `vars` is a scope stack: a lookup scans from the end, so inner bindings
+    // (loop variables, call parameters) shadow outer ones.
+    const NamedVal = struct { name: []const u8, value: f64 };
+
+    // A `def` subroutine parameter, classified by how a call binds its actual
+    // argument: a classical parameter binds an evaluated expression into `vars`;
+    // a qubit (or qubit array) parameter binds a register into `reg`.
+    const DefParamKind = enum { classical, qubit };
+    const DefParam = struct { name: []const u8, kind: DefParamKind };
+
+    // A user `def` subroutine. Like a `gate`, it is compiled by re-parsing its
+    // `body` with the call's actual arguments bound to its formal `params`. The
+    // return type is dropped: this compiler targets a unitary circuit, so a
+    // returned classical value carries nothing into the IR.
+    const DefDef = struct {
+        name: []const u8,
+        params: []DefParam,
+        body: []const u8,
+    };
+
     gpa: std.mem.Allocator,
+    // The source slice currently being parsed. At the top level this is the
+    // whole program; during a gate/def/loop expansion it is the body slice,
+    // always a contiguous sub-slice of `source` (see `absPos`).
     src: []const u8,
+    // The original, full program source, kept so diagnostics emitted while a
+    // body is expanded still report a position in the file the user wrote.
+    source: []const u8,
     pos: usize,
     reg: std.ArrayList(Register),
     // Classical bit registers, tracked only to width-check measurements.
@@ -130,6 +159,11 @@ pub const QasmParser = struct {
     // User `gate` definitions, in declaration order; a call resolves against
     // these before the built-in gates, so a definition shadows a built-in.
     gates: std.ArrayList(GateDef),
+    // User `def` subroutines, resolved by name when a statement calls one.
+    defs: std.ArrayList(DefDef),
+    // Classical scope stack: `const`s, variables, `def` parameters, and `for`
+    // loop variables. `parsePrimary` resolves a bare identifier against it.
+    vars: std.ArrayList(NamedVal),
     // The formal-to-actual bindings for the gate body currently being
     // expanded, or null at the top level. Set/restored by `invokeUserGate`.
     env: ?*const Env,
@@ -154,10 +188,13 @@ pub const QasmParser = struct {
         return .{
             .gpa = gpa,
             .src = src,
+            .source = src,
             .pos = 0,
             .reg = .empty,
             .bits = .empty,
             .gates = .empty,
+            .defs = .empty,
+            .vars = .empty,
             .env = null,
             .expand_depth = 0,
             .total_qubits = 0,
@@ -180,8 +217,16 @@ pub const QasmParser = struct {
     // harmless, so the append error is ignored.
     fn warn(s: *QasmParser, at: usize, reason: []const u8) void {
         const sink = s.warn_sink orelse return;
-        const loc = lineCol(s.src, at);
+        const loc = lineCol(s.source, s.absPos(at));
         sink.append(s.gpa, .{ .reason = reason, .line = loc.line, .col = loc.col }) catch {};
+    }
+
+    // Maps an offset within the current `src` (which, during a gate/def/loop
+    // expansion, is a body slice) to an offset in the original `source`. Every
+    // body is a contiguous sub-slice of the source, so pointer arithmetic
+    // recovers the absolute position for a diagnostic.
+    fn absPos(s: *QasmParser, at: usize) usize {
+        return @intFromPtr(s.src.ptr) - @intFromPtr(s.source.ptr) + at;
     }
 
     // Records qubit `q` as measured. A no-op (and no allocation) when warnings
@@ -207,9 +252,18 @@ pub const QasmParser = struct {
             }
             s.gates.deinit(s.gpa);
         }
+        defer {
+            for (s.defs.items) |d| s.gpa.free(d.params);
+            s.defs.deinit(s.gpa);
+        }
+        defer s.vars.deinit(s.gpa);
 
         try s.collectDeclarations();
 
+        // The declaration pass evaluated top-level `const`s only to size
+        // registers (`qubit[N]`); the gate pass re-evaluates them in order, so
+        // start it from a clean scope.
+        s.vars.clearRetainingCapacity();
         s.pos = 0;
         var circ = Circuit.init(s.gpa, s.total_qubits);
         errdefer circ.deinit();
@@ -499,7 +553,7 @@ pub const QasmParser = struct {
                 var n: usize = 1;
                 if (s.pos < s.src.len and s.src[s.pos] == '[') {
                     s.pos += 1;
-                    n = try s.readUint();
+                    n = try s.readWidth();
                     try s.consume(']');
                 }
                 s.skipWs();
@@ -525,7 +579,7 @@ pub const QasmParser = struct {
                 var width: usize = 1;
                 if (s.pos < s.src.len and s.src[s.pos] == '[') {
                     s.pos += 1;
-                    width = try s.readUint();
+                    width = try s.readWidth();
                     try s.consume(']');
                 }
                 s.skipWs();
@@ -541,10 +595,17 @@ pub const QasmParser = struct {
                 else
                     try s.bits.append(s.gpa, .{ .name = name, .width = width });
                 continue;
-            } else if (std.mem.eql(u8, word, "gate")) {
-                // A gate body is parsed for real in the gate pass; here it is
-                // skipped whole so its statements aren't read as declarations.
+            } else if (std.mem.eql(u8, word, "gate") or std.mem.eql(u8, word, "def")) {
+                // A gate/def body is parsed for real in the gate pass; here it
+                // is skipped whole so its statements aren't read as
+                // top-level declarations.
                 try s.skipBlock();
+                continue;
+            } else if (std.mem.eql(u8, word, "const") or isClassicalType(word)) {
+                // Evaluate a top-level classical declaration so that a later
+                // register width may reference it, e.g. `const int N = 9;`
+                // followed by `qubit[N] q;`.
+                try s.evalClassicalDecl(word);
                 continue;
             }
             s.skipToSemicolon();
@@ -568,10 +629,11 @@ pub const QasmParser = struct {
             const reg = s.qubitReg(name) orelse return error.UnknownRegister;
             s.skipWs();
             // `q[i]` indexes the register; a bare `q` names the only qubit of a
-            // single-qubit register.
+            // single-qubit register. The index is a constant expression (e.g.
+            // `qs[j + 1]` inside a loop), evaluated and rounded to an integer.
             if (s.pos < s.src.len and s.src[s.pos] == '[') {
                 s.pos += 1;
-                const idx = try s.readUint();
+                const idx = try s.evalIndex();
                 try s.consume(']');
                 if (idx >= reg.width) return s.fail("qubit index out of range");
                 break :blk @intCast(reg.base + idx);
@@ -646,6 +708,10 @@ pub const QasmParser = struct {
         if (std.ascii.isAlphabetic(s.src[s.pos]) or s.src[s.pos] == '_') {
             const word = s.readIdent();
             if (std.mem.eql(u8, word, "pi")) return PI;
+            if (std.mem.eql(u8, word, "tau")) return 2.0 * PI;
+            if (std.mem.eql(u8, word, "euler")) return std.math.e;
+            // A `const`, variable, `def` parameter, or `for` loop variable.
+            if (s.lookupVar(word)) |v| return v;
             // Inside a gate body, a bare identifier is a formal angle parameter
             // bound to the call's actual argument.
             if (s.env) |env| {
@@ -673,6 +739,304 @@ pub const QasmParser = struct {
             if (std.mem.eql(u8, g.name, name)) return g;
         }
         return null;
+    }
+
+    fn findDef(s: *QasmParser, name: []const u8) ?DefDef {
+        for (s.defs.items) |d| {
+            if (std.mem.eql(u8, d.name, name)) return d;
+        }
+        return null;
+    }
+
+    // Resolves a classical identifier against the scope stack, innermost first,
+    // so a loop variable or call parameter shadows an outer binding of the same
+    // name. Null when the name is not a bound classical value.
+    fn lookupVar(s: *QasmParser, name: []const u8) ?f64 {
+        var i = s.vars.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (std.mem.eql(u8, s.vars.items[i].name, name)) return s.vars.items[i].value;
+        }
+        return null;
+    }
+
+    // Classical scalar types whose declarations bind a value into `vars`. `bit`
+    // and `qubit` are excluded: they declare registers, handled separately.
+    fn isClassicalType(word: []const u8) bool {
+        const kws = [_][]const u8{
+            "int",  "uint",     "float",   "double", "angle",
+            "bool", "duration", "stretch", "complex",
+        };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+        return false;
+    }
+
+    // Evaluates a register width or array size: a constant expression that
+    // usually is a literal but may reference a `const` (e.g. `qubit[N]`).
+    // Rounded to a non-negative integer.
+    fn readWidth(s: *QasmParser) !usize {
+        const v = try s.parseExpr();
+        if (v < 0) return s.fail("negative register width");
+        return @intFromFloat(@round(v));
+    }
+
+    // Evaluates a subscript expression (e.g. `qs[j + 1]`) to a non-negative
+    // index. Negative results are rejected by the caller's bounds check.
+    fn evalIndex(s: *QasmParser) !usize {
+        const v = try s.parseExpr();
+        if (v < 0) return s.fail("negative qubit index");
+        return @intFromFloat(@round(v));
+    }
+
+    // Evaluates an integer expression used as a `for` loop bound, rounding to
+    // the nearest integer.
+    fn evalInt(s: *QasmParser) !i64 {
+        return @intFromFloat(@round(try s.parseExpr()));
+    }
+
+    // Parses a classical declaration whose leading word (`const` or a scalar
+    // type) is already read: `[const] TYPE[ [size] ] name [= expr];`. When an
+    // initializer is present its value is bound in the current scope; an
+    // uninitialized declaration is accepted but binds nothing.
+    fn evalClassicalDecl(s: *QasmParser, leading: []const u8) !void {
+        var tword = leading;
+        if (std.mem.eql(u8, tword, "const")) {
+            s.skipWs();
+            tword = s.readIdent();
+        }
+        // An optional bit-size on the type, e.g. `int[32]`; not modeled.
+        s.skipWs();
+        if (s.pos < s.src.len and s.src[s.pos] == '[') {
+            while (s.pos < s.src.len and s.src[s.pos] != ']') s.pos += 1;
+            if (s.pos < s.src.len) s.pos += 1;
+        }
+        s.skipWs();
+        const name = s.readIdent();
+        if (name.len == 0) return s.fail("expected a variable name");
+        s.skipWs();
+        if (s.pos < s.src.len and s.src[s.pos] == '=') {
+            s.pos += 1;
+            const v = try s.parseExpr();
+            try s.vars.append(s.gpa, .{ .name = name, .value = v });
+        }
+        s.skipToSemicolon();
+    }
+
+    // Parses `for TYPE v in [a:b]` or `[a:step:b] { body }` (the `for` already
+    // consumed) and unrolls it, binding `v` to each value of the inclusive
+    // range and re-parsing the body for each. The bounds are constant integer
+    // expressions, so they may reference `const`s and enclosing loop variables.
+    fn parseForLoop(
+        s: *QasmParser,
+        circ: *Circuit,
+    ) error{ ParseError, InvalidCharacter, Overflow, UnknownRegister, OutOfMemory }!void {
+        if (s.expand_depth >= 64) return s.fail("loop nesting too deep");
+        s.skipWs();
+        _ = s.readIdent(); // the loop variable's type, e.g. `int`
+        s.skipWs();
+        const varname = s.readIdent();
+        if (varname.len == 0) return s.fail("expected a loop variable name");
+        s.skipWs();
+        if (!std.mem.eql(u8, s.readIdent(), "in")) return s.fail("expected 'in' in a for loop");
+
+        try s.consume('[');
+        const start = try s.evalInt();
+        try s.consume(':');
+        const second = try s.evalInt();
+        var step: i64 = 1;
+        var stop = second;
+        s.skipWs();
+        if (s.pos < s.src.len and s.src[s.pos] == ':') {
+            // `[a:step:b]`: the middle value was the step.
+            s.pos += 1;
+            step = second;
+            stop = try s.evalInt();
+        }
+        try s.consume(']');
+        if (step == 0) return s.fail("for loop step is zero");
+
+        const body = try s.captureBlock();
+        const after = s.pos;
+
+        var k = start;
+        while (if (step > 0) k <= stop else k >= stop) : (k += step) {
+            try s.vars.append(s.gpa, .{ .name = varname, .value = @floatFromInt(k) });
+            const saved_src = s.src;
+            s.src = body;
+            s.pos = 0;
+            s.expand_depth += 1;
+            defer {
+                s.expand_depth -= 1;
+                s.src = saved_src;
+                _ = s.vars.pop();
+            }
+            try s.parseGates(circ);
+        }
+        s.pos = after;
+    }
+
+    // Consumes a brace-delimited block at the cursor and returns the source
+    // between its braces, leaving the cursor just past the closing `}`. Tracks
+    // nesting so inner braces are included.
+    fn captureBlock(s: *QasmParser) ![]const u8 {
+        s.skipWs();
+        if (s.pos >= s.src.len or s.src[s.pos] != '{') return s.fail("expected '{' to open a block");
+        s.pos += 1;
+        const body_start = s.pos;
+        var depth: usize = 1;
+        while (s.pos < s.src.len and depth > 0) : (s.pos += 1) {
+            switch (s.src[s.pos]) {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                else => {},
+            }
+        }
+        if (depth != 0) return s.fail("unterminated block");
+        return s.src[body_start .. s.pos - 1];
+    }
+
+    // Parses a `def NAME(params) -> ret { body }` subroutine (the `def` already
+    // consumed) and records it. Each parameter is classified as classical or
+    // qubit by its type; the return type is skipped. The signature names and
+    // body are slices into the source, valid as long as it is.
+    fn parseDefDef(s: *QasmParser) !void {
+        s.skipWs();
+        const name = s.readIdent();
+        if (name.len == 0) return s.fail("expected a def name");
+
+        var params: [max_operands]DefParam = undefined;
+        var nparams: usize = 0;
+        try s.consume('(');
+        s.skipWs();
+        if (s.pos < s.src.len and s.src[s.pos] != ')') {
+            while (true) {
+                s.skipWs();
+                // An optional `const`, then the parameter type.
+                var tword = s.readIdent();
+                if (std.mem.eql(u8, tword, "const")) {
+                    s.skipWs();
+                    tword = s.readIdent();
+                }
+                if (tword.len == 0) return s.fail("expected a parameter type");
+                const kind: DefParamKind = if (std.mem.eql(u8, tword, "qubit")) .qubit else .classical;
+                // An optional size on the type, e.g. `qubit[N]` or `int[32]`.
+                s.skipWs();
+                if (s.pos < s.src.len and s.src[s.pos] == '[') {
+                    while (s.pos < s.src.len and s.src[s.pos] != ']') s.pos += 1;
+                    if (s.pos < s.src.len) s.pos += 1;
+                }
+                s.skipWs();
+                const pname = s.readIdent();
+                if (pname.len == 0) return s.fail("expected a parameter name");
+                if (nparams >= max_operands) return s.fail("too many def parameters");
+                params[nparams] = .{ .name = pname, .kind = kind };
+                nparams += 1;
+                s.skipWs();
+                if (s.pos < s.src.len and s.src[s.pos] == ',') {
+                    s.pos += 1;
+                    continue;
+                }
+                break;
+            }
+        }
+        try s.consume(')');
+
+        // An optional `-> rettype`; skipped, since a returned classical value
+        // carries nothing into the unitary IR.
+        s.skipWs();
+        if (s.pos + 1 < s.src.len and s.src[s.pos] == '-' and s.src[s.pos + 1] == '>') {
+            s.pos += 2;
+            while (s.pos < s.src.len and s.src[s.pos] != '{') s.pos += 1;
+        }
+
+        const body = try s.captureBlock();
+
+        const param_list = try s.gpa.alloc(DefParam, nparams);
+        errdefer s.gpa.free(param_list);
+        @memcpy(param_list, params[0..nparams]);
+        try s.defs.append(s.gpa, .{ .name = name, .params = param_list, .body = body });
+    }
+
+    // Compiles a call to `def` (its name already consumed): reads the
+    // parenthesized argument list, binds each actual to its formal — a
+    // classical argument's value into `vars`, a qubit argument's register into
+    // `reg` under the parameter name — and expands the body. The bindings (and
+    // any locals the body declares) are scoped to the call. The error set is
+    // spelled out because the mutual recursion with `parseGates` can't infer it.
+    fn invokeDef(
+        s: *QasmParser,
+        circ: *Circuit,
+        def: DefDef,
+    ) error{ ParseError, InvalidCharacter, Overflow, UnknownRegister, OutOfMemory }!void {
+        if (s.expand_depth >= 64) return s.fail("call expansion too deep");
+
+        const vars_base = s.vars.items.len;
+        const reg_base = s.reg.items.len;
+
+        try s.consume('(');
+        for (def.params, 0..) |p, i| {
+            if (i > 0) try s.consume(',');
+            switch (p.kind) {
+                .classical => {
+                    const v = try s.parseExpr();
+                    try s.vars.append(s.gpa, .{ .name = p.name, .value = v });
+                },
+                .qubit => {
+                    // A qubit argument names a whole register, bound under the
+                    // parameter name so the body can index or reset it.
+                    s.skipWs();
+                    const argname = s.readIdent();
+                    const reg = s.qubitReg(argname) orelse return error.UnknownRegister;
+                    try s.reg.append(s.gpa, .{ .name = p.name, .base = reg.base, .width = reg.width });
+                },
+            }
+        }
+        try s.consume(')');
+
+        const saved_src = s.src;
+        const saved_pos = s.pos;
+        s.src = def.body;
+        s.pos = 0;
+        s.expand_depth += 1;
+        defer {
+            s.expand_depth -= 1;
+            s.src = saved_src;
+            s.pos = saved_pos;
+            // Drop the call's parameter bindings and any locals the body added.
+            s.vars.shrinkRetainingCapacity(vars_base);
+            s.reg.shrinkRetainingCapacity(reg_base);
+        }
+        try s.parseGates(circ);
+    }
+
+    // Detects and compiles an assignment-form `def` call, `target = NAME(args);`
+    // (the `target` identifier already read). Returns true when it was such a
+    // call — the body is expanded and the statement consumed. Otherwise the
+    // cursor is restored to just after `target` and false is returned, so the
+    // caller can try the other assignment forms.
+    fn maybeAssignDefCall(s: *QasmParser, circ: *Circuit, target: []const u8) !bool {
+        _ = target;
+        const after_target = s.pos;
+        s.skipWs();
+        // An optional index on the target, e.g. `c[0] = …`; stepped over.
+        if (s.pos < s.src.len and s.src[s.pos] == '[') {
+            while (s.pos < s.src.len and s.src[s.pos] != ']') s.pos += 1;
+            if (s.pos < s.src.len) s.pos += 1;
+            s.skipWs();
+        }
+        if (s.pos >= s.src.len or s.src[s.pos] != '=') {
+            s.pos = after_target;
+            return false;
+        }
+        s.pos += 1;
+        s.skipWsAndComments();
+        const def = s.findDef(s.readIdent()) orelse {
+            s.pos = after_target;
+            return false;
+        };
+        try s.invokeDef(circ, def);
+        try s.consume(';');
+        return true;
     }
 
     // Parses a `gate NAME(p0, p1, …) q0, q1, … { … }` definition (the `gate`
@@ -844,7 +1208,7 @@ pub const QasmParser = struct {
                 s.skipWs();
                 if (s.pos < s.src.len and s.src[s.pos] == '[') {
                     s.pos += 1;
-                    _ = try s.readUint();
+                    _ = try s.readWidth();
                     try s.consume(']');
                     s.skipWs();
                 }
@@ -856,6 +1220,22 @@ pub const QasmParser = struct {
                             return s.fail("measurement width does not match the target bit register");
                     }
                 }
+                s.skipToSemicolon();
+            } else if (std.mem.eql(u8, word, "const") or isClassicalType(word)) {
+                // A classical declaration (`const int N = 9;`, `float dt = …;`,
+                // `angle theta = …;`). The value is evaluated and bound so later
+                // expressions, loop bounds, and subscripts can reference it.
+                try s.evalClassicalDecl(word);
+            } else if (std.mem.eql(u8, word, "for")) {
+                // A `for` over a static integer range unrolls into a fixed
+                // sequence of gates (its bounds never depend on a measurement).
+                try s.parseForLoop(circ);
+            } else if (std.mem.eql(u8, word, "def")) {
+                // A subroutine definition; compiled by expansion at each call.
+                try s.parseDefDef();
+            } else if (std.mem.eql(u8, word, "return")) {
+                // A returned classical value carries nothing into a unitary
+                // circuit, so the statement is dropped.
                 s.skipToSemicolon();
             } else if (std.mem.eql(u8, word, "reset")) {
                 // Reset has no unitary representation, so it is validated and
@@ -869,6 +1249,10 @@ pub const QasmParser = struct {
                 // A user-defined gate is compiled by expanding its body; this
                 // is checked before the built-ins so a definition shadows them.
                 try s.invokeUserGate(circ, def);
+            } else if (s.findDef(word)) |def| {
+                // A bare `def` call, `NAME(args);`.
+                try s.invokeDef(circ, def);
+                try s.consume(';');
             } else if (std.mem.eql(u8, word, "h")) {
                 const q = try s.parseQubitRef();
                 try s.consume(';');
@@ -953,6 +1337,19 @@ pub const QasmParser = struct {
                 const q = try s.parseQubitRef();
                 try s.consume(';');
                 try circ.sx(q);
+            } else if (std.mem.eql(u8, word, "rzz")) {
+                try s.consume('(');
+                const theta = try s.parseExpr();
+                try s.consume(')');
+                const a = try s.parseQubitRef();
+                try s.consume(',');
+                const b = try s.parseQubitRef();
+                try s.consume(';');
+                if (a == b) {
+                    s.pos = stmt_start;
+                    return s.fail("two-qubit gate on a single qubit");
+                }
+                try circ.rzz(a, b, theta);
             } else if (std.mem.eql(u8, word, "measure")) {
                 // Leading form: `measure q;` (result discarded) or
                 // `measure q -> c;` (routed to a classical bit).
@@ -961,6 +1358,9 @@ pub const QasmParser = struct {
                 const routed = s.pos + 1 < s.src.len and s.src[s.pos] == '-' and s.src[s.pos + 1] == '>';
                 if (!routed) s.warn(stmt_start, "measurement result is discarded");
                 s.skipToSemicolon();
+            } else if (try s.maybeAssignDefCall(circ, word)) {
+                // Assignment form of a `def` call, `c = NAME(args);`. The
+                // returned value isn't modeled, so only the body is expanded.
             } else if (try s.assignmentMeasure(word)) |lhs| {
                 // Assignment form: `c = measure q;` (the leading `word` was
                 // the classical target). The number of qubits measured must
@@ -1021,8 +1421,8 @@ pub const QasmParser = struct {
     // unknown gate). Dropping any of these would change the result.
     fn isUnsupportedConstruct(word: []const u8) bool {
         const kws = [_][]const u8{
-            "if",  "for", "while", "def", "defcal",
-            "cal", "box", "creg",  "qreg",
+            "if",  "while", "defcal", "cal",
+            "box", "creg",  "qreg",
         };
         for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
         return false;
@@ -1372,7 +1772,7 @@ test "QasmParser errors on an operation it cannot compile" {
     try std.testing.expectEqualStrings("unrecognized statement", ps.reason.?);
 
     // A recognized-but-unsupported construct errors with its own message.
-    const loop = "qubit[2] q;\nfor int i in [0:1] { x q[0]; }\nmeasure q;\n";
+    const loop = "qubit[2] q;\nwhile (true) { x q[0]; }\nmeasure q;\n";
     var pr = QasmParser.init(std.testing.allocator, loop);
     try std.testing.expectError(error.ParseError, pr.parse());
     try std.testing.expectEqualStrings("unsupported OpenQASM construct", pr.reason.?);
@@ -1571,6 +1971,120 @@ test "QasmParser width-checks a combined bit-declaration measurement" {
     var p = QasmParser.init(std.testing.allocator, src);
     try std.testing.expectError(error.ParseError, p.parse());
     try std.testing.expectEqualStrings("measurement width does not match the target bit register", p.reason.?);
+}
+
+test "QasmParser unrolls a for loop over a static range" {
+    // `N` sizes the register and bounds the loop; the loop applies one gate per
+    // qubit, so it unrolls to N gates.
+    const src =
+        \\const int N = 3;
+        \\qubit[N] q;
+        \\for int i in [0:N-1] {
+        \\    h q[i];
+        \\}
+        \\measure q;
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(3, circ.n);
+    try std.testing.expectEqual(3, circ.gates.items.len);
+    try std.testing.expectEqual(0, circ.gates.items[0].u.qubit);
+    try std.testing.expectEqual(1, circ.gates.items[1].u.qubit);
+    try std.testing.expectEqual(2, circ.gates.items[2].u.qubit);
+}
+
+test "QasmParser steps a for loop range" {
+    // `[0:2:N-1]` with N=5 yields 0, 2, 4.
+    const src =
+        \\const int N = 5;
+        \\qubit[N] q;
+        \\for int i in [0:2:N-1] {
+        \\    h q[i];
+        \\}
+        \\measure q;
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(3, circ.gates.items.len);
+    try std.testing.expectEqual(0, circ.gates.items[0].u.qubit);
+    try std.testing.expectEqual(2, circ.gates.items[1].u.qubit);
+    try std.testing.expectEqual(4, circ.gates.items[2].u.qubit);
+}
+
+test "QasmParser expands a def with classical and qubit parameters" {
+    // The classical `theta` and the qubit-array `qs` bind positionally; the
+    // body's loop applies rx(theta) to each qubit of the passed register.
+    const src =
+        \\const int N = 2;
+        \\def evolve(float theta, qubit[N] qs) -> bit[N] {
+        \\    for int j in [0:N-1] {
+        \\        rx(theta) qs[j];
+        \\    }
+        \\    bit[N] r = measure qs;
+        \\    return r;
+        \\}
+        \\qubit[N] q;
+        \\output bit[N] result;
+        \\result = evolve(0.5, q);
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(2, circ.n);
+    try std.testing.expectEqual(2, circ.gates.items.len);
+    try std.testing.expectEqual(0, circ.gates.items[0].u.qubit);
+    try std.testing.expectEqual(0.5, circ.gates.items[0].u.theta);
+    try std.testing.expectEqual(1, circ.gates.items[1].u.qubit);
+}
+
+test "QasmParser lowers rzz to CX-Rz-CX" {
+    const src =
+        \\qubit[2] q;
+        \\rzz(0.5) q[0], q[1];
+        \\measure q;
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    // rzz -> cx; rz; cx, and each cx -> H-CZ-H: 3 + 1 + 3 = 7 gates, with the
+    // rz on the target between the two CZs.
+    try std.testing.expectEqual(7, circ.gates.items.len);
+    try std.testing.expectEqual(.cz, std.meta.activeTag(circ.gates.items[1]));
+    try std.testing.expectEqual(1, circ.gates.items[3].u.qubit);
+    try std.testing.expectEqual(0.5, circ.gates.items[3].u.lambda); // rz angle
+    try std.testing.expectEqual(.cz, std.meta.activeTag(circ.gates.items[5]));
+}
+
+test "QasmParser maps a warning location inside an expanded body" {
+    var warns: std.ArrayList(Diagnostic) = .empty;
+    defer warns.deinit(std.testing.allocator);
+
+    // The dropped reset is on line 3, inside the def body. Its warning must
+    // report that line in the original file, not a body-relative line.
+    const src =
+        \\qubit[1] q;
+        \\def f(qubit[1] x) -> bit[1] {
+        \\    reset x;
+        \\    bit[1] r = measure x;
+        \\    return r;
+        \\}
+        \\output bit[1] result;
+        \\result = f(q);
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    p.warn_sink = &warns;
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(1, warns.items.len);
+    try std.testing.expectEqualStrings("reset is not modeled and was dropped", warns.items[0].reason);
+    try std.testing.expectEqual(3, warns.items[0].line);
 }
 
 test {
