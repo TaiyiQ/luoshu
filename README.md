@@ -9,7 +9,19 @@ Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule f
 
 ## Usage
 
+- Pull example [qasm](https://github.com/TaiyiQ/qasm) circuits next to this repo. For example:
+```shell
+> cd
+├── gate-compiler
+│   ...
+├── qasm
+│   ...
 ```
+
+- Check the CLI help output.
+```
+> zig build run
+
 gatecomp <circuit.qasm> [options]
 
 options:
@@ -22,10 +34,16 @@ options:
   -h, --help          show this help
 ```
 
-Compile a circuit to a hardware-schedule JSON:
+- Quick start leveraging defaults.
 
 ```shell
-zig build run -- ../qasm/mvp.qasm --out schedule.json
+zig build run -- ../qasm/mvp.qasm
+```
+
+- Explicit arguments and default overrides.
+
+```shell
+zig build run -- ../qasm/mvp.qasm --arch arch.toml --asm example/assembly.json --out schedule.json --draw
 ```
 
 ## Visualizer
