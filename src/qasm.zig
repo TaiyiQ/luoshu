@@ -462,15 +462,18 @@ pub const QasmParser = struct {
     }
 
     // Validates the qubit operand of a `reset` — a physical (`$0`) or indexed
-    // (`q[0]`) qubit, or a whole register (`q`) — without emitting anything,
-    // since reset has no unitary representation. The caller consumes the
-    // terminating `;` and warns that the reset was dropped.
-    fn parseResetOperand(s: *QasmParser) !void {
+    // (`q[0]`) qubit, or a whole register (`q`, all its qubits) — and returns
+    // the flat range it covers. Also clears the operands' measured flag (a
+    // reset returns them to a fresh state). The caller emits a reset op per
+    // qubit in the range.
+    const ResetTarget = struct { base: u32, count: usize };
+    fn parseResetOperand(s: *QasmParser) !ResetTarget {
         s.skipWs();
         if (s.pos < s.src.len and s.src[s.pos] == '$') {
             s.pos += 1;
-            s.unmarkMeasured(@intCast(try s.readUint()), 1);
-            return;
+            const q: u32 = @intCast(try s.readUint());
+            s.unmarkMeasured(q, 1);
+            return .{ .base = q, .count = 1 };
         }
         const name = s.readIdent();
         if (name.len == 0) return s.fail("expected a qubit to reset, e.g. `reset q;`");
@@ -485,11 +488,13 @@ pub const QasmParser = struct {
             const idx = try s.evalIndex();
             try s.consume(']');
             if (idx >= reg.width) return s.fail("qubit index out of range");
-            s.unmarkMeasured(@intCast(reg.base + idx), 1);
-        } else {
-            // A bare register name resets all of its qubits.
-            s.unmarkMeasured(@intCast(reg.base), reg.width);
+            const q: u32 = @intCast(reg.base + idx);
+            s.unmarkMeasured(q, 1);
+            return .{ .base = q, .count = 1 };
         }
+        // A bare register name resets all of its qubits.
+        s.unmarkMeasured(@intCast(reg.base), reg.width);
+        return .{ .base = @intCast(reg.base), .count = reg.width };
     }
 
     // The classical target of a measuring assignment. `width` is its bit
@@ -1309,11 +1314,14 @@ pub const QasmParser = struct {
                 // circuit, so the statement is dropped.
                 s.skipToSemicolon();
             } else if (std.mem.eql(u8, word, "reset")) {
-                // Reset has no unitary representation, so it is validated and
-                // dropped with a warning rather than emitted.
-                try s.parseResetOperand();
+                // Reset is recorded as a front-end IR op (it shows in the
+                // original-circuit drawing) but is not lowered into the
+                // hardware schedule. A whole-register reset emits one op per
+                // qubit.
+                const target = try s.parseResetOperand();
                 try s.consume(';');
-                s.warn(stmt_start, "reset is not modeled and was dropped");
+                for (0..target.count) |k|
+                    try circ.reset(target.base + @as(u32, @intCast(k)));
             } else if (std.mem.eql(u8, word, "gate")) {
                 try s.parseGateDef();
             } else if (s.findGate(word)) |def| {
@@ -2022,22 +2030,25 @@ test "QasmParser rejects a bare reference to a multi-qubit register" {
     try std.testing.expectEqualStrings("a multi-qubit register needs an index", p.reason.?);
 }
 
-test "QasmParser supports reset by validating and dropping it" {
-    var warns: std.ArrayList(Diagnostic) = .empty;
-    defer warns.deinit(std.testing.allocator);
-
-    // `reset q;` has no unitary form: it emits nothing but warns (line 2).
+test "QasmParser records reset as a front-end IR op" {
+    // `reset q;` is recorded as a reset op (it precedes the `h`), not dropped.
     const src = "qubit q;\nreset q;\nh q;\nbit m = measure q;\n";
     var p = QasmParser.init(std.testing.allocator, src);
-    p.warn_sink = &warns;
     var circ = try p.parse();
     defer circ.deinit();
 
-    // Only the `h` is emitted; the reset is dropped.
-    try std.testing.expectEqual(1, circ.gates.items.len);
-    try std.testing.expectEqual(1, warns.items.len);
-    try std.testing.expectEqualStrings("reset is not modeled and was dropped", warns.items[0].reason);
-    try std.testing.expectEqual(2, warns.items[0].line);
+    try std.testing.expectEqual(2, circ.gates.items.len);
+    try std.testing.expectEqual(.reset, std.meta.activeTag(circ.gates.items[0]));
+    try std.testing.expectEqual(0, circ.gates.items[0].reset.qubit);
+    try std.testing.expectEqual(0, circ.gates.items[1].u.qubit);
+
+    // A whole-register reset expands to one op per qubit.
+    const whole = "qubit[3] q;\nreset q;\nmeasure q;\n";
+    var pw = QasmParser.init(std.testing.allocator, whole);
+    var cw = try pw.parse();
+    defer cw.deinit();
+    try std.testing.expectEqual(3, cw.gates.items.len);
+    try std.testing.expectEqual(2, cw.gates.items[2].reset.qubit);
 
     // An out-of-range reset operand is still an error.
     const bad = "qubit[2] q;\nreset q[5];\nmeasure q;\n";
@@ -2156,17 +2167,14 @@ test "QasmParser maps a warning location inside an expanded body" {
     var warns: std.ArrayList(Diagnostic) = .empty;
     defer warns.deinit(std.testing.allocator);
 
-    // The dropped reset is on line 3, inside the def body. Its warning must
-    // report that line in the original file, not a body-relative line.
+    // The discarded measurement is on line 3, inside the def body. Its warning
+    // must report that line in the original file, not a body-relative line.
     const src =
         \\qubit[1] q;
-        \\def f(qubit[1] x) -> bit[1] {
-        \\    reset x;
-        \\    bit[1] r = measure x;
-        \\    return r;
+        \\def f(qubit[1] x) {
+        \\    measure x;
         \\}
-        \\output bit[1] result;
-        \\result = f(q);
+        \\f(q);
     ;
     var p = QasmParser.init(std.testing.allocator, src);
     p.warn_sink = &warns;
@@ -2174,15 +2182,16 @@ test "QasmParser maps a warning location inside an expanded body" {
     defer circ.deinit();
 
     try std.testing.expectEqual(1, warns.items.len);
-    try std.testing.expectEqualStrings("reset is not modeled and was dropped", warns.items[0].reason);
+    try std.testing.expectEqualStrings("measurement result is discarded", warns.items[0].reason);
     try std.testing.expectEqual(3, warns.items[0].line);
 }
 
 test "QasmParser expands def calls embedded in classical statements" {
-    // The quantum-RNG pattern: `randomBit` measures one qubit; `randomNumber`
-    // folds N calls into a classical integer with `<<=`/`|=`; the result binds
-    // a classical declaration. The classical arithmetic is not modeled, so only
-    // the quantum side effects survive — one Hadamard per call.
+    // The quantum-RNG pattern: `randomBit` resets and measures one qubit;
+    // `randomNumber` folds N calls into a classical integer with `<<=`/`|=`;
+    // the result binds a classical declaration. The classical arithmetic is not
+    // modeled, so only the quantum side effects survive — a reset and a Hadamard
+    // per call.
     const src =
         \\def randomBit(qubit q) -> bit {
         \\  reset q;
@@ -2206,8 +2215,10 @@ test "QasmParser expands def calls embedded in classical statements" {
     defer circ.deinit();
 
     try std.testing.expectEqual(1, circ.n);
-    try std.testing.expectEqual(3, circ.gates.items.len);
-    try std.testing.expectEqual(0, circ.gates.items[0].u.qubit);
+    // 3 calls -> 3 (reset, Hadamard) pairs.
+    try std.testing.expectEqual(6, circ.gates.items.len);
+    try std.testing.expectEqual(.reset, std.meta.activeTag(circ.gates.items[0]));
+    try std.testing.expectEqual(0, circ.gates.items[1].u.qubit);
 }
 
 test "QasmParser rejects an assignment to a non-classical target" {
@@ -2225,15 +2236,14 @@ test "QasmParser reset clears measurement tracking" {
 
     // Measure, reset, then operate and measure again. The reset returns the
     // qubit to a fresh state, so neither the use-after-measure nor the
-    // remeasure warning fires — only the dropped-reset warning remains.
+    // remeasure warning fires — and reset itself no longer warns.
     const src = "qubit[1] q;\nbit[1] c;\nmeasure q -> c;\nreset q;\nh q;\nmeasure q -> c;\n";
     var p = QasmParser.init(std.testing.allocator, src);
     p.warn_sink = &warns;
     var circ = try p.parse();
     defer circ.deinit();
 
-    try std.testing.expectEqual(1, warns.items.len);
-    try std.testing.expectEqualStrings("reset is not modeled and was dropped", warns.items[0].reason);
+    try std.testing.expectEqual(0, warns.items.len);
 }
 
 test "QasmParser reports a gate modifier as unsupported" {

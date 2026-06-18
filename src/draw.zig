@@ -1247,6 +1247,17 @@ fn drawUGate(u: circuit.U, x: f32, dy: f32, y_offset: f32, font_size: i32) void 
     rl.drawText("U", @intFromFloat(x - 6), @intFromFloat(qy - 10), font_size, .white);
 }
 
+fn drawResetGate(r: circuit.Reset, x: f32, dy: f32, y_offset: f32, font_size: i32) void {
+    const box: f32 = 40;
+    const qy = wireY(r.qubit, dy, y_offset);
+    rl.drawRectangleV(
+        .{ .x = x - box / 2, .y = qy - box / 2 },
+        .{ .x = box, .y = box },
+        .maroon,
+    );
+    rl.drawText("R", @intFromFloat(x - 6), @intFromFloat(qy - 10), font_size, .white);
+}
+
 fn drawCzGate(cz: circuit.Cz, x: f32, dy: f32, y_offset: f32) void {
     const radius: f32 = 8;
     const cy = wireY(cz.control, dy, y_offset);
@@ -1333,6 +1344,7 @@ pub fn pipeline(c: circuit.Circuit, p: ?circuit.Pipeline) !void {
                 switch (gate) {
                     .u => |g| drawUGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size),
                     .cz => |g| drawCzGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset),
+                    .reset => |g| drawResetGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size),
                 }
                 col += 1;
             }

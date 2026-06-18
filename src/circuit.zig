@@ -21,9 +21,17 @@ pub const Cz = struct {
     target: u32,
 };
 
+/// A non-unitary reset of a qubit to |0⟩. Recorded in the front-end circuit
+/// (so the original-circuit drawing shows it) but not lowered into the
+/// hardware schedule: `decompose` skips it.
+pub const Reset = struct {
+    qubit: u32,
+};
+
 pub const Native = union(enum) {
     u: U,
     cz: Cz,
+    reset: Reset,
 };
 
 pub const Stage = struct {
@@ -63,6 +71,9 @@ pub const Pipeline = struct {
         switch (gate) {
             .u => |g| try stage.u_gates.append(s.gpa, g),
             .cz => |g| try stage.cz_gates.append(s.gpa, g),
+            // Resets are never staged (decompose skips them), so one never
+            // reaches `place`.
+            .reset => unreachable,
         }
     }
 };
@@ -119,6 +130,9 @@ pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
                 try map.put(g.control, stage);
                 try map.put(g.target, stage);
             },
+            // Reset is a front-end-only op: it carries no unitary, so it is not
+            // scheduled onto the hardware pipeline.
+            .reset => {},
         }
     }
 
@@ -228,6 +242,10 @@ pub const Circuit = struct {
         try s.h(target);
         try s.cz(control, target);
         try s.h(target);
+    }
+
+    pub fn reset(s: *Circuit, q: u32) !void {
+        try s.gates.append(s.gpa, .{ .reset = .{ .qubit = q } });
     }
 
     // Rzz(theta) = exp(-i*theta/2 * Z⊗Z), the two-qubit ZZ rotation, via the
