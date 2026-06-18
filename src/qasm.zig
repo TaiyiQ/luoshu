@@ -50,7 +50,10 @@ pub fn loadDiag(
     var parser = QasmParser.init(gpa, src);
     parser.warn_sink = warnings;
     return parser.parse() catch |err| {
-        const loc = lineCol(src, parser.pos);
+        // Prefer the location captured at failure time; fall back to the
+        // cursor for errors raised without one.
+        const at = parser.err_pos orelse parser.absPos(parser.pos);
+        const loc = lineCol(src, at);
         diag.* = .{
             .reason = parser.reason orelse defaultReason(err),
             .line = loc.line,
@@ -174,8 +177,13 @@ pub const QasmParser = struct {
     saw_measure: bool,
     // A static, human-readable reason for the most recent failure, when the
     // generic error name (e.g. "ParseError") is not specific enough. `load`
-    // pairs it with the source location computed from `pos`.
+    // pairs it with the source location.
     reason: ?[]const u8,
+    // The absolute source offset of the failure, captured when it is raised
+    // (before the expansion stack unwinds and restores `src`/`pos`). Without
+    // it, an error inside a gate/def/loop body would be located against the
+    // wrong slice. Null until a located failure occurs.
+    err_pos: ?usize,
     // Optional, caller-owned sink for non-fatal warnings (e.g. a discarded
     // measurement). Left null when the caller does not collect warnings.
     warn_sink: ?*std.ArrayList(Diagnostic),
@@ -200,15 +208,19 @@ pub const QasmParser = struct {
             .total_qubits = 0,
             .saw_measure = false,
             .reason = null,
+            .err_pos = null,
             .warn_sink = null,
             .measured = std.AutoHashMap(u32, void).init(gpa),
         };
     }
 
-    // Records `reason` and raises a parse error. The location is recovered
-    // later from `pos`, which sits at the offending token.
+    // Records `reason` and the absolute failure location, then raises a parse
+    // error. Capturing the location now (rather than from `pos` afterward) keeps
+    // it correct even when the failure is inside an expanded body, which the
+    // unwinding restores out from under `pos`.
     fn fail(s: *QasmParser, reason: []const u8) error{ParseError} {
         s.reason = reason;
+        s.err_pos = s.absPos(s.pos);
         return error.ParseError;
     }
 
@@ -235,6 +247,14 @@ pub const QasmParser = struct {
     fn markMeasured(s: *QasmParser, q: u32) void {
         if (s.warn_sink == null) return;
         s.measured.put(q, {}) catch {};
+    }
+
+    // Clears the measured flag for `count` qubits from `base`: a `reset` returns
+    // them to a fresh state, so a later operation on them must not warn as if
+    // they were still measured.
+    fn unmarkMeasured(s: *QasmParser, base: u32, count: usize) void {
+        if (s.warn_sink == null) return;
+        for (0..count) |k| _ = s.measured.remove(base + @as(u32, @intCast(k)));
     }
 
     fn isMeasured(s: *QasmParser, q: u32) bool {
@@ -412,6 +432,7 @@ pub const QasmParser = struct {
             if (name.len == 0) return s.fail("expected a qubit to measure, e.g. `measure q;`");
             const reg = s.qubitReg(name) orelse {
                 s.reason = "measurement of an undeclared register";
+                s.err_pos = s.absPos(s.pos);
                 return error.UnknownRegister;
             };
             s.skipWs();
@@ -448,21 +469,26 @@ pub const QasmParser = struct {
         s.skipWs();
         if (s.pos < s.src.len and s.src[s.pos] == '$') {
             s.pos += 1;
-            _ = try s.readUint();
+            s.unmarkMeasured(@intCast(try s.readUint()), 1);
             return;
         }
         const name = s.readIdent();
         if (name.len == 0) return s.fail("expected a qubit to reset, e.g. `reset q;`");
         const reg = s.qubitReg(name) orelse {
             s.reason = "reset of an undeclared register";
+            s.err_pos = s.absPos(s.pos);
             return error.UnknownRegister;
         };
         s.skipWs();
         if (s.pos < s.src.len and s.src[s.pos] == '[') {
             s.pos += 1;
-            const idx = try s.readUint();
+            const idx = try s.evalIndex();
             try s.consume(']');
             if (idx >= reg.width) return s.fail("qubit index out of range");
+            s.unmarkMeasured(@intCast(reg.base + idx), 1);
+        } else {
+            // A bare register name resets all of its qubits.
+            s.unmarkMeasured(@intCast(reg.base), reg.width);
         }
     }
 
@@ -604,8 +630,9 @@ pub const QasmParser = struct {
             } else if (std.mem.eql(u8, word, "const") or isClassicalType(word)) {
                 // Evaluate a top-level classical declaration so that a later
                 // register width may reference it, e.g. `const int N = 9;`
-                // followed by `qubit[N] q;`.
-                try s.evalClassicalDecl(word);
+                // followed by `qubit[N] q;`. No circuit exists in this pass, so
+                // a def-call initializer is simply skipped here.
+                try s.evalClassicalDecl(word, null);
                 continue;
             }
             s.skipToSemicolon();
@@ -626,7 +653,10 @@ pub const QasmParser = struct {
             if (s.env) |env| {
                 for (env.qubits) |b| if (std.mem.eql(u8, b.name, name)) break :blk b.qubit;
             }
-            const reg = s.qubitReg(name) orelse return error.UnknownRegister;
+            const reg = s.qubitReg(name) orelse {
+                s.err_pos = s.absPos(at);
+                return error.UnknownRegister;
+            };
             s.skipWs();
             // `q[i]` indexes the register; a bare `q` names the only qubit of a
             // single-qubit register. The index is a constant expression (e.g.
@@ -706,6 +736,7 @@ pub const QasmParser = struct {
             return val;
         }
         if (std.ascii.isAlphabetic(s.src[s.pos]) or s.src[s.pos] == '_') {
+            const id_start = s.pos;
             const word = s.readIdent();
             if (std.mem.eql(u8, word, "pi")) return PI;
             if (std.mem.eql(u8, word, "tau")) return 2.0 * PI;
@@ -717,6 +748,7 @@ pub const QasmParser = struct {
             if (s.env) |env| {
                 for (env.args) |a| if (std.mem.eql(u8, a.name, word)) return a.value;
             }
+            s.err_pos = s.absPos(id_start);
             return error.ParseError;
         }
 
@@ -798,7 +830,7 @@ pub const QasmParser = struct {
     // type) is already read: `[const] TYPE[ [size] ] name [= expr];`. When an
     // initializer is present its value is bound in the current scope; an
     // uninitialized declaration is accepted but binds nothing.
-    fn evalClassicalDecl(s: *QasmParser, leading: []const u8) !void {
+    fn evalClassicalDecl(s: *QasmParser, leading: []const u8, circ: ?*Circuit) !void {
         var tword = leading;
         if (std.mem.eql(u8, tword, "const")) {
             s.skipWs();
@@ -816,10 +848,44 @@ pub const QasmParser = struct {
         s.skipWs();
         if (s.pos < s.src.len and s.src[s.pos] == '=') {
             s.pos += 1;
-            const v = try s.parseExpr();
-            try s.vars.append(s.gpa, .{ .name = name, .value = v });
+            const save = s.pos;
+            if (s.parseExpr()) |v| {
+                try s.vars.append(s.gpa, .{ .name = name, .value = v });
+            } else |_| {
+                // The initializer isn't a constant expression — it calls a
+                // `def` or uses classical operators we don't evaluate. Rewind
+                // and expand any embedded def calls for their quantum side
+                // effects, binding a placeholder so the name stays defined.
+                s.pos = save;
+                if (circ) |c| try s.expandDefCalls(c);
+                try s.vars.append(s.gpa, .{ .name = name, .value = 0 });
+            }
         }
         s.skipToSemicolon();
+    }
+
+    // Scans the rest of a classical statement (to its `;`) and expands any
+    // embedded `def` call for its quantum side effects, ignoring the classical
+    // arithmetic around it (which this compiler does not model). Used for
+    // assignments such as `number |= GenerateRandomBit(q);` and for an
+    // initializer that calls a def. The error set is spelled out because the
+    // mutual recursion through `invokeDef`/`parseGates` cannot infer it.
+    fn expandDefCalls(
+        s: *QasmParser,
+        circ: *Circuit,
+    ) error{ ParseError, InvalidCharacter, Overflow, UnknownRegister, OutOfMemory }!void {
+        while (s.pos < s.src.len and s.src[s.pos] != ';') {
+            const c = s.src[s.pos];
+            if (std.ascii.isAlphabetic(c) or c == '_') {
+                const id = s.readIdent();
+                if (s.findDef(id)) |def| {
+                    s.skipWs();
+                    if (s.pos < s.src.len and s.src[s.pos] == '(') {
+                        try s.invokeDef(circ, def);
+                    }
+                }
+            } else s.pos += 1;
+        }
     }
 
     // Parses `for TYPE v in [a:b]` or `[a:step:b] { body }` (the `for` already
@@ -985,8 +1051,12 @@ pub const QasmParser = struct {
                     // A qubit argument names a whole register, bound under the
                     // parameter name so the body can index or reset it.
                     s.skipWs();
+                    const arg_at = s.pos;
                     const argname = s.readIdent();
-                    const reg = s.qubitReg(argname) orelse return error.UnknownRegister;
+                    const reg = s.qubitReg(argname) orelse {
+                        s.err_pos = s.absPos(arg_at);
+                        return error.UnknownRegister;
+                    };
                     try s.reg.append(s.gpa, .{ .name = p.name, .base = reg.base, .width = reg.width });
                 },
             }
@@ -1224,8 +1294,9 @@ pub const QasmParser = struct {
             } else if (std.mem.eql(u8, word, "const") or isClassicalType(word)) {
                 // A classical declaration (`const int N = 9;`, `float dt = …;`,
                 // `angle theta = …;`). The value is evaluated and bound so later
-                // expressions, loop bounds, and subscripts can reference it.
-                try s.evalClassicalDecl(word);
+                // expressions, loop bounds, and subscripts can reference it; an
+                // initializer that calls a def is expanded for its side effects.
+                try s.evalClassicalDecl(word, circ);
             } else if (std.mem.eql(u8, word, "for")) {
                 // A `for` over a static integer range unrolls into a fixed
                 // sequence of gates (its bounds never depend on a measurement).
@@ -1373,6 +1444,14 @@ pub const QasmParser = struct {
                         return s.fail("measurement width does not match the target bit register");
                 }
                 s.skipToSemicolon();
+            } else if (s.lookupVar(word) != null) {
+                // A classical assignment to a known variable, e.g.
+                // `number <<= 1;` or `number |= GenerateRandomBit(q);`. The
+                // classical value is not modeled; only def calls embedded in it
+                // (which carry quantum side effects) are expanded. Restricting
+                // this to bound variables keeps an unknown `c[0] = q;` an error.
+                try s.expandDefCalls(circ);
+                s.skipToSemicolon();
             } else if (isIgnorableDirective(word)) {
                 // Safe to drop: these don't change the measured result, so a
                 // warning suffices.
@@ -1386,6 +1465,8 @@ pub const QasmParser = struct {
                 // an assignment (`c[0] = …`), where the leading word is a real
                 // target name used classically, not a mistyped gate.
                 s.pos = stmt_start;
+                if (isGateModifier(word))
+                    return s.fail("gate modifiers (ctrl, negctrl, inv, pow) are not supported");
                 if (!s.isAssignmentStmt(stmt_start)) {
                     if (nearestKeyword(word)) |hint| return s.fail(hint);
                 }
@@ -1412,6 +1493,16 @@ pub const QasmParser = struct {
     // and `delay` are scheduling/timing hints this compiler does not model.)
     fn isIgnorableDirective(word: []const u8) bool {
         const kws = [_][]const u8{ "barrier", "delay", "gphase" };
+        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
+        return false;
+    }
+
+    // Gate modifiers (`ctrl @`, `negctrl @`, `inv @`, `pow(k) @`). Compiling a
+    // modified gate — most often a multi-controlled `ctrl(n) @ x` — into native
+    // U/CZ gates needs a controlled-gate synthesis pass this compiler does not
+    // have, so a modified gate is reported as unsupported rather than miscompiled.
+    fn isGateModifier(word: []const u8) bool {
+        const kws = [_][]const u8{ "ctrl", "negctrl", "inv", "pow" };
         for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
         return false;
     }
@@ -2085,6 +2176,91 @@ test "QasmParser maps a warning location inside an expanded body" {
     try std.testing.expectEqual(1, warns.items.len);
     try std.testing.expectEqualStrings("reset is not modeled and was dropped", warns.items[0].reason);
     try std.testing.expectEqual(3, warns.items[0].line);
+}
+
+test "QasmParser expands def calls embedded in classical statements" {
+    // The quantum-RNG pattern: `randomBit` measures one qubit; `randomNumber`
+    // folds N calls into a classical integer with `<<=`/`|=`; the result binds
+    // a classical declaration. The classical arithmetic is not modeled, so only
+    // the quantum side effects survive — one Hadamard per call.
+    const src =
+        \\def randomBit(qubit q) -> bit {
+        \\  reset q;
+        \\  h q;
+        \\  bit b = measure q;
+        \\  return b;
+        \\}
+        \\def randomNumber(qubit q, int nBits) -> int {
+        \\  int number = 0;
+        \\  for int k in [1:nBits] {
+        \\    number <<= 1;
+        \\    number |= randomBit(q);
+        \\  }
+        \\  return number;
+        \\}
+        \\qubit q;
+        \\int random = randomNumber(q, 3);
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(1, circ.n);
+    try std.testing.expectEqual(3, circ.gates.items.len);
+    try std.testing.expectEqual(0, circ.gates.items[0].u.qubit);
+}
+
+test "QasmParser rejects an assignment to a non-classical target" {
+    // `c` is a bit register, not a classical variable, so `c[0] = q;` is not a
+    // modeled classical assignment and stays an error rather than being dropped.
+    const src = "qubit[2] q;\nbit[2] c;\nc[0] = q;\nmeasure q;\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    try std.testing.expectError(error.ParseError, p.parse());
+    try std.testing.expectEqualStrings("unrecognized statement", p.reason.?);
+}
+
+test "QasmParser reset clears measurement tracking" {
+    var warns: std.ArrayList(Diagnostic) = .empty;
+    defer warns.deinit(std.testing.allocator);
+
+    // Measure, reset, then operate and measure again. The reset returns the
+    // qubit to a fresh state, so neither the use-after-measure nor the
+    // remeasure warning fires — only the dropped-reset warning remains.
+    const src = "qubit[1] q;\nbit[1] c;\nmeasure q -> c;\nreset q;\nh q;\nmeasure q -> c;\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    p.warn_sink = &warns;
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(1, warns.items.len);
+    try std.testing.expectEqualStrings("reset is not modeled and was dropped", warns.items[0].reason);
+}
+
+test "QasmParser reports a gate modifier as unsupported" {
+    const src = "qubit[3] q;\nctrl(2) @ x q[0], q[1], q[2];\nmeasure q;\n";
+    var p = QasmParser.init(std.testing.allocator, src);
+    try std.testing.expectError(error.ParseError, p.parse());
+    try std.testing.expectEqualStrings("gate modifiers (ctrl, negctrl, inv, pow) are not supported", p.reason.?);
+}
+
+test "QasmParser locates an error inside an expanded def body" {
+    // The unsupported `ctrl` is on line 4, inside the def body. The diagnostic
+    // must report that line in the original file, not a body-relative line —
+    // a regression guard for the expansion-location mapping.
+    const src =
+        \\qubit[2] q;
+        \\def f(qubit[2] x) {
+        \\  h x[0];
+        \\  ctrl @ x x[0], x[1];
+        \\}
+        \\f(q);
+        \\measure q;
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    try std.testing.expectError(error.ParseError, p.parse());
+    const loc = lineCol(src, p.err_pos.?);
+    try std.testing.expectEqual(4, loc.line);
+    try std.testing.expectEqualStrings("gate modifiers (ctrl, negctrl, inv, pow) are not supported", p.reason.?);
 }
 
 test {
