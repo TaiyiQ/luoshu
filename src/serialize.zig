@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const schedule = @import("schedule");
+const bench = @import("bench");
 
 /// Serializes a logical schedule (SLM slot assignment plus per-timeframe AOD
 /// slot rows) to an owned JSON string. Takes the slot tables directly rather
@@ -133,6 +134,57 @@ pub fn hardwareToJson(gpa: std.mem.Allocator, hw: *const schedule.Hardware) ![]u
     return gpa.dupe(u8, buf.written());
 }
 
+/// Serializes benchmark metrics (timing model, op counts, routing overhead,
+/// parallelism) for one compiled schedule to an owned JSON string. One object
+/// per circuit; a benchmarking driver collects these across the circuit suite.
+pub fn benchToJson(gpa: std.mem.Allocator, m: bench.Metrics) ![]u8 {
+    var buf: std.Io.Writer.Allocating = .init(gpa);
+    defer buf.deinit();
+    const w = &buf.writer;
+
+    try w.writeAll("{\n");
+    try w.print("  \"num_qubits\": {d},\n", .{m.num_qubits});
+    try w.print("  \"frames\": {d},\n", .{m.frames});
+
+    try w.print(
+        "  \"ops\": {{ \"load\": {d}, \"store\": {d}, \"move\": {d}, \"rydberg\": {d}, \"raman\": {d}, \"measure\": {d} }},\n",
+        .{ m.n_load, m.n_store, m.n_move, m.n_rydberg, m.n_raman, m.n_measure },
+    );
+    try w.print(
+        "  \"entangling\": {{ \"pulses\": {d}, \"cz_pairs\": {d}, \"avg_cz_per_pulse\": {d:.3} }},\n",
+        .{ m.n_rydberg, m.cz_pairs, m.avgCzPerPulse() },
+    );
+    try w.print(
+        "  \"distance_nm\": {{ \"total\": {d:.1}, \"max\": {d:.1} }},\n",
+        .{ m.total_move_nm, m.max_move_nm },
+    );
+
+    try w.writeAll("  \"time_us\": {\n");
+    try w.print("    \"loading\": {d:.3},\n", .{m.loading_us});
+    try w.print("    \"shuttling\": {d:.3},\n", .{m.shuttling_us});
+    try w.print("    \"routing\": {d:.3},\n", .{m.routingUs()});
+    try w.print("    \"gate\": {d:.3},\n", .{m.gateUs()});
+    try w.print("    \"total\": {d:.3}\n", .{m.totalUs()});
+    try w.writeAll("  },\n");
+
+    try w.writeAll("  \"timing_model\": {\n");
+    try w.print("    \"shuttle_nm_per_us\": {d:.3},\n", .{m.timing.shuttle_nm_per_us});
+    try w.print("    \"load_us\": {d:.3},\n", .{m.timing.load_us});
+    try w.print("    \"store_us\": {d:.3},\n", .{m.timing.store_us});
+    try w.print("    \"rydberg_us\": {d:.3},\n", .{m.timing.rydberg_us});
+    try w.print("    \"raman_us\": {d:.3}\n", .{m.timing.raman_us});
+    try w.writeAll("  },\n");
+
+    if (m.compile_ns) |ns|
+        try w.print("  \"compile_ns\": {d}\n", .{ns})
+    else
+        try w.writeAll("  \"compile_ns\": null\n");
+
+    try w.writeAll("}");
+
+    return gpa.dupe(u8, buf.written());
+}
+
 pub fn writeJsonFile(io: std.Io, filename: []const u8, json: []const u8) !void {
     const file = try std.Io.Dir.cwd().createFile(io, filename, .{});
     defer file.close(io);
@@ -158,6 +210,17 @@ pub fn writeHardware(
     hw: *const schedule.Hardware,
 ) !void {
     const json = try hardwareToJson(gpa, hw);
+    defer gpa.free(json);
+    try writeJsonFile(io, filename, json);
+}
+
+pub fn writeBench(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    filename: []const u8,
+    m: bench.Metrics,
+) !void {
+    const json = try benchToJson(gpa, m);
     defer gpa.free(json);
     try writeJsonFile(io, filename, json);
 }

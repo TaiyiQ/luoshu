@@ -5,6 +5,7 @@ const assembly = @import("assembly");
 const circuit = @import("circuit");
 const qasm = @import("qasm");
 const compiler = @import("compiler");
+const bench = @import("bench");
 const draw = @import("draw");
 const serialize = @import("serialize");
 const trace = @import("trace");
@@ -47,13 +48,22 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const initial_sites = if (asm_doc) |a| a.sites else null;
+    const compile_start = std.Io.Clock.awake.now(init.io);
     var sch = try compiler.compile(init.gpa, &pipeline, cfg, initial_sites);
+    const compile_ns: u64 = @intCast(compile_start.durationTo(std.Io.Clock.awake.now(init.io)).nanoseconds);
     defer sch.deinit();
 
     if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
 
     if (opts.out) |path| {
         try serialize.writeHardware(init.gpa, init.io, path, &sch);
+    }
+
+    if (opts.bench) |path| {
+        var metrics = bench.measure(&sch, .{});
+        metrics.compile_ns = compile_ns;
+        serialize.writeBench(init.gpa, init.io, path, metrics) catch |err|
+            cli.fatal("cannot write bench '{s}': {t}", .{ path, err });
     }
 
     if (opts.draw) {

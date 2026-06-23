@@ -9,6 +9,7 @@ const usage =
     \\                      atom-rearrangement package
     \\                      (default: ./example/assembly.json)
     \\  --out <path>     write the hardware schedule as JSON
+    \\  --bench <path>      write schedule benchmark metrics as JSON
     \\  --draw / --no-draw  open the schedule visualization (default: on)
     \\  -v, --verbose       trace the compiler passes to stderr
     \\  -h, --help          show this help
@@ -20,6 +21,7 @@ const Options = struct {
     arch_path: []const u8 = "arch.toml",
     asm_path: ?[]const u8 = "./example/assembly.json",
     out: ?[]const u8 = null,
+    bench: ?[]const u8 = null,
     draw: bool = true,
     verbose: bool = false,
 };
@@ -53,6 +55,9 @@ pub fn parseArgs(arena: std.mem.Allocator, args: std.process.Args) !Options {
         } else if (std.mem.eql(u8, arg, "--out")) {
             const v = it.next() orelse fatal("--out expects a path", .{});
             opts.out = try arena.dupe(u8, v);
+        } else if (std.mem.eql(u8, arg, "--bench")) {
+            const v = it.next() orelse fatal("--bench expects a path", .{});
+            opts.bench = try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--draw")) {
             opts.draw = true;
         } else if (std.mem.eql(u8, arg, "--no-draw")) {
