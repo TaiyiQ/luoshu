@@ -5,8 +5,9 @@ const usage =
     \\
     \\options:
     \\  --arch <file>       architecture TOML (default: ./arch.toml)
-    \\  --asm <file>        storage occupancy JSON from the upstream
-    \\                      atom-rearrangement package
+    \\  --asm <file|none>   storage occupancy JSON from the upstream
+    \\                      atom-rearrangement package; 'none' skips it and
+    \\                      uses procedural placement
     \\                      (default: ./example/assembly.json)
     \\  --out <path>     write the hardware schedule as JSON
     \\  --bench <path>      write schedule benchmark metrics as JSON
@@ -51,7 +52,9 @@ pub fn parseArgs(arena: std.mem.Allocator, args: std.process.Args) !Options {
             opts.arch_path = try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--asm")) {
             const v = it.next() orelse fatal("--asm expects a file", .{});
-            opts.asm_path = try arena.dupe(u8, v);
+            // 'none' opts out of the upstream handoff: fall back to procedural
+            // placement (Hardware.init with null sites).
+            opts.asm_path = if (std.mem.eql(u8, v, "none")) null else try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--out")) {
             const v = it.next() orelse fatal("--out expects a path", .{});
             opts.out = try arena.dupe(u8, v);

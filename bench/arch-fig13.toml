@@ -1,0 +1,82 @@
+# arch-fig13.toml
+#
+# Architecture matching Figure 13 of NALAC (Stade et al., arXiv:2405.08068),
+# the layout used for the paper's Table I experiments:
+#
+#   entangling (compute):  4 x 36
+#   storage:              12 x 72
+#   readout:               4 x 72
+#   ~20 µm inter-zone gaps, 1 atom = 1 logical qubit
+#
+# Trap pitches are read off the figure's "5 µm" scale bar; the paper does not
+# publish exact spacings, so absolute shuttle distances are approximate. The
+# row/column counts, zone structure, and timing constants (load/store 20 µs,
+# shuttle 0.55 µm/µs, CZ 0.2 µs — see src/bench.zig) do match the paper, so the
+# structural metrics (CZ count, parallelism) are directly comparable.
+
+[platform]
+name = "nalac-fig13"
+version = "0.1"
+
+[aod]
+aod_id = 0
+min_sep_um = 1.5
+max_num_row = 7
+max_num_col = 100
+
+# ── Storage zone: 12 x 72 ──────────────────────────────────────
+[storage_zone]
+zone_id = 0
+offset_um = [0.0, 0.0]
+dimension_um = [360.0, 60.0]
+
+[storage_zone.slm]
+slm_id = 0
+num_row = 12
+num_col = 72
+sep_um = [5.0, 5.0]
+offset_um = [0.0, 0.0]
+
+# ── Compute (entangling) zone: 4 x 36 ──────────────────────────
+[compute_zone]
+zone_id = 1
+offset_um = [0.0, 80.0] # 20 µm gap above the storage zone (tops out at y=60)
+dimension_um = [400.0, 60.0]
+dr_um = 2.0
+dw_um = 10.0
+
+[[compute_zone.slms]]
+slm_id = 1
+num_row = 4
+num_col = 36
+sep_um = [10.0, 12.0]
+offset_um = [0.0, 0.0]
+
+[[compute_zone.slms]]
+slm_id = 2
+num_row = 4
+num_col = 36
+sep_um = [10.0, 12.0]
+offset_um = [0.0, 2.0]
+
+# ── Readout zone: 4 x 72 ───────────────────────────────────────
+[readout_zone]
+zone_id = 2
+offset_um = [0.0, 160.0] # 20 µm gap above the compute zone (tops out at y=140)
+dimension_um = [360.0, 30.0]
+
+[readout_zone.slm]
+slm_id = 3
+num_row = 4
+num_col = 72
+sep_um = [4.0, 4.0]
+offset_um = [0.0, 0.0]
+
+# ── Physical constraints ───────────────────────────────────────
+[constraints]
+db_um = 3.0
+dz_um = 3.0
+
+one_qubit_gate_fidelity = 0.999
+two_qubit_gate_fidelity = 0.995
+readout_fidelity = 0.990
