@@ -26,12 +26,16 @@ const schedule = @import("schedule");
 pub const Timing = struct {
     /// AOD transport speed, nm per µs (NALAC: 0.55 µm/µs = 550 nm/µs).
     shuttle_nm_per_us: f64 = 550.0,
+
     /// AOD pick-up time (trap ramp-on), µs.
     load_us: f64 = 20.0,
+
     /// SLM drop time (trap hand-off), µs.
     store_us: f64 = 20.0,
+
     /// Rydberg/CZ entangling pulse, µs.
     rydberg_us: f64 = 0.2,
+
     /// Single-qubit Raman pulse, µs. NALAC does not model 1Q gate time; the
     /// default of 0 keeps the reported total comparable to the paper. Set it to
     /// fold single-qubit time into the runtime.
@@ -41,22 +45,28 @@ pub const Timing = struct {
 /// Aggregate metrics for one compiled schedule. Times are in µs.
 pub const Metrics = struct {
     num_qubits: usize,
+
     /// Schedule depth: number of parallel timesteps (Hardware frames).
     frames: usize,
 
     n_load: usize = 0,
     n_store: usize = 0,
     n_move: usize = 0,
+
     /// Entangling pulses fired (one per occupied compute timeframe).
     n_rydberg: usize = 0,
+
     /// Single-qubit gates applied.
     n_raman: usize = 0,
+
     n_measure: usize = 0,
+
     /// CZ pairs entangled across all pulses (sum of pairs per pulse).
     cz_pairs: usize = 0,
 
     /// Summed shuttle distance over every move op (serial view, nm).
     total_move_nm: f64 = 0,
+
     /// Longest single move, nm.
     max_move_nm: f64 = 0,
 
@@ -67,6 +77,7 @@ pub const Metrics = struct {
     raman_us_total: f64 = 0, // single-qubit pulses
 
     timing: Timing,
+
     /// Wall-clock time the compiler spent producing this schedule. Filled by
     /// the driver; null when not measured.
     compile_ns: ?u64 = null,
@@ -153,6 +164,7 @@ pub fn measureFrames(frames: []const schedule.Frame, num_qubits: usize, timing: 
         // slowest atom sets the time), drop, then pulse. Each phase costs once
         // per frame, never once per atom.
         m.shuttling_us += frame_max_nm / timing.shuttle_nm_per_us;
+
         if (has_load) m.loading_us += timing.load_us;
         if (has_store) m.loading_us += timing.store_us;
         if (has_rydberg) m.entangling_us += timing.rydberg_us;

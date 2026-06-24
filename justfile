@@ -7,6 +7,3 @@ test:
 
 update:
 	zig build update-snapshots
-
-bench:
-	zig build run -- "../bench-compiler/circuits/ghz_20.qasm" --arch "arch.toml" --asm none --no-draw --bench bench.json
