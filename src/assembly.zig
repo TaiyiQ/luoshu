@@ -218,15 +218,15 @@ test "the example assembly file loads" {
     const a = try load(
         std.testing.allocator,
         std.testing.io,
-        "example/assembly.json",
+        "testdata/assembly.json",
     );
     defer a.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(u32, 10), a.rows);
     try std.testing.expectEqual(@as(u32, 110), a.cols);
     try std.testing.expectEqual(@as(usize, 50), a.sites.len);
-    // 5x10 centered block (rows 2..6, cols 50..59): first qubit sits in the
-    // highest occupied row (compute-facing) at the block's left edge.
+    // Fully occupied grid: the first qubit sits in the highest row index
+    // (compute-facing) at the left edge.
     try std.testing.expectEqual(
         schedule.Site{ .row = 6, .col = 50 },
         a.sites[0],

@@ -72,6 +72,6 @@ pub fn main(init: std.process.Init) !void {
         // Draw circuit decomposed into stages.
         try draw.pipeline(circ, pipeline);
         // Draw arch layout and compiled schedule.
-        try draw.physical(init.gpa, cfg, sch);
+        try draw.physical(init.gpa, cfg, sch, asm_doc);
     }
 }

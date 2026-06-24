@@ -135,6 +135,7 @@ pub fn build(b: *std.Build) void {
     });
     draw_mod.addImport("schedule", schedule_mod);
     draw_mod.addImport("arch", arch_mod);
+    draw_mod.addImport("assembly", assembly_mod);
     draw_mod.addImport("circuit", circuit_mod);
     draw_mod.addImport("viewmodel", viewmodel_mod);
     exe.root_module.addImport("draw", draw_mod);
