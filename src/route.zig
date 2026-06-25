@@ -609,12 +609,12 @@ fn topoSort(gpa: std.mem.Allocator, g: Graph, aod_set: []const bool, orig: Graph
     return order.toOwnedSlice(gpa);
 }
 
-fn matchAodToSlm(gpa: std.mem.Allocator, g: *const Graph, aod: Aod, t: i32) ![]?usize {
-    if (aod.nodes.items.len == 0) return try gpa.alloc(?usize, 0);
+fn matchAodToSlm(arena: std.mem.Allocator, g: *const Graph, aod: Aod, t: i32) ![]?usize {
+    if (aod.nodes.items.len == 0) return try arena.alloc(?usize, 0);
 
-    const match = try gpa.alloc(?usize, aod.nodes.items.len);
+    const match = try arena.alloc(?usize, aod.nodes.items.len);
     @memset(match, null);
-    errdefer gpa.free(match);
+    errdefer arena.free(match);
 
     for (aod.nodes.items, 0..) |x, i| {
         var e = g.edges[x];
@@ -629,38 +629,40 @@ fn matchAodToSlm(gpa: std.mem.Allocator, g: *const Graph, aod: Aod, t: i32) ![]?
     return match;
 }
 
-fn logicalSchedule(gpa: std.mem.Allocator, g: *Graph, aod: Aod, slm_slots: []const ?usize) ![][]?usize {
-    var slm_pos = std.AutoHashMap(usize, usize).init(gpa);
+// Returns a 2D array containing the moveable AOD qubits per color (timestep).
+fn logicalSchedule(arena: std.mem.Allocator, g: *Graph, aod: Aod, slm_slots: []const ?usize) ![][]?usize {
+    var slm_pos = std.AutoHashMap(usize, usize).init(arena);
     defer slm_pos.deinit();
     for (slm_slots, 0..) |v, t| {
         if (v) |id| try slm_pos.put(id, t);
     }
 
     const max_c = try g.maxColor();
-    const n_slot = @as(usize, @intCast(max_c)) + 1;
+    const timesteps = @as(usize, @intCast(max_c)) + 1;
 
-    var aod_slots_per_color = try gpa.alloc([]?usize, n_slot);
+    var moveable = try arena.alloc([]?usize, timesteps);
 
     // Track last known column of each AOD.
-    var last_pos = try gpa.alloc(usize, aod.nodes.items.len);
-    defer gpa.free(last_pos);
+    var last_pos = try arena.alloc(usize, aod.nodes.items.len);
     @memset(last_pos, 0);
+    defer arena.free(last_pos);
 
-    for (0..n_slot) |t| {
-        const aod_slot = try gpa.alloc(?usize, slm_slots.len);
+    for (0..timesteps) |t| {
+        // NOTE: Maybe we can use the length of the arch that
+        // is known at comptime, and store this on the stack instead.
+        const aod_slot = try arena.alloc(?usize, slm_slots.len);
         @memset(aod_slot, null);
 
-        // TODO: Is this correct?
-        //defer gpa.free(aod_slot);
-
         // Phase 1: Place active AODs with their SLM partners.
-        const match = try matchAodToSlm(gpa, g, aod, @intCast(t));
-        defer gpa.free(match);
+        const match = try matchAodToSlm(arena, g, aod, @intCast(t));
+        defer arena.free(match);
+
         for (match, 0..) |slm, i| {
             if (slm) |id| {
                 if (slm_pos.get(id)) |c| {
                     aod_slot[c] = aod.nodes.items[i];
                     last_pos[i] = c;
+                    std.debug.print("1. t={}, c={}, i={}\n", .{ t, c, i });
                 }
             }
         }
@@ -668,7 +670,10 @@ fn logicalSchedule(gpa: std.mem.Allocator, g: *Graph, aod: Aod, slm_slots: []con
         // Phase 2: place resting AODs.
         // nodes[0]=rightmost; nodes[i] must land strictly LEFT of nodes[i-1].
         for (aod.nodes.items, 0..) |v, i| {
-            if (match[i] != null) continue;
+            if (match[i] != null) {
+                std.debug.print("skip: {}:{}\n", .{ v, i });
+                continue;
+            }
 
             // Upper bound: must be strictly left of our right-neighbour's slot.
             var max_pos: usize = aod_slot.len; // i==0 has no right neighbour
@@ -677,6 +682,7 @@ fn logicalSchedule(gpa: std.mem.Allocator, g: *Graph, aod: Aod, slm_slots: []con
                 for (aod_slot, 0..) |placed, c| {
                     if (placed == right_aod) {
                         max_pos = c; // must land in [0, max_pos)
+                        std.debug.print("2. {}\n", .{max_pos});
                         break;
                     }
                 }
@@ -687,7 +693,9 @@ fn logicalSchedule(gpa: std.mem.Allocator, g: *Graph, aod: Aod, slm_slots: []con
             if (max_pos > 0) {
                 var gap_ptr: usize = max_pos - 1;
                 while (true) {
+                    std.debug.print("slm_slots: {any}\n", .{slm_slots[gap_ptr]});
                     if (slm_slots[gap_ptr] == null and aod_slot[gap_ptr] == null) {
+                        std.debug.print("v: {}:{}\n", .{ gap_ptr, v });
                         aod_slot[gap_ptr] = v;
                         placed = true;
                         break;
@@ -703,10 +711,12 @@ fn logicalSchedule(gpa: std.mem.Allocator, g: *Graph, aod: Aod, slm_slots: []con
             }
         }
 
-        aod_slots_per_color[t] = aod_slot;
+        std.debug.print("\n", .{});
+
+        moveable[t] = aod_slot;
     }
 
-    return aod_slots_per_color;
+    return moveable;
 }
 
 fn placeSlmWithResting(

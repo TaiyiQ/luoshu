@@ -1,5 +1,5 @@
 run circuit="../qasm/mvp.qasm":
-	zig build run -- {{circuit}} --draw -v
+	zig build run -- {{circuit}} -v --no-draw
 
 test:
 	rm -rf .zig-cache
