@@ -636,6 +636,7 @@ fn logicalSchedule(arena: std.mem.Allocator, g: *Graph, aod: Aod, slm_slots: []c
     for (slm_slots, 0..) |v, t| {
         if (v) |id| try slm_pos.put(id, t);
     }
+    std.debug.print("SLMSLOTS: {any}\n", .{slm_pos});
 
     const max_c = try g.maxColor();
     const timesteps = @as(usize, @intCast(max_c)) + 1;
@@ -818,6 +819,12 @@ fn computeRestingPositions(gpa: std.mem.Allocator, g: *Graph, aod: Aod, slm_orde
                 trace.print("t:{}, left:{any} resting_aod:{} right:{any} count:{}\n", .{ t, l_aod, v, r_aod, cnt });
             }
         }
+        std.debug.print("\n>> NEW: t_resting:\n", .{});
+        var it = t_resting.iterator();
+        while (it.next()) |v| {
+            std.debug.print("* {}:{}\n", .{ v.key_ptr.*, v.value_ptr.* });
+        }
+        std.debug.print("\n------------\n", .{});
 
         // Merging
         var new_resting = std.AutoHashMap(Rest, usize).init(gpa);
@@ -894,7 +901,9 @@ fn computeRestingPositions(gpa: std.mem.Allocator, g: *Graph, aod: Aod, slm_orde
     var positions: std.ArrayList(usize) = .empty;
     var it = resting.iterator();
     while (it.next()) |entry| {
+        std.debug.print("key: {}\n", .{entry.value_ptr.*});
         for (0..entry.value_ptr.*) |_| {
+            std.debug.print("value: {}\n", .{entry.key_ptr.*});
             try positions.append(gpa, entry.key_ptr.*.right);
         }
     }
@@ -961,7 +970,7 @@ pub fn computeSequence(gpa: std.mem.Allocator, g: *Graph) !Sequence {
 
     const resting_xs = try computeRestingPositions(gpa, g, aod, slm_order);
     defer gpa.free(resting_xs);
-    trace.print("resting_xs: {any}\n", .{resting_xs});
+    trace.print("\n\n\nresting_xs: {any}\n", .{resting_xs});
 
     const fixed = try placeSlmWithResting(arena_alloc, slm_order, resting_xs, aod.nodes.items.len);
     const moveable = try logicalSchedule(arena_alloc, g, aod, fixed);
