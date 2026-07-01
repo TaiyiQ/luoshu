@@ -48,6 +48,14 @@ pub fn build(b: *std.Build) void {
     });
     schedule_mod.addImport("arch", arch_mod);
 
+    // Schedule metrics + timing model (NALAC-style benchmarking).
+    const bench_mod = b.addModule("bench", .{
+        .root_source_file = b.path("src/bench.zig"),
+        .target = target,
+    });
+    bench_mod.addImport("schedule", schedule_mod);
+    exe.root_module.addImport("bench", bench_mod);
+
     // Upstream atom-rearrangement handoff: storage occupancy JSON -> Sites.
     const assembly_mod = b.addModule("assembly", .{
         .root_source_file = b.path("src/assembly.zig"),
@@ -64,17 +72,25 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("trace", trace_mod);
 
+    const rest_mod = b.addModule("resting", .{
+        .root_source_file = b.path("src/resting.zig"),
+        .target = target,
+    });
+    exe.root_module.addImport("resting", rest_mod);
+
     const route_mod = b.addModule("route", .{
         .root_source_file = b.path("src/route.zig"),
         .target = target,
     });
     route_mod.addImport("trace", trace_mod);
+    route_mod.addImport("resting", rest_mod);
 
     const serialize_mod = b.addModule("serialize", .{
         .root_source_file = b.path("src/serialize.zig"),
         .target = target,
     });
     serialize_mod.addImport("schedule", schedule_mod);
+    serialize_mod.addImport("bench", bench_mod);
     exe.root_module.addImport("serialize", serialize_mod);
     route_mod.addImport("serialize", serialize_mod); // for snapshot.zig (route's test helper)
 
@@ -126,6 +142,7 @@ pub fn build(b: *std.Build) void {
     });
     draw_mod.addImport("schedule", schedule_mod);
     draw_mod.addImport("arch", arch_mod);
+    draw_mod.addImport("assembly", assembly_mod);
     draw_mod.addImport("circuit", circuit_mod);
     draw_mod.addImport("viewmodel", viewmodel_mod);
     exe.root_module.addImport("draw", draw_mod);
@@ -160,7 +177,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit and golden tests");
     const test_mods = [_]*std.Build.Module{
-        arch_mod, assembly_mod, trace_mod, circuit_mod, qasm_mod, schedule_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
+        arch_mod, assembly_mod, trace_mod, circuit_mod, qasm_mod, schedule_mod, bench_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
     };
     for (test_mods) |mod| {
         const t = b.addTest(.{ .root_module = mod });

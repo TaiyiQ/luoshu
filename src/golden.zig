@@ -303,8 +303,8 @@ test "golden: cyclic-aod" {
     try goldenCase(cases[5]);
 }
 
-// Not a snapshot test: pins down that an explicit assembly handoff (square
-// 4x4 block, so qft-5's 5 qubits start spread over two storage rows) still
+// Not a snapshot test: pins down that an explicit assembly handoff (a fully
+// occupied storage grid, of which qft-5 uses only its first 5 atoms) still
 // compiles to a schedule the verifier accepts.
 test "assembly: qft-5 compiles legally from example/assembly.json" {
     const gpa = std.testing.allocator;

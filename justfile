@@ -1,6 +1,5 @@
-# just run [circuit.qasm] — compile, visualize, and trace the example circuit
-run circuit="../qasm/mvp.qasm":
-	zig build run -- {{circuit}} --draw -v
+run circuit="./example/ex1/mvp.qasm":
+	zig build run -- {{circuit}} -v --no-draw
 
 test:
 	rm -rf .zig-cache

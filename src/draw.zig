@@ -2,6 +2,7 @@ const std = @import("std");
 const rl = @import("raylib");
 const schedule = @import("schedule");
 const arch_mod = @import("arch");
+const assembly_mod = @import("assembly");
 const circuit = @import("circuit");
 const viewmodel = @import("viewmodel");
 
@@ -350,6 +351,7 @@ fn drawSlot(
     slot: Point,
     positions: []const Point,
     loaded: []const bool,
+    idle: []const Point,
 ) void {
     const screen = cam.worldToScreen(toVec(slot));
     const screen_radius = ATOM_R * cam.zoom;
@@ -360,6 +362,16 @@ fn drawSlot(
         if (p.x == slot.x and p.y == slot.y) {
             occupied = true;
             break;
+        }
+    }
+    // Idle atoms (delivered but unused) never move, so they hold their trap
+    // in every frame.
+    if (!occupied) {
+        for (idle) |p| {
+            if (p.x == slot.x and p.y == slot.y) {
+                occupied = true;
+                break;
+            }
         }
     }
 
@@ -779,7 +791,7 @@ fn drawPanel(
 // -----------------------------------------------------------------------
 // Main interactive slideshow
 // -----------------------------------------------------------------------
-pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Hardware) !void {
+pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule.Hardware, asm_doc: ?assembly_mod.Assembly) !void {
     if (s.placement.len == 0 or s.frames.items.len == 0) return;
 
     // Frames are never empty and never have gaps; frame index == timestep.
@@ -835,6 +847,16 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
 
     const sites = try allSlmSites(s.gpa, layout);
     defer s.gpa.free(sites);
+
+    var idle_buf: std.ArrayList(Point) = .empty;
+    defer idle_buf.deinit(gpa);
+    if (asm_doc) |a| {
+        const grid = layout.storage_zone.grid();
+        for (a.sites[num_qubits..]) |site| {
+            try idle_buf.append(gpa, .{ .x = grid.x(site.col), .y = grid.y(site.row) });
+        }
+    }
+    const idle = idle_buf.items;
 
     const bbox = computeBoundingBox(sites);
     var camera = Camera{};
@@ -1033,7 +1055,7 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
         const sh: f32 = @floatFromInt(rl.getScreenHeight());
         drawAodHighlight(camera, draw_positions, frame_loaded[frame], frame_ops, sw, sh);
 
-        for (sites) |slot| drawSlot(camera, slot, draw_positions, frame_loaded[frame]);
+        for (sites) |slot| drawSlot(camera, slot, draw_positions, frame_loaded[frame], idle);
 
         // Ghost, tail, and ripple for every move at this timestep.
         for (frame_ops) |op| {
