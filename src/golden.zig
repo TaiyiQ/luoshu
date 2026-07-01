@@ -306,11 +306,11 @@ test "golden: cyclic-aod" {
 // Not a snapshot test: pins down that an explicit assembly handoff (a fully
 // occupied storage grid, of which qft-5 uses only its first 5 atoms) still
 // compiles to a schedule the verifier accepts.
-test "assembly: qft-5 compiles legally from example/assembly.json" {
+test "assembly: qft-5 compiles legally from assembly.json" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
 
-    const asm_doc = try assembly.load(gpa, io, "example/assembly.json");
+    const asm_doc = try assembly.load(gpa, io, "assembly.json");
     defer asm_doc.deinit(gpa);
 
     var circ = try buildQft5(gpa);
