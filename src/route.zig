@@ -1,4 +1,5 @@
 const std = @import("std");
+const resting = @import("resting");
 
 // Pass tracing, off by default so the compiler is silent as a library and
 // in tests (the build runner displays any stderr a test step produces,
@@ -159,6 +160,13 @@ const Aod = struct {
     fn deinit(s: *Aod, gpa: std.mem.Allocator) void {
         gpa.free(s.set);
         s.nodes.deinit(gpa);
+    }
+
+    // TODO: To be removed.
+    fn reversed(s: *const Aod, gpa: std.mem.Allocator) ![]usize {
+        const out = try gpa.dupe(usize, s.nodes.items);
+        std.mem.reverse(usize, out);
+        return out;
     }
 };
 
@@ -609,72 +617,55 @@ fn topoSort(gpa: std.mem.Allocator, g: Graph, aod_set: []const bool, orig: Graph
     return order.toOwnedSlice(gpa);
 }
 
-fn matchAodToSlm(arena: std.mem.Allocator, g: *const Graph, aod: Aod, t: i32) ![]?usize {
-    if (aod.nodes.items.len == 0) return try arena.alloc(?usize, 0);
-
-    const match = try arena.alloc(?usize, aod.nodes.items.len);
-    @memset(match, null);
-    errdefer arena.free(match);
-
-    for (aod.nodes.items, 0..) |x, i| {
-        var e = g.edges[x];
-        while (e) |edge| : (e = edge.next) {
-            if (edge.color == t and !aod.set[edge.y]) {
-                match[i] = edge.y;
-                break; // There can only be 1 SLM-AOD match per timestep.
-            }
-        }
-    }
-
-    return match;
-}
-
 // Returns a 2D array containing the moveable AOD qubits per color (timestep).
-fn logicalSchedule(arena: std.mem.Allocator, g: *Graph, aod: Aod, slm_slots: []const ?usize) ![][]?usize {
+// `timesteps[t][i]` is the SLM partner of aod.nodes.items[i] at timestep t, or
+// null if that AOD is resting (precomputed by activePerTimestep).
+fn logicalSchedule(
+    arena: std.mem.Allocator,
+    aod: Aod,
+    slm_slots: []const ?usize,
+    timesteps: []const []const ?usize,
+) ![][]?usize {
     var slm_pos = std.AutoHashMap(usize, usize).init(arena);
     defer slm_pos.deinit();
     for (slm_slots, 0..) |v, t| {
         if (v) |id| try slm_pos.put(id, t);
     }
-    std.debug.print("SLMSLOTS: {any}\n", .{slm_pos});
 
-    const max_c = try g.maxColor();
-    const timesteps = @as(usize, @intCast(max_c)) + 1;
+    std.debug.print("{any}\n", .{slm_slots});
+    var it = slm_pos.iterator();
+    while (it.next()) |v| {
+        std.debug.print("{}:{}\n", .{ v.key_ptr.*, v.value_ptr.* });
+    }
 
-    var moveable = try arena.alloc([]?usize, timesteps);
+    var moveable = try arena.alloc([]?usize, timesteps.len);
 
-    // Track last known column of each AOD.
-    var last_pos = try arena.alloc(usize, aod.nodes.items.len);
-    @memset(last_pos, 0);
-    defer arena.free(last_pos);
-
-    for (0..timesteps) |t| {
+    for (timesteps, 0..) |match, t| {
         // NOTE: Maybe we can use the length of the arch that
         // is known at comptime, and store this on the stack instead.
         const aod_slot = try arena.alloc(?usize, slm_slots.len);
         @memset(aod_slot, null);
 
         // Phase 1: Place active AODs with their SLM partners.
-        const match = try matchAodToSlm(arena, g, aod, @intCast(t));
-        defer arena.free(match);
-
-        for (match, 0..) |slm, i| {
+        const aod_nodes = try aod.reversed(arena);
+        std.debug.print("{any}\n", .{aod_nodes});
+        std.debug.print("match: {any}\n", .{match});
+        for (match, 0..) |slm, qubit_id| {
             if (slm) |id| {
                 if (slm_pos.get(id)) |c| {
-                    aod_slot[c] = aod.nodes.items[i];
-                    last_pos[i] = c;
-                    std.debug.print("1. t={}, c={}, i={}\n", .{ t, c, i });
+                    std.debug.print("id: {}\n", .{qubit_id});
+                    aod_slot[c] = aod_nodes[qubit_id];
                 }
             }
         }
+        std.debug.print("t{} - {any}\n", .{ t, aod_slot });
 
         // Phase 2: place resting AODs.
         // nodes[0]=rightmost; nodes[i] must land strictly LEFT of nodes[i-1].
+        // match[] is indexed against aod_nodes (reversed, left-to-right), so
+        // aod.nodes.items[i] corresponds to match[match.len - 1 - i].
         for (aod.nodes.items, 0..) |v, i| {
-            if (match[i] != null) {
-                std.debug.print("skip: {}:{}\n", .{ v, i });
-                continue;
-            }
+            if (match[match.len - 1 - i] != null) continue;
 
             // Upper bound: must be strictly left of our right-neighbour's slot.
             var max_pos: usize = aod_slot.len; // i==0 has no right neighbour
@@ -683,7 +674,6 @@ fn logicalSchedule(arena: std.mem.Allocator, g: *Graph, aod: Aod, slm_slots: []c
                 for (aod_slot, 0..) |placed, c| {
                     if (placed == right_aod) {
                         max_pos = c; // must land in [0, max_pos)
-                        std.debug.print("2. {}\n", .{max_pos});
                         break;
                     }
                 }
@@ -694,9 +684,7 @@ fn logicalSchedule(arena: std.mem.Allocator, g: *Graph, aod: Aod, slm_slots: []c
             if (max_pos > 0) {
                 var gap_ptr: usize = max_pos - 1;
                 while (true) {
-                    std.debug.print("slm_slots: {any}\n", .{slm_slots[gap_ptr]});
                     if (slm_slots[gap_ptr] == null and aod_slot[gap_ptr] == null) {
-                        std.debug.print("v: {}:{}\n", .{ gap_ptr, v });
                         aod_slot[gap_ptr] = v;
                         placed = true;
                         break;
@@ -707,240 +695,56 @@ fn logicalSchedule(arena: std.mem.Allocator, g: *Graph, aod: Aod, slm_slots: []c
             }
 
             if (!placed) {
-                std.debug.print("Failed to place resting AOD {d} at time step {d}\n", .{ v, t });
+                trace.print("Failed to place resting AOD {d} at time step {d}\n", .{ v, t });
                 return error.NoRestingSlotAvailable;
             }
         }
 
-        std.debug.print("\n", .{});
-
         moveable[t] = aod_slot;
+        //trace.print("{any}\n", .{aod_slot});
     }
 
     return moveable;
 }
 
-fn placeSlmWithResting(
+fn activePerTimestep(
     gpa: std.mem.Allocator,
+    g: *Graph,
+    aod: Aod,
     slm_order: []const usize,
-    resting_xs: []const usize,
-    n_aod: usize,
-) ![]?usize {
-    const boundary = if (n_aod > 0) n_aod - 1 else 0;
-    const total = boundary + slm_order.len + resting_xs.len + boundary;
-
-    const slots = try gpa.alloc(?usize, total);
-    @memset(slots, null);
-
-    var pos: usize = boundary; // skip leading buffer
-    var r_idx: usize = 0;
-    for (slm_order, 0..) |slm_id, i| {
-        while (r_idx < resting_xs.len and resting_xs[r_idx] <= i) {
-            pos += 1; // interior gap
-            r_idx += 1;
-        }
-        slots[pos] = slm_id;
-        pos += 1;
-    }
-    // trailing nulls already null from memset
-
-    trace.print("SLM Slots: {any}\n", .{slots});
-    return slots;
-}
-
-const Rest = struct {
-    left: usize,
-    right: usize,
-};
-
-fn computeRestingPositions(gpa: std.mem.Allocator, g: *Graph, aod: Aod, slm_order: []const usize) ![]usize {
+) ![]const []const ?usize {
     const max_c = try g.maxColor();
+    const steps = @as(usize, @intCast(max_c + 1));
 
-    var resting = std.AutoHashMap(Rest, usize).init(gpa);
-    defer resting.deinit();
+    const aod_nodes = try aod.reversed(gpa);
+    defer gpa.free(aod_nodes);
 
-    for (0..@as(usize, @intCast(max_c + 1))) |t_usize| {
+    const timesteps = try gpa.alloc([]?usize, steps);
+    errdefer gpa.free(timesteps);
+
+    for (0..steps) |t_usize| {
         const t: i32 = @intCast(t_usize);
 
-        // Find ACTIVE AOD positions this timestep.
-        var active = std.AutoHashMap(usize, usize).init(gpa);
-        defer active.deinit();
+        const active = try gpa.alloc(?usize, aod_nodes.len);
+        @memset(active, null);
 
-        for (aod.nodes.items) |v| {
+        for (aod_nodes, 0..) |v, i| {
             var e = g.edges[v];
             while (e) |edge| : (e = edge.next) {
                 if (edge.color == t) {
-                    // Find SLM index.
-                    for (slm_order, 0..) |slm, x| {
+                    for (slm_order) |slm| {
                         if (slm == edge.y) {
-                            try active.put(v, x);
-                            break;
+                            active[i] = slm;
                         }
                     }
                 }
             }
         }
 
-        if (trace.enabled) {
-            trace.print("ACTIVE AODs: t({})\n", .{t});
-            var it = active.iterator();
-            while (it.next()) |entry| {
-                trace.print("  {} => {}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
-            }
-        }
-
-        var t_resting = std.AutoHashMap(Rest, usize).init(gpa);
-        defer t_resting.deinit();
-
-        for (aod.nodes.items, 0..) |v, i| {
-            // Go to the next AOD, if this one is not resting.
-            if (active.contains(v)) continue;
-
-            // Find nearest left and right active neighbours.
-            var l: ?usize = null;
-            var r: ?usize = null;
-            for (aod.nodes.items, 0..) |u, j| {
-                // Next, if this one is resting.
-                if (!active.contains(u)) continue;
-
-                if (j < i) {
-                    if (r == null or j > r.?) r = j;
-                } else if (j > i) {
-                    if (l == null or j > l.?) l = j;
-                }
-            }
-
-            if (l != null and r != null) {
-                const l_aod = active.get(aod.nodes.items[l.?]).?;
-                const r_aod = active.get(aod.nodes.items[r.?]).?;
-                const key = Rest{ .left = l_aod, .right = r_aod };
-                const cnt = if (t_resting.get(key)) |c| c + 1 else 1;
-                try t_resting.put(key, cnt);
-                trace.print("t:{}, left:{any} resting_aod:{} right:{any} count:{}\n", .{ t, l_aod, v, r_aod, cnt });
-            }
-        }
-        std.debug.print("\n>> NEW: t_resting:\n", .{});
-        var it = t_resting.iterator();
-        while (it.next()) |v| {
-            std.debug.print("* {}:{}\n", .{ v.key_ptr.*, v.value_ptr.* });
-        }
-        std.debug.print("\n------------\n", .{});
-
-        // Merging
-        var new_resting = std.AutoHashMap(Rest, usize).init(gpa);
-        errdefer new_resting.deinit();
-
-        var old_it = resting.iterator();
-        while (old_it.next()) |entry| {
-            const old_pair = entry.key_ptr.*;
-            const cnt = entry.value_ptr.*;
-
-            for (0..cnt) |_| {
-                // Find overlapping new intervals.
-                var overlaps: std.ArrayList(Rest) = .empty;
-                defer overlaps.deinit(gpa);
-
-                var t_it = t_resting.iterator();
-                while (t_it.next()) |t_entry| {
-                    const tp = t_entry.key_ptr.*;
-                    if (tp.left < old_pair.right and old_pair.left < tp.right) {
-                        try overlaps.append(gpa, tp);
-                    }
-                }
-
-                if (overlaps.items.len == 0) {
-                    // No overlap. Keep old.
-                    const c = if (new_resting.get(old_pair)) |c| c + 1 else 1;
-                    try new_resting.put(old_pair, c);
-                } else {
-                    // Pick narrowest overlapping interval.
-                    var best = overlaps.items[0];
-                    for (overlaps.items[1..]) |o| {
-                        // TODO: usize cannot go negative.
-                        // AODs are overlapping. Fix needed.
-                        if (best.left > best.right) continue;
-                        std.debug.print(">> {any}\n", .{best.right - best.left});
-                        if (o.right - o.left < best.right - best.left) best = o;
-                    }
-
-                    // Consume one from t_resting.
-                    const old_cnt = t_resting.get(best).?;
-                    if (old_cnt == 1) {
-                        _ = t_resting.remove(best);
-                    } else {
-                        try t_resting.put(best, old_cnt - 1);
-                    }
-
-                    // Create merged interval.
-                    const merged = Rest{
-                        .left = @max(old_pair.left, best.left),
-                        .right = @max(old_pair.right, best.right),
-                    };
-                    const c = if (new_resting.get(merged)) |c| c + 1 else 1;
-                    try new_resting.put(merged, c);
-                }
-            }
-        }
-
-        // Add remaining new requirements.
-        trace.print(">> t_resting:\n", .{});
-        var t_it = t_resting.iterator();
-        while (t_it.next()) |entry| {
-            const p = entry.key_ptr.*;
-            const c = entry.value_ptr.*;
-            trace.print("  {}:{}\n", .{ p, c });
-            const nc = if (new_resting.get(p)) |v| v + c else c;
-            try new_resting.put(p, nc);
-        }
-
-        resting.deinit();
-        resting = new_resting;
-        new_resting = undefined; // ownership moved.
+        timesteps[t_usize] = active;
     }
 
-    var positions: std.ArrayList(usize) = .empty;
-    var it = resting.iterator();
-    while (it.next()) |entry| {
-        std.debug.print("key: {}\n", .{entry.value_ptr.*});
-        for (0..entry.value_ptr.*) |_| {
-            std.debug.print("value: {}\n", .{entry.key_ptr.*});
-            try positions.append(gpa, entry.key_ptr.*.right);
-        }
-    }
-
-    trace.print(">> POSITIONS: {any}\n", .{positions});
-
-    std.mem.sort(usize, positions.items, {}, std.sort.asc(usize));
-
-    return positions.toOwnedSlice(gpa);
-}
-
-/// Drops every slot column that neither the fixed SLM row nor any moveable
-/// timeframe occupies, compacting the layout to the far left of the compute
-/// zone. placeSlmWithResting over-reserves boundary and gap slots (it cannot
-/// know which ones logicalSchedule will use), so the surplus is trimmed here
-/// instead. Only relative slot order matters downstream, and removing an
-/// always-empty column preserves it. Compacts in place; returns the
-/// shortened slices.
-fn dropUnusedSlots(fixed: []?usize, moveable: [][]?usize) struct { []?usize, [][]?usize } {
-    var w: usize = 0;
-    for (fixed, 0..) |slm, c| {
-        var used = slm != null;
-        if (!used) {
-            for (moveable) |row| {
-                if (row[c] != null) {
-                    used = true;
-                    break;
-                }
-            }
-        }
-        if (!used) continue;
-        fixed[w] = fixed[c];
-        for (moveable) |row| row[w] = row[c];
-        w += 1;
-    }
-    for (moveable) |*row| row.* = row.*[0..w];
-    return .{ fixed[0..w], moveable };
+    return timesteps;
 }
 
 pub fn computeSequence(gpa: std.mem.Allocator, g: *Graph) !Sequence {
@@ -968,19 +772,12 @@ pub fn computeSequence(gpa: std.mem.Allocator, g: *Graph) !Sequence {
     // 4. Make the assumed AOD column order consistent with the SLM layout.
     try orderAodNodes(gpa, g, &aod, slm_order);
 
-    const resting_xs = try computeRestingPositions(gpa, g, aod, slm_order);
-    defer gpa.free(resting_xs);
-    trace.print("\n\n\nresting_xs: {any}\n", .{resting_xs});
+    const timesteps = try activePerTimestep(arena_alloc, g, aod, slm_order);
+    const gaps = try resting.computeRestPositions(arena_alloc, slm_order, timesteps);
+    const fixed = try resting.updateSlm(arena_alloc, slm_order, gaps);
+    const moveable = try logicalSchedule(arena_alloc, aod, fixed, timesteps);
 
-    const fixed = try placeSlmWithResting(arena_alloc, slm_order, resting_xs, aod.nodes.items.len);
-    const moveable = try logicalSchedule(arena_alloc, g, aod, fixed);
-    const trimmed_fixed, const trimmed_moveable = dropUnusedSlots(fixed, moveable);
-
-    return .{
-        .arena = arena,
-        .fixed = trimmed_fixed,
-        .moveable = trimmed_moveable,
-    };
+    return .{ .arena = arena, .fixed = fixed, .moveable = moveable };
 }
 
 test {

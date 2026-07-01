@@ -72,11 +72,18 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addImport("trace", trace_mod);
 
+    const rest_mod = b.addModule("resting", .{
+        .root_source_file = b.path("src/resting.zig"),
+        .target = target,
+    });
+    exe.root_module.addImport("resting", rest_mod);
+
     const route_mod = b.addModule("route", .{
         .root_source_file = b.path("src/route.zig"),
         .target = target,
     });
     route_mod.addImport("trace", trace_mod);
+    route_mod.addImport("resting", rest_mod);
 
     const serialize_mod = b.addModule("serialize", .{
         .root_source_file = b.path("src/serialize.zig"),
