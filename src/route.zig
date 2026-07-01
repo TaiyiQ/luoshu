@@ -2,9 +2,7 @@ const std = @import("std");
 const resting = @import("resting");
 
 // Pass tracing, off by default so the compiler is silent as a library and
-// in tests (the build runner displays any stderr a test step produces,
-// decorated with a misleading "failed command:" line). The driver enables
-// it via trace.enabled (the CLI's -v flag).
+// in tests. The driver enables it via trace.enabled (the CLI's -v flag).
 const trace = @import("trace");
 
 const MIN = -1; // -1 to help k in leastAdmissible start at 0.

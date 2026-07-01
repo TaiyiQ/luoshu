@@ -226,7 +226,6 @@ pub fn computePositions(
 //  t3 |  ·  |  ·  |  ·  |  ·  |  1  |  3  |  7  |  ·  |  ·  |
 //  t4 |  ·  |  ·  |  ·  |  ·  |  ·  |  ·  |  1  |  3  |  7  |
 //     +-----+-----+-----+-----+-----+-----+-----+-----+-----+
-
 test "repeated identical constraint merges to one gap" {
     const gpa = std.testing.allocator;
     var resting: std.ArrayList(Constraint) = .empty;

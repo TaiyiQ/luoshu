@@ -1,4 +1,4 @@
-run circuit="../qasm/mvp.qasm":
+run circuit="./example/ex1/mvp.qasm":
 	zig build run -- {{circuit}} -v --no-draw
 
 test:
