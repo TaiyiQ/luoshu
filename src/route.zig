@@ -620,7 +620,7 @@ fn topoSort(gpa: std.mem.Allocator, g: Graph, aod_set: []const bool, orig: Graph
 // Returns a 2D array containing the moveable AOD qubits per color (timestep).
 // `timesteps[t][i]` is the SLM partner of aod.nodes.items[i] at timestep t, or
 // null if that AOD is resting (precomputed by activePerTimestep).
-fn logicalSchedule(
+fn scheduleTargetQubits(
     arena: std.mem.Allocator,
     aod: Aod,
     slm_slots: []const ?usize,
@@ -632,11 +632,11 @@ fn logicalSchedule(
         if (v) |id| try slm_pos.put(id, t);
     }
 
-    std.debug.print("{any}\n", .{slm_slots});
-    var it = slm_pos.iterator();
-    while (it.next()) |v| {
-        std.debug.print("{}:{}\n", .{ v.key_ptr.*, v.value_ptr.* });
-    }
+    //    std.debug.print("{any}\n", .{slm_slots});
+    //    var it = slm_pos.iterator();
+    //    while (it.next()) |v| {
+    //        std.debug.print("{}:{}\n", .{ v.key_ptr.*, v.value_ptr.* });
+    //    }
 
     var moveable = try arena.alloc([]?usize, timesteps.len);
 
@@ -648,17 +648,17 @@ fn logicalSchedule(
 
         // Phase 1: Place active AODs with their SLM partners.
         const aod_nodes = try aod.reversed(arena);
-        std.debug.print("{any}\n", .{aod_nodes});
-        std.debug.print("match: {any}\n", .{match});
+        //std.debug.print("{any}\n", .{aod_nodes});
+        //std.debug.print("match: {any}\n", .{match});
         for (match, 0..) |slm, qubit_id| {
             if (slm) |id| {
                 if (slm_pos.get(id)) |c| {
-                    std.debug.print("id: {}\n", .{qubit_id});
+                    //std.debug.print("id: {}\n", .{qubit_id});
                     aod_slot[c] = aod_nodes[qubit_id];
                 }
             }
         }
-        std.debug.print("t{} - {any}\n", .{ t, aod_slot });
+        //std.debug.print("t{} - {any}\n", .{ t, aod_slot });
 
         // Phase 2: place resting AODs.
         // nodes[0]=rightmost; nodes[i] must land strictly LEFT of nodes[i-1].
@@ -773,9 +773,9 @@ pub fn computeSequence(gpa: std.mem.Allocator, g: *Graph) !Sequence {
     try orderAodNodes(gpa, g, &aod, slm_order);
 
     const timesteps = try activePerTimestep(arena_alloc, g, aod, slm_order);
-    const gaps = try resting.computeRestPositions(arena_alloc, slm_order, timesteps);
-    const fixed = try resting.updateSlm(arena_alloc, slm_order, gaps);
-    const moveable = try logicalSchedule(arena_alloc, aod, fixed, timesteps);
+    const gaps = try resting.computePositions(arena_alloc, slm_order, timesteps);
+    const fixed = try resting.placeControlQubits(arena_alloc, slm_order, gaps);
+    const moveable = try scheduleTargetQubits(arena_alloc, aod, fixed, timesteps);
 
     return .{ .arena = arena, .fixed = fixed, .moveable = moveable };
 }
@@ -852,7 +852,7 @@ test "snapshots: routed graphs match testdata/" {
 // moveable. A dropped edge is a CZ that never happens; a duplicated one
 // cancels itself (CZ·CZ = identity). The snapshots pin the routed bytes;
 // only this property says what would make them wrong. (Resting AODs only
-// land on slots whose fixed entry is null — see logicalSchedule — so
+// land on slots whose fixed entry is null — see scheduleTargetQubits — so
 // both-non-null is always an intended gate.)
 fn expectSequenceCoversGraph(gpa: std.mem.Allocator, g: *const Graph, seq: *const Sequence) !void {
     var is_fixed = try gpa.alloc(bool, g.n);

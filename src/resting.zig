@@ -142,7 +142,7 @@ fn mergeConstraints(
 }
 
 // Place one null slot per gap into the SLM array at each gap's leftmost valid position (min_slot).
-pub fn updateSlm(
+pub fn placeControlQubits(
     gpa: std.mem.Allocator,
     slm: []const usize,
     gaps: []const Constraint,
@@ -175,7 +175,7 @@ pub fn updateSlm(
 
 // Runs Phase 2 (nearestActive) and Phase 3 (mergeConstraints) across all timesteps,
 // accumulating the set of gap constraints that must hold simultaneously.
-pub fn computeRestPositions(
+pub fn computePositions(
     gpa: std.mem.Allocator,
     slm: []const usize,
     timesteps: []const []const ?usize,
@@ -188,9 +188,7 @@ pub fn computeRestPositions(
     var resting: std.ArrayList(Constraint) = .empty;
     defer resting.deinit(gpa);
 
-    for (timesteps, 0..) |active, t| {
-        std.debug.print("t{}\n", .{t});
-
+    for (timesteps) |active| {
         const intervals = try nearestActive(gpa, slm_map, active);
         defer gpa.free(intervals);
 
@@ -250,7 +248,7 @@ test "non-overlapping constraints accumulate to two gaps" {
     try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 9 }, resting.items[1]);
 }
 
-test "updateSlm inserts nulls at correct positions" {
+test "placeControlQubits inserts nulls at correct positions" {
     const gpa = std.testing.allocator;
     const slm = [_]usize{ 5, 4, 2, 6 };
     // slm has 4 atoms → 5 gap slots (0..4)
@@ -262,7 +260,7 @@ test "updateSlm inserts nulls at correct positions" {
         .{ .min_slot = 4, .max_slot = 4 },
         .{ .min_slot = 4, .max_slot = 4 },
     };
-    const updated = try updateSlm(gpa, &slm, &gaps);
+    const updated = try placeControlQubits(gpa, &slm, &gaps);
     defer gpa.free(updated);
     const expected = [_]?usize{ null, null, 5, 4, 2, null, 6, null, null };
     try std.testing.expectEqualSlices(?usize, &expected, updated);
@@ -286,9 +284,9 @@ test "two adjacent resting slots between each outer atom pair" {
     const t1 = [_]?usize{ 1, 2, null, 3 };
     const t2 = [_]?usize{ 3, null, null, 4 };
     const timesteps = [_][]const ?usize{ &t0, &t1, &t2 };
-    const gaps = try computeRestPositions(gpa, &slm, &timesteps);
+    const gaps = try computePositions(gpa, &slm, &timesteps);
     defer gpa.free(gaps);
-    const updated = try updateSlm(gpa, &slm, gaps);
+    const updated = try placeControlQubits(gpa, &slm, gaps);
     defer gpa.free(updated);
     const expected = [_]?usize{ 1, null, null, 2, null, 3, null, null, 4 };
     try std.testing.expectEqualSlices(?usize, &expected, updated);
@@ -314,9 +312,9 @@ test "resting slots spread across three distinct regions" {
     const t2 = [_]?usize{ 2, 3, null };
     const t3 = [_]?usize{ 3, null, null };
     const timesteps = [_][]const ?usize{ &t0, &t1, &t2, &t3 };
-    const gaps = try computeRestPositions(gpa, &slm, &timesteps);
+    const gaps = try computePositions(gpa, &slm, &timesteps);
     defer gpa.free(gaps);
-    const updated = try updateSlm(gpa, &slm, gaps);
+    const updated = try placeControlQubits(gpa, &slm, gaps);
     defer gpa.free(updated);
     const expected = [_]?usize{ null, 1, null, 2, 3, null, null };
     try std.testing.expectEqualSlices(?usize, &expected, updated);
@@ -344,9 +342,9 @@ test "constraint narrowing produces one slot before and two adjacent at end" {
     const t3 = [_]?usize{ null, null, 2 };
     const t4 = [_]?usize{ 2, null, null };
     const timesteps = [_][]const ?usize{ &t0, &t1, &t2, &t3, &t4 };
-    const gaps = try computeRestPositions(gpa, &slm, &timesteps);
+    const gaps = try computePositions(gpa, &slm, &timesteps);
     defer gpa.free(gaps);
-    const updated = try updateSlm(gpa, &slm, gaps);
+    const updated = try placeControlQubits(gpa, &slm, gaps);
     defer gpa.free(updated);
     const expected = [_]?usize{ null, 1, null, 2, null, null, 3 };
     try std.testing.expectEqualSlices(?usize, &expected, updated);
