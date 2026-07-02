@@ -1,5 +1,8 @@
 const std = @import("std");
 
+// Pass tracing, off by default (see route.zig).
+const trace = @import("trace");
+
 // An active AOD paired with its SLM gate partner at a given timestep.
 // Serves as the boundary marker for resting AODs on either side.
 const Entangle = struct {
@@ -224,6 +227,96 @@ pub fn computePositions(
     }
 
     return try resting.toOwnedSlice(gpa);
+}
+
+// Schedule the moveable qubits: moveable[t][c] holds the AOD qubit sitting at
+// slm_slots[c] during timestep t (null = empty column). aod_nodes lists the
+// AOD qubits in their rigid left-to-right column order; timesteps[t][k] is
+// aod_nodes[k]'s SLM partner at t, or null when it rests.
+//
+// Active AODs sit at their partner's column. Resting AODs park right to left,
+// each in the rightmost free column strictly between its already-placed right
+// neighbour and every active AOD to its left - the same right-hugging policy
+// placeControlQubits used to reserve the null columns, so a reserved column
+// always exists; error.NoRestingSlotAvailable guards that invariant.
+//
+// All allocations, including scratch, come from `arena`; the caller frees
+// them by deiniting it.
+pub fn scheduleTargetQubits(
+    arena: std.mem.Allocator,
+    aod_nodes: []const usize,
+    slm_slots: []const ?usize,
+    timesteps: []const []const ?usize,
+) ![][]?usize {
+    var slm_pos = std.AutoHashMap(usize, usize).init(arena);
+    defer slm_pos.deinit();
+    for (slm_slots, 0..) |v, c| {
+        if (v) |id| try slm_pos.put(id, c);
+    }
+
+    const n = aod_nodes.len;
+    const moveable = try arena.alloc([]?usize, timesteps.len);
+
+    // Column of aod_nodes[k] this timestep; null = not placed (yet).
+    const pos = try arena.alloc(?usize, n);
+
+    // Leftmost admissible column for aod_nodes[k]: strictly right of every
+    // active AOD to its left. Resting AODs further left never constrain -
+    // they are placed later, bounded to our left by their own right bound.
+    const min_col = try arena.alloc(usize, n);
+
+    for (timesteps, 0..) |match, t| {
+        const aod_slot = try arena.alloc(?usize, slm_slots.len);
+        @memset(aod_slot, null);
+        @memset(pos, null);
+
+        // Phase 1: active AODs sit at their SLM partner's column.
+        for (match, 0..) |partner, k| {
+            const id = partner orelse continue;
+            const c = slm_pos.get(id) orelse continue;
+            aod_slot[c] = aod_nodes[k];
+            pos[k] = c;
+        }
+
+        var leftmost: usize = 0;
+        for (0..n) |k| {
+            min_col[k] = leftmost;
+            if (pos[k]) |c| leftmost = @max(leftmost, c + 1);
+        }
+
+        // Phase 2: park resting AODs right to left, so each one's right
+        // neighbour - active or resting - is already placed and bounds it.
+        var k = n;
+        while (k > 0) {
+            k -= 1;
+            if (match[k] != null) continue;
+
+            // The rightmost AOD is unbounded on the right.
+            const max_col = if (k + 1 < n) (pos[k + 1] orelse aod_slot.len) else aod_slot.len;
+
+            // Rightmost free column in [min_col[k], max_col): no fixed atom,
+            // no AOD placed this timestep.
+            var c = max_col;
+            var placed = false;
+            while (c > min_col[k]) {
+                c -= 1;
+                if (slm_slots[c] == null and aod_slot[c] == null) {
+                    aod_slot[c] = aod_nodes[k];
+                    pos[k] = c;
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed) {
+                trace.print("Failed to place resting AOD {d} at time step {d}\n", .{ aod_nodes[k], t });
+                return error.NoRestingSlotAvailable;
+            }
+        }
+
+        moveable[t] = aod_slot;
+    }
+
+    return moveable;
 }
 
 // A constraint is an interval of gap slots (slot k sits just left of slm[k],
