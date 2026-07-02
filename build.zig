@@ -177,7 +177,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit and golden tests");
     const test_mods = [_]*std.Build.Module{
-        arch_mod, assembly_mod, trace_mod, circuit_mod, qasm_mod, schedule_mod, bench_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
+        arch_mod, assembly_mod, trace_mod, circuit_mod, qasm_mod, schedule_mod, bench_mod, rest_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
     };
     for (test_mods) |mod| {
         const t = b.addTest(.{ .root_module = mod });
