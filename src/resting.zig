@@ -37,9 +37,9 @@ const Constraint = struct {
     }
 };
 
-// Phase 2 — for each resting AOD in active[], find the nearest active (gate-engaged)
-// AOD to its left and right using a monotonic stack (LC 739 pattern).
-// slm maps qubit label → SLM array index so each boundary is recorded as an Entangle.
+// Phase 2 - build one Interval per active[] entry: each resting AOD's nearest
+// active (gate-engaged) AOD on both sides, recorded as Entangles via slm
+// (qubit label to SLM array index). A side with no active AOD stays null.
 fn nearestActive(
     gpa: std.mem.Allocator,
     slm: std.AutoHashMap(usize, usize),
@@ -50,17 +50,19 @@ fn nearestActive(
     @memset(result, .{});
 
     var last_active: ?Entangle = null;
-    var stack: std.ArrayList(usize) = .empty; // indices of resting AODs awaiting a right boundary
+    var stack: std.ArrayList(usize) = .empty; // resting AODs awaiting a right boundary
     defer stack.deinit(gpa);
 
     for (active, 0..) |label, j| {
         if (label) |id| {
-            // Active AOD found: resolve all resting AODs that were waiting for a right boundary.
+            // An active AOD is the right boundary of every resting AOD queued
+            // so far, and the left boundary of those that follow.
             const e = Entangle{ .c_idx = slm.get(id).?, .t_idx = j };
             while (stack.pop()) |i| result[i].right = e;
             last_active = e;
         } else {
-            // Resting AOD: record the most recent active AOD as its left boundary.
+            // Resting: the left boundary is already known; the right one
+            // arrives with the next active AOD, so queue for it.
             result[j].left = last_active;
             try stack.append(gpa, j);
         }
@@ -85,20 +87,12 @@ fn heapOrder(_: void, a: Constraint, b: Constraint) std.math.Order {
 
 const Heap = std.PriorityQueue(Constraint, void, heapOrder);
 
-// Phase 3 — LC 1851 offline sweep.
-//
-// Each accumulated gap is a constraint that must be satisfied across all past timesteps.
-// Each new_list entry is a constraint from the current timestep.
-// A new constraint that overlaps an accumulated one means the same physical gap slot can
-// serve both — narrow the accumulated constraint to the intersection.
-// A new constraint with no overlap requires a fresh gap slot.
-//
-// Sort both sides by min_slot. Sweep accumulated gaps left to right; for each gap G:
-//   push every new C with min_slot(C) <= max_slot(G)  — C starts before G ends, could overlap,
-//   lazily discard heap top where max_slot(C) < min_slot(G) — C ended before G started,
-//   pop the narrowest remaining C as the match (consumed — one physical slot per AOD).
-// Leftover new constraints become additional gaps in the accumulator.
-// Merges gaps from the current timestep into resting in place.
+// Phase 3 - merge the current timestep's parking constraints into the
+// accumulated set. Each accumulated entry reserves one physical gap slot,
+// narrowed to the interval that satisfies every timestep sharing it: AODs
+// rest there at different times, so an overlapping new constraint shares
+// the slot (intersect), and a non-overlapping one reserves a fresh slot.
+// Both sides sweep sorted by min_slot. Updates resting in place.
 fn mergeConstraints(
     gpa: std.mem.Allocator,
     resting: *std.ArrayList(Constraint),
@@ -118,12 +112,20 @@ fn mergeConstraints(
 
     var i: usize = 0;
     for (sorted_rest) |slot| {
+        // Candidates: every new constraint that starts before this entry ends.
         while (i < sorted_gaps.len and sorted_gaps[i].min_slot <= slot.max_slot) : (i += 1) {
             try heap.push(gpa, sorted_gaps[i]);
         }
+
+        // A candidate ending before this entry starts can never match a later
+        // entry either (they start even further right): flush it as a fresh gap.
         while (heap.peek()) |top| {
-            if (top.max_slot < slot.min_slot) _ = heap.pop() else break;
+            if (top.max_slot >= slot.min_slot) break;
+            try result.append(gpa, heap.pop().?);
         }
+
+        // Match the narrowest candidate - wider ones have more entries left to
+        // fall back on. Popping consumes it: a slot holds one AOD at a time.
         if (heap.pop()) |best| {
             try result.append(gpa, slot.intersect(best));
         } else {
@@ -131,17 +133,21 @@ fn mergeConstraints(
         }
     }
 
-    // Gaps pushed to the heap but never matched: no resting constraint covered them.
+    // Candidates pushed but never matched: no accumulated entry covered them.
     while (heap.pop()) |c| try result.append(gpa, c);
 
-    // Gaps never pushed: their min_slot was beyond every resting constraint's max_slot.
+    // Candidates never pushed: they start beyond every accumulated entry's end.
     while (i < sorted_gaps.len) : (i += 1) try result.append(gpa, sorted_gaps[i]);
 
     resting.deinit(gpa);
     resting.* = result;
 }
 
-// Place one null slot per gap into the SLM array at each gap's leftmost valid position (min_slot).
+// Place one null slot per gap into the SLM array, adjacent to a bounding
+// engaged partner: immediately left of the right boundary atom (max_slot)
+// when one exists, else immediately right of the left boundary (min_slot).
+// Keeps resting AODs hugging their active neighbour instead of drifting to
+// the array edge, matching scheduleTargetQubits' rightmost-slot preference.
 pub fn placeControlQubits(
     gpa: std.mem.Allocator,
     slm: []const usize,
@@ -155,8 +161,11 @@ pub fn placeControlQubits(
     @memset(nulls, 0);
     defer gpa.free(nulls);
 
-    // Each gap parks at its leftmost valid slot; tally how many land at each slot index.
-    for (gaps) |gap| nulls[gap.min_slot] += 1;
+    // max_slot == n means no right boundary ever constrained this gap.
+    for (gaps) |gap| {
+        const slot = if (gap.max_slot < n) gap.max_slot else gap.min_slot;
+        nulls[slot] += 1;
+    }
 
     var result: std.ArrayList(?usize) = .empty;
     errdefer result.deinit(gpa);
@@ -217,15 +226,14 @@ pub fn computePositions(
     return try resting.toOwnedSlice(gpa);
 }
 
-//     +-----+-----+-----+-----+-----+-----+-----+-----+-----+
-// SLM |  ·  |  ·  |  5  |  4  |  2  |  ·  |  6  |  ·  |  ·  |
-//     +-----+-----+-----+-----+-----+-----+-----+-----+-----+
-//  t0 |  1  |  3  |  7  |  ·  |  ·  |  ·  |  ·  |  ·  |  ·  |
-//  t1 |  ·  |  1  |  3  |  7  |  ·  |  ·  |  ·  |  ·  |  ·  |
-//  t2 |  ·  |  1  |  ·  |  3  |  7  |  ·  |  ·  |  ·  |  ·  |
-//  t3 |  ·  |  ·  |  ·  |  ·  |  1  |  3  |  7  |  ·  |  ·  |
-//  t4 |  ·  |  ·  |  ·  |  ·  |  ·  |  ·  |  1  |  3  |  7  |
-//     +-----+-----+-----+-----+-----+-----+-----+-----+-----+
+// A constraint is an interval of gap slots (slot k sits just left of slm[k],
+// slot n after the last atom). The same interval demanded at two different
+// timesteps shares one physical slot - the AODs occupy it at different times.
+//
+// slots:   0   1   2
+// acc     [-----]          {0,1}
+// new     [-----]          {0,1}
+// merged  [-----]          same interval: one shared gap
 test "repeated identical constraint merges to one gap" {
     const gpa = std.testing.allocator;
     var resting: std.ArrayList(Constraint) = .empty;
@@ -236,6 +244,13 @@ test "repeated identical constraint merges to one gap" {
     try std.testing.expectEqual(Constraint{ .min_slot = 0, .max_slot = 1 }, resting.items[0]);
 }
 
+// Disjoint intervals can never share a physical slot: the new constraint
+// survives the sweep as its own gap instead of narrowing the accumulated one.
+//
+// slots:   0   1   2   3   4   5   6   7   8   9
+// acc     [-]
+// new                 [-------------------------]
+// merged  [-]         [-------------------------]   disjoint: two gaps
 test "non-overlapping constraints accumulate to two gaps" {
     const gpa = std.testing.allocator;
     var resting: std.ArrayList(Constraint) = .empty;
@@ -247,11 +262,93 @@ test "non-overlapping constraints accumulate to two gaps" {
     try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 9 }, resting.items[1]);
 }
 
+// Partially overlapping intervals share their common slots: the accumulated
+// constraint narrows to the intersection and one physical slot serves both
+// timesteps. Here the accumulated interval leads (starts further left).
+//
+// slots:   0   1   2   3   4   5   6   7   8   9
+// acc     [---------------------]
+// new                 [-------------------------]
+// merged              [---------]                   overlap: one narrowed gap
+test "overlap with acc leading narrows to the intersection" {
+    const gpa = std.testing.allocator;
+    var resting: std.ArrayList(Constraint) = .empty;
+    defer resting.deinit(gpa);
+    try resting.append(gpa, .{ .min_slot = 0, .max_slot = 5 });
+    try mergeConstraints(gpa, &resting, &.{.{ .min_slot = 3, .max_slot = 9 }});
+    try std.testing.expectEqual(@as(usize, 1), resting.items.len);
+    try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 5 }, resting.items[0]);
+}
+
+// The mirror case: the new interval leads. Intersection is symmetric, so
+// the merged gap is the same.
+//
+// slots:   0   1   2   3   4   5   6   7   8   9
+// acc                 [-------------------------]
+// new     [---------------------]
+// merged              [---------]                   overlap: one narrowed gap
+test "overlap with new leading narrows to the intersection" {
+    const gpa = std.testing.allocator;
+    var resting: std.ArrayList(Constraint) = .empty;
+    defer resting.deinit(gpa);
+    try resting.append(gpa, .{ .min_slot = 3, .max_slot = 9 });
+    try mergeConstraints(gpa, &resting, &.{.{ .min_slot = 0, .max_slot = 5 }});
+    try std.testing.expectEqual(@as(usize, 1), resting.items.len);
+    try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 5 }, resting.items[0]);
+}
+
+// Inclusive intervals that touch at a single slot still overlap: the shared
+// endpoint is a slot both can use, so the merge narrows to exactly it.
+//
+// slots:   0   1   2   3   4   5   6   7   8   9
+// acc     [-------------]
+// new                 [-------------------------]
+// merged              [-]                           touch at 3: one gap
+test "intervals touching at one slot narrow to it" {
+    const gpa = std.testing.allocator;
+    var resting: std.ArrayList(Constraint) = .empty;
+    defer resting.deinit(gpa);
+    try resting.append(gpa, .{ .min_slot = 0, .max_slot = 3 });
+    try mergeConstraints(gpa, &resting, &.{.{ .min_slot = 3, .max_slot = 9 }});
+    try std.testing.expectEqual(@as(usize, 1), resting.items.len);
+    try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 3 }, resting.items[0]);
+}
+
+// Adjacent intervals share no slot - slot 3 and slot 4 are different
+// physical positions - so this is the disjoint case, not an overlap:
+// the new constraint stays its own gap.
+//
+// slots:   0   1   2   3   4   5   6   7   8   9
+// acc     [-------------]
+// new                     [---------------------]
+// merged  [-------------] [---------------------]   adjacent: two gaps
+test "adjacent intervals without a shared slot stay two gaps" {
+    const gpa = std.testing.allocator;
+    var resting: std.ArrayList(Constraint) = .empty;
+    defer resting.deinit(gpa);
+    try resting.append(gpa, .{ .min_slot = 0, .max_slot = 3 });
+    try mergeConstraints(gpa, &resting, &.{.{ .min_slot = 4, .max_slot = 9 }});
+    try std.testing.expectEqual(@as(usize, 2), resting.items.len);
+    try std.testing.expectEqual(Constraint{ .min_slot = 0, .max_slot = 3 }, resting.items[0]);
+    try std.testing.expectEqual(Constraint{ .min_slot = 4, .max_slot = 9 }, resting.items[1]);
+}
+
+// The gap list below is computePositions' merged output for this walk, so
+// one can see the generated output format of the gaps. Each gap materializes
+// as a null adjacent to its bounding partner.
+//
+//     +-----+-----+-----+-----+-----+-----+-----+-----+-----+
+// SLM |  ·  |  ·  |  5  |  4  |  2  |  ·  |  6  |  ·  |  ·  |
+//     +-----+-----+-----+-----+-----+-----+-----+-----+-----+
+//  t0 |  1  |  3  |  7  |  ·  |  ·  |  ·  |  ·  |  ·  |  ·  |
+//  t1 |  ·  |  1  |  3  |  7  |  ·  |  ·  |  ·  |  ·  |  ·  |
+//  t2 |  ·  |  1  |  ·  |  3  |  7  |  ·  |  ·  |  ·  |  ·  |
+//  t3 |  ·  |  ·  |  ·  |  ·  |  1  |  3  |  7  |  ·  |  ·  |
+//  t4 |  ·  |  ·  |  ·  |  ·  |  ·  |  ·  |  1  |  3  |  7  |
+//     +-----+-----+-----+-----+-----+-----+-----+-----+-----+
 test "placeControlQubits inserts nulls at correct positions" {
     const gpa = std.testing.allocator;
     const slm = [_]usize{ 5, 4, 2, 6 };
-    // slm has 4 atoms → 5 gap slots (0..4)
-    // {null,0} → min=0, max=0;  {2,3} → min=3, max=3;  {3,null} → min=4, max=4
     const gaps = [_]Constraint{
         .{ .min_slot = 0, .max_slot = 0 },
         .{ .min_slot = 0, .max_slot = 0 },
@@ -278,7 +375,6 @@ test "placeControlQubits inserts nulls at correct positions" {
 test "two adjacent resting slots between each outer atom pair" {
     const gpa = std.testing.allocator;
     const slm = [_]usize{ 1, 2, 3, 4 };
-    //const aod = [_]usize{ 5, 6, 7, 8 };
     const t0 = [_]?usize{ 1, null, null, 2 };
     const t1 = [_]?usize{ 1, 2, null, 3 };
     const t2 = [_]?usize{ 3, null, null, 4 };
@@ -305,7 +401,6 @@ test "two adjacent resting slots between each outer atom pair" {
 test "resting slots spread across three distinct regions" {
     const gpa = std.testing.allocator;
     const slm = [_]usize{ 1, 2, 3 };
-    //const aod = [_]usize{ 4, 5, 6 };
     const t0 = [_]?usize{ null, 1, 2 };
     const t1 = [_]?usize{ 1, null, 2 };
     const t2 = [_]?usize{ 2, 3, null };
@@ -319,22 +414,22 @@ test "resting slots spread across three distinct regions" {
     try std.testing.expectEqualSlices(?usize, &expected, updated);
 }
 
-// Broad constraints are progressively narrowed across timesteps, converging to
-// one slot before atom 1, one between 1-2, and two adjacent slots between 2-3.
+// Broad constraints are progressively narrowed across timesteps. Each merged
+// gap parks adjacent to its bounding partner: the two right-bounded gaps land
+// left of atom 2, the two left-bounded gaps land right of atom 2.
 //
 //     +-----+-----+-----+-----+-----+-----+-----+
-// SLM |  ·  |  1  |  ·  |  2  |  ·  |  ·  |  3  |
+// SLM |  1  |  ·  |  ·  |  2  |  ·  |  ·  |  3  |
 //     +-----+-----+-----+-----+-----+-----+-----+
-//  t0 |  4  |  ·  |  ·  |  5  |  ·  |  ·  |  6  |
-//  t1 |  ·  |  4  |  5  |  ·  |  ·  |  ·  |  6  |
-//  t2 |  ·  |  4  |  5  |  6  |  ·  |  ·  |  ·  |
-//  t3 |  4  |  ·  |  5  |  6  |  ·  |  ·  |  ·  |
+//  t0 |  ·  |  ·  |  4  |  5  |  ·  |  ·  |  6  |
+//  t1 |  4  |  ·  |  ·  |  ·  |  ·  |  5  |  6  |
+//  t2 |  4  |  ·  |  5  |  6  |  ·  |  ·  |  ·  |
+//  t3 |  ·  |  4  |  5  |  6  |  ·  |  ·  |  ·  |
 //  t4 |  ·  |  ·  |  ·  |  4  |  5  |  6  |  ·  |
 //     +-----+-----+-----+-----+-----+-----+-----+
-test "constraint narrowing produces one slot before and two adjacent at end" {
+test "constraint narrowing parks each slot adjacent to its bounding partner" {
     const gpa = std.testing.allocator;
     const slm = [_]usize{ 1, 2, 3 };
-    //const aod = [_]usize{ 4, 5, 6 };
     const t0 = [_]?usize{ null, 2, 3 };
     const t1 = [_]?usize{ 1, null, 3 };
     const t2 = [_]?usize{ 1, null, 2 };
@@ -345,6 +440,38 @@ test "constraint narrowing produces one slot before and two adjacent at end" {
     defer gpa.free(gaps);
     const updated = try placeControlQubits(gpa, &slm, gaps);
     defer gpa.free(updated);
-    const expected = [_]?usize{ null, 1, null, 2, null, null, 3 };
+    const expected = [_]?usize{ 1, null, null, 2, null, null, 3 };
     try std.testing.expectEqualSlices(?usize, &expected, updated);
+}
+
+// Two AODs rest simultaneously between an adjacent active pair at the last
+// timestep. The t3 gaps ({5,5} twice) overlap no accumulated gap and must
+// survive the sweep as fresh gaps.
+//
+//     +-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+// SLM |  ·  |  0  |  8  |  2  |  6  |  5  |  ·  |  ·  |  4  |  ·  |
+//     +-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+//  t0 |  1  |  3  |  9  |  7  |  ·  |  ·  |  ·  |  ·  |  ·  |  ·  |
+//  t1 |  ·  |  1  |  3  |  ·  |  9  |  7  |  ·  |  ·  |  ·  |  ·  |
+//  t2 |  ·  |  ·  |  ·  |  1  |  ·  |  3  |  ·  |  ·  |  9  |  7  |
+//  t3 |  ·  |  ·  |  ·  |  ·  |  ·  |  1  |  3  |  9  |  7  |  ·  |
+//     +-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+
+test "gaps flushed mid-sweep survive as fresh constraints" {
+    const gpa = std.testing.allocator;
+    const slm = [_]usize{ 0, 8, 2, 6, 5, 4 };
+    const t0 = [_]?usize{ null, 0, 8, 2 };
+    const t1 = [_]?usize{ 0, 8, 6, 5 };
+    const t2 = [_]?usize{ 2, 5, 4, null };
+    const t3 = [_]?usize{ 5, null, null, 4 };
+    const timesteps = [_][]const ?usize{ &t0, &t1, &t2, &t3 };
+    const gaps = try computePositions(gpa, &slm, &timesteps);
+    defer gpa.free(gaps);
+    const updated = try placeControlQubits(gpa, &slm, gaps);
+    defer gpa.free(updated);
+    const expected = [_]?usize{ null, 0, 8, 2, 6, 5, null, null, 4, null };
+    try std.testing.expectEqualSlices(?usize, &expected, updated);
+}
+
+test {
+    std.testing.refAllDecls(@This());
 }

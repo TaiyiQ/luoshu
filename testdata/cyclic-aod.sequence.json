@@ -8,10 +8,10 @@
   "max_color": 1
 },
 {
-  "slm_slots": [null, 1, 3, 2],
+  "slm_slots": [1, 3, null, 2],
   "aod_slots_per_color": [
-    [null, 5, 4, null],
-    [5, null, null, 4]
+    [5, 4, null, null],
+    [null, null, 5, 4]
   ],
   "max_color": 1
 }

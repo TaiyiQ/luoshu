@@ -677,9 +677,18 @@ fn scheduleTargetQubits(
                 }
             }
 
-            // Scan right-to-left: pick rightmost free null slot before max_pos.
+            // Lower bound: must land strictly right of every left-neighbour
+            // AOD already placed (the active ones from phase 1).
+            var min_pos: usize = 0;
+            for (aod.nodes.items[i + 1 ..]) |left_aod| {
+                for (aod_slot, 0..) |placed, c| {
+                    if (placed == left_aod and c + 1 > min_pos) min_pos = c + 1;
+                }
+            }
+
+            // Scan right-to-left: pick rightmost free null slot in [min_pos, max_pos).
             var placed = false;
-            if (max_pos > 0) {
+            if (max_pos > min_pos) {
                 var gap_ptr: usize = max_pos - 1;
                 while (true) {
                     if (slm_slots[gap_ptr] == null and aod_slot[gap_ptr] == null) {
@@ -687,7 +696,7 @@ fn scheduleTargetQubits(
                         placed = true;
                         break;
                     }
-                    if (gap_ptr == 0) break;
+                    if (gap_ptr == min_pos) break;
                     gap_ptr -= 1;
                 }
             }
@@ -792,6 +801,7 @@ pub const SnapshotKind = enum {
     grid,
     ghz,
     qft,
+    graph_10_0,
 };
 
 pub fn buildSnapshotGraph(kind: SnapshotKind, gpa: std.mem.Allocator) !Graph {
@@ -802,6 +812,7 @@ pub fn buildSnapshotGraph(kind: SnapshotKind, gpa: std.mem.Allocator) !Graph {
         .grid => buildGridGraph(gpa),
         .ghz => buildGhzGraph(gpa),
         .qft => buildQftGraph(gpa),
+        .graph_10_0 => buildGraph10Graph(gpa),
     };
 }
 
@@ -836,6 +847,12 @@ pub const snapshot_cases = [_]SnapshotCase{
 
     // K5: SLM set is K4
     .{ .kind = .qft, .path = "testdata/qft.json", .known_incomplete = true },
+
+    // testdata/graph-10-0.qasm: the only known graph exercising the
+    // mid-sweep flush in resting.mergeConstraints (two AODs rest between
+    // an adjacent active pair at the last timestep). Triangles {0,3,8}
+    // and {4,6,9} force SLM-SLM edges, so the cover is incomplete.
+    .{ .kind = .graph_10_0, .path = "testdata/graph-10-0.json", .known_incomplete = true },
 };
 
 test "snapshots: routed graphs match testdata/" {
@@ -1039,6 +1056,27 @@ pub fn buildQftGraph(gpa: std.mem.Allocator) !Graph {
     try g.addEdge(2, 3);
     try g.addEdge(2, 4);
     try g.addEdge(3, 4);
+    return g;
+}
+
+/// Interaction graph of testdata/graph-10-0.qasm, edges in gate order.
+pub fn buildGraph10Graph(gpa: std.mem.Allocator) !Graph {
+    var g = try Graph.init(gpa, 10, false);
+    try g.addEdge(0, 1);
+    try g.addEdge(0, 3);
+    try g.addEdge(0, 8);
+    try g.addEdge(1, 2);
+    try g.addEdge(1, 5);
+    try g.addEdge(3, 8);
+    try g.addEdge(3, 5);
+    try g.addEdge(8, 9);
+    try g.addEdge(2, 7);
+    try g.addEdge(2, 6);
+    try g.addEdge(7, 5);
+    try g.addEdge(7, 4);
+    try g.addEdge(4, 9);
+    try g.addEdge(4, 6);
+    try g.addEdge(9, 6);
     return g;
 }
 
