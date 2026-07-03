@@ -76,6 +76,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/resting.zig"),
         .target = target,
     });
+    rest_mod.addImport("trace", trace_mod);
     exe.root_module.addImport("resting", rest_mod);
 
     const route_mod = b.addModule("route", .{

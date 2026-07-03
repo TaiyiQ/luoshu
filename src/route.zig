@@ -159,13 +159,6 @@ const Aod = struct {
         gpa.free(s.set);
         s.nodes.deinit(gpa);
     }
-
-    // TODO: To be removed.
-    fn reversed(s: *const Aod, gpa: std.mem.Allocator) ![]usize {
-        const out = try gpa.dupe(usize, s.nodes.items);
-        std.mem.reverse(usize, out);
-        return out;
-    }
 };
 
 const AodConstraints = struct {
@@ -615,116 +608,16 @@ fn topoSort(gpa: std.mem.Allocator, g: Graph, aod_set: []const bool, orig: Graph
     return order.toOwnedSlice(gpa);
 }
 
-// Returns a 2D array containing the moveable AOD qubits per color (timestep).
-// `timesteps[t][i]` is the SLM partner of aod.nodes.items[i] at timestep t, or
-// null if that AOD is resting (precomputed by activePerTimestep).
-fn scheduleTargetQubits(
-    arena: std.mem.Allocator,
-    aod: Aod,
-    slm_slots: []const ?usize,
-    timesteps: []const []const ?usize,
-) ![][]?usize {
-    var slm_pos = std.AutoHashMap(usize, usize).init(arena);
-    defer slm_pos.deinit();
-    for (slm_slots, 0..) |v, t| {
-        if (v) |id| try slm_pos.put(id, t);
-    }
-
-    //    std.debug.print("{any}\n", .{slm_slots});
-    //    var it = slm_pos.iterator();
-    //    while (it.next()) |v| {
-    //        std.debug.print("{}:{}\n", .{ v.key_ptr.*, v.value_ptr.* });
-    //    }
-
-    var moveable = try arena.alloc([]?usize, timesteps.len);
-
-    for (timesteps, 0..) |match, t| {
-        // NOTE: Maybe we can use the length of the arch that
-        // is known at comptime, and store this on the stack instead.
-        const aod_slot = try arena.alloc(?usize, slm_slots.len);
-        @memset(aod_slot, null);
-
-        // Phase 1: Place active AODs with their SLM partners.
-        const aod_nodes = try aod.reversed(arena);
-        //std.debug.print("{any}\n", .{aod_nodes});
-        //std.debug.print("match: {any}\n", .{match});
-        for (match, 0..) |slm, qubit_id| {
-            if (slm) |id| {
-                if (slm_pos.get(id)) |c| {
-                    //std.debug.print("id: {}\n", .{qubit_id});
-                    aod_slot[c] = aod_nodes[qubit_id];
-                }
-            }
-        }
-        //std.debug.print("t{} - {any}\n", .{ t, aod_slot });
-
-        // Phase 2: place resting AODs.
-        // nodes[0]=rightmost; nodes[i] must land strictly LEFT of nodes[i-1].
-        // match[] is indexed against aod_nodes (reversed, left-to-right), so
-        // aod.nodes.items[i] corresponds to match[match.len - 1 - i].
-        for (aod.nodes.items, 0..) |v, i| {
-            if (match[match.len - 1 - i] != null) continue;
-
-            // Upper bound: must be strictly left of our right-neighbour's slot.
-            var max_pos: usize = aod_slot.len; // i==0 has no right neighbour
-            if (i > 0) {
-                const right_aod = aod.nodes.items[i - 1];
-                for (aod_slot, 0..) |placed, c| {
-                    if (placed == right_aod) {
-                        max_pos = c; // must land in [0, max_pos)
-                        break;
-                    }
-                }
-            }
-
-            // Lower bound: must land strictly right of every left-neighbour
-            // AOD already placed (the active ones from phase 1).
-            var min_pos: usize = 0;
-            for (aod.nodes.items[i + 1 ..]) |left_aod| {
-                for (aod_slot, 0..) |placed, c| {
-                    if (placed == left_aod and c + 1 > min_pos) min_pos = c + 1;
-                }
-            }
-
-            // Scan right-to-left: pick rightmost free null slot in [min_pos, max_pos).
-            var placed = false;
-            if (max_pos > min_pos) {
-                var gap_ptr: usize = max_pos - 1;
-                while (true) {
-                    if (slm_slots[gap_ptr] == null and aod_slot[gap_ptr] == null) {
-                        aod_slot[gap_ptr] = v;
-                        placed = true;
-                        break;
-                    }
-                    if (gap_ptr == min_pos) break;
-                    gap_ptr -= 1;
-                }
-            }
-
-            if (!placed) {
-                trace.print("Failed to place resting AOD {d} at time step {d}\n", .{ v, t });
-                return error.NoRestingSlotAvailable;
-            }
-        }
-
-        moveable[t] = aod_slot;
-        //trace.print("{any}\n", .{aod_slot});
-    }
-
-    return moveable;
-}
-
+// `timesteps[t][k]` is the SLM partner of aod_nodes[k] (left-to-right column
+// order) at timestep t, or null if that AOD is resting.
 fn activePerTimestep(
     gpa: std.mem.Allocator,
     g: *Graph,
-    aod: Aod,
+    aod_nodes: []const usize,
     slm_order: []const usize,
 ) ![]const []const ?usize {
     const max_c = try g.maxColor();
     const steps = @as(usize, @intCast(max_c + 1));
-
-    const aod_nodes = try aod.reversed(gpa);
-    defer gpa.free(aod_nodes);
 
     const timesteps = try gpa.alloc([]?usize, steps);
     errdefer gpa.free(timesteps);
@@ -779,10 +672,15 @@ pub fn computeSequence(gpa: std.mem.Allocator, g: *Graph) !Sequence {
     // 4. Make the assumed AOD column order consistent with the SLM layout.
     try orderAodNodes(gpa, g, &aod, slm_order);
 
-    const timesteps = try activePerTimestep(arena_alloc, g, aod, slm_order);
+    // aod.nodes[0] is the rightmost column; everything downstream works with
+    // the physical left-to-right order.
+    const aod_lr = try arena_alloc.dupe(usize, aod.nodes.items);
+    std.mem.reverse(usize, aod_lr);
+
+    const timesteps = try activePerTimestep(arena_alloc, g, aod_lr, slm_order);
     const gaps = try resting.computePositions(arena_alloc, slm_order, timesteps);
     const fixed = try resting.placeControlQubits(arena_alloc, slm_order, gaps);
-    const moveable = try scheduleTargetQubits(arena_alloc, aod, fixed, timesteps);
+    const moveable = try resting.scheduleTargetQubits(arena_alloc, aod_lr, fixed, timesteps);
 
     return .{ .arena = arena, .fixed = fixed, .moveable = moveable };
 }
@@ -867,8 +765,8 @@ test "snapshots: routed graphs match testdata/" {
 // moveable. A dropped edge is a CZ that never happens; a duplicated one
 // cancels itself (CZ·CZ = identity). The snapshots pin the routed bytes;
 // only this property says what would make them wrong. (Resting AODs only
-// land on slots whose fixed entry is null — see scheduleTargetQubits — so
-// both-non-null is always an intended gate.)
+// land on slots whose fixed entry is null — see resting.scheduleTargetQubits
+// — so both-non-null is always an intended gate.)
 fn expectSequenceCoversGraph(gpa: std.mem.Allocator, g: *const Graph, seq: *const Sequence) !void {
     var is_fixed = try gpa.alloc(bool, g.n);
     defer gpa.free(is_fixed);

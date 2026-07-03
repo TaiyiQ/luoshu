@@ -1,4 +1,14 @@
+//! Resting-AOD parking: reserve gap slots for AODs that sit out a timestep
+//! (computePositions), materialize them as nulls in the SLM array
+//! (placeControlQubits), and park the AODs into them per timestep
+//! (scheduleTargetQubits).
+//!
+//! Every function allocates from a caller-owned arena - scratch included,
+//! nothing is freed individually. The caller reclaims everything by
+//! deiniting the arena (route.Sequence owns it in production).
+
 const std = @import("std");
+const trace = @import("trace");
 
 // An active AOD paired with its SLM gate partner at a given timestep.
 // Serves as the boundary marker for resting AODs on either side.
@@ -41,17 +51,16 @@ const Constraint = struct {
 // active (gate-engaged) AOD on both sides, recorded as Entangles via slm
 // (qubit label to SLM array index). A side with no active AOD stays null.
 fn nearestActive(
-    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
     slm: std.AutoHashMap(usize, usize),
     active: []const ?usize,
 ) ![]Interval {
     const n = active.len;
-    const result = try gpa.alloc(Interval, n);
+    const result = try arena.alloc(Interval, n);
     @memset(result, .{});
 
     var last_active: ?Entangle = null;
     var stack: std.ArrayList(usize) = .empty; // resting AODs awaiting a right boundary
-    defer stack.deinit(gpa);
 
     for (active, 0..) |label, j| {
         if (label) |id| {
@@ -64,15 +73,15 @@ fn nearestActive(
             // Resting: the left boundary is already known; the right one
             // arrives with the next active AOD, so queue for it.
             result[j].left = last_active;
-            try stack.append(gpa, j);
+            try stack.append(arena, j);
         }
     }
 
     return result;
 }
 
-fn sortedCopy(gpa: std.mem.Allocator, items: []const Constraint) ![]Constraint {
-    const copy = try gpa.dupe(Constraint, items);
+fn sortedCopy(arena: std.mem.Allocator, items: []const Constraint) ![]Constraint {
+    const copy = try arena.dupe(Constraint, items);
     std.mem.sort(Constraint, copy, {}, struct {
         fn lt(_: void, a: Constraint, b: Constraint) bool {
             return a.min_slot < b.min_slot;
@@ -94,52 +103,45 @@ const Heap = std.PriorityQueue(Constraint, void, heapOrder);
 // the slot (intersect), and a non-overlapping one reserves a fresh slot.
 // Both sides sweep sorted by min_slot. Updates resting in place.
 fn mergeConstraints(
-    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
     resting: *std.ArrayList(Constraint),
     gaps: []const Constraint,
 ) !void {
-    const sorted_rest = try sortedCopy(gpa, resting.items);
-    defer gpa.free(sorted_rest);
-
-    const sorted_gaps = try sortedCopy(gpa, gaps);
-    defer gpa.free(sorted_gaps);
+    const sorted_rest = try sortedCopy(arena, resting.items);
+    const sorted_gaps = try sortedCopy(arena, gaps);
 
     var heap: Heap = .empty;
-    defer heap.deinit(gpa);
-
     var result: std.ArrayList(Constraint) = .empty;
-    errdefer result.deinit(gpa);
 
     var i: usize = 0;
     for (sorted_rest) |slot| {
         // Candidates: every new constraint that starts before this entry ends.
         while (i < sorted_gaps.len and sorted_gaps[i].min_slot <= slot.max_slot) : (i += 1) {
-            try heap.push(gpa, sorted_gaps[i]);
+            try heap.push(arena, sorted_gaps[i]);
         }
 
         // A candidate ending before this entry starts can never match a later
         // entry either (they start even further right): flush it as a fresh gap.
         while (heap.peek()) |top| {
             if (top.max_slot >= slot.min_slot) break;
-            try result.append(gpa, heap.pop().?);
+            try result.append(arena, heap.pop().?);
         }
 
         // Match the narrowest candidate - wider ones have more entries left to
         // fall back on. Popping consumes it: a slot holds one AOD at a time.
         if (heap.pop()) |best| {
-            try result.append(gpa, slot.intersect(best));
+            try result.append(arena, slot.intersect(best));
         } else {
-            try result.append(gpa, slot);
+            try result.append(arena, slot);
         }
     }
 
     // Candidates pushed but never matched: no accumulated entry covered them.
-    while (heap.pop()) |c| try result.append(gpa, c);
+    while (heap.pop()) |c| try result.append(arena, c);
 
     // Candidates never pushed: they start beyond every accumulated entry's end.
-    while (i < sorted_gaps.len) : (i += 1) try result.append(gpa, sorted_gaps[i]);
+    while (i < sorted_gaps.len) : (i += 1) try result.append(arena, sorted_gaps[i]);
 
-    resting.deinit(gpa);
     resting.* = result;
 }
 
@@ -149,7 +151,7 @@ fn mergeConstraints(
 // Keeps resting AODs hugging their active neighbour instead of drifting to
 // the array edge, matching scheduleTargetQubits' rightmost-slot preference.
 pub fn placeControlQubits(
-    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
     slm: []const usize,
     gaps: []const Constraint,
 ) ![]?usize {
@@ -157,9 +159,8 @@ pub fn placeControlQubits(
 
     // n atoms create n+1 gap slots: one before each atom plus one after the last.
     // nulls[i] = number of null slots to insert before slm[i]; nulls[n] = after slm[n-1].
-    const nulls = try gpa.alloc(usize, n + 1);
+    const nulls = try arena.alloc(usize, n + 1);
     @memset(nulls, 0);
-    defer gpa.free(nulls);
 
     // max_slot == n means no right boundary ever constrained this gap.
     for (gaps) |gap| {
@@ -168,41 +169,36 @@ pub fn placeControlQubits(
     }
 
     var result: std.ArrayList(?usize) = .empty;
-    errdefer result.deinit(gpa);
 
     // Insert the nulls parked at slot i (before slm[i]), then the atom itself.
     for (0..n) |i| {
-        for (0..nulls[i]) |_| try result.append(gpa, null);
-        try result.append(gpa, slm[i]);
+        for (0..nulls[i]) |_| try result.append(arena, null);
+        try result.append(arena, slm[i]);
     }
 
     // Slot n sits after the last atom; flush any nulls parked there.
-    for (0..nulls[n]) |_| try result.append(gpa, null);
+    for (0..nulls[n]) |_| try result.append(arena, null);
 
-    return result.toOwnedSlice(gpa);
+    return result.toOwnedSlice(arena);
 }
 
 // Runs Phase 2 (nearestActive) and Phase 3 (mergeConstraints) across all timesteps,
 // accumulating the set of gap constraints that must hold simultaneously.
 pub fn computePositions(
-    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
     slm: []const usize,
     timesteps: []const []const ?usize,
 ) ![]Constraint {
     // Build label→index map once; passed into nearestActive each timestep.
-    var slm_map = std.AutoHashMap(usize, usize).init(gpa);
-    defer slm_map.deinit();
+    var slm_map = std.AutoHashMap(usize, usize).init(arena);
     for (slm, 0..) |label, i| try slm_map.put(label, i);
 
     var resting: std.ArrayList(Constraint) = .empty;
-    defer resting.deinit(gpa);
 
     for (timesteps) |active| {
-        const intervals = try nearestActive(gpa, slm_map, active);
-        defer gpa.free(intervals);
+        const intervals = try nearestActive(arena, slm_map, active);
 
         var gaps: std.ArrayList(Constraint) = .empty;
-        defer gaps.deinit(gpa);
 
         for (intervals, 0..) |iv, i| {
             // Skip gate-engaged AODs, only park resting ones
@@ -213,17 +209,103 @@ pub fn computePositions(
 
             // Slot just after the left boundary atom, or 0 if unbounded.
             // Slot of the right boundary atom itself, or slm.len if unbounded.
-            try gaps.append(gpa, .{
+            try gaps.append(arena, .{
                 .min_slot = if (iv.left) |e| e.c_idx + 1 else 0,
                 .max_slot = if (iv.right) |e| e.c_idx else slm.len,
             });
         }
 
         // Update the resting position with new gaps for each timestep.
-        try mergeConstraints(gpa, &resting, gaps.items);
+        try mergeConstraints(arena, &resting, gaps.items);
     }
 
-    return try resting.toOwnedSlice(gpa);
+    return try resting.toOwnedSlice(arena);
+}
+
+// Schedule the moveable qubits: moveable[t][c] holds the AOD qubit sitting at
+// slm_slots[c] during timestep t (null = empty column). aod_nodes lists the
+// AOD qubits in their rigid left-to-right column order; timesteps[t][k] is
+// aod_nodes[k]'s SLM partner at t, or null when it rests.
+//
+// Active AODs sit at their partner's column. Resting AODs park right to left,
+// each in the rightmost free column strictly between its already-placed right
+// neighbour and every active AOD to its left - the same right-hugging policy
+// placeControlQubits used to reserve the null columns, so a reserved column
+// always exists; error.NoRestingSlotAvailable guards that invariant.
+pub fn scheduleTargetQubits(
+    arena: std.mem.Allocator,
+    aod_nodes: []const usize,
+    slm_slots: []const ?usize,
+    timesteps: []const []const ?usize,
+) ![][]?usize {
+    var slm_pos = std.AutoHashMap(usize, usize).init(arena);
+    for (slm_slots, 0..) |v, c| {
+        if (v) |id| try slm_pos.put(id, c);
+    }
+
+    const n = aod_nodes.len;
+    const moveable = try arena.alloc([]?usize, timesteps.len);
+
+    // Column of aod_nodes[k] this timestep; null = not placed (yet).
+    const pos = try arena.alloc(?usize, n);
+
+    // Leftmost admissible column for aod_nodes[k]: strictly right of every
+    // active AOD to its left. Resting AODs further left never constrain -
+    // they are placed later, bounded to our left by their own right bound.
+    const min_col = try arena.alloc(usize, n);
+
+    for (timesteps, 0..) |match, t| {
+        const aod_slot = try arena.alloc(?usize, slm_slots.len);
+        @memset(aod_slot, null);
+        @memset(pos, null);
+
+        // Phase 1: active AODs sit at their SLM partner's column.
+        for (match, 0..) |partner, k| {
+            const id = partner orelse continue;
+            const c = slm_pos.get(id) orelse continue;
+            aod_slot[c] = aod_nodes[k];
+            pos[k] = c;
+        }
+
+        var leftmost: usize = 0;
+        for (0..n) |k| {
+            min_col[k] = leftmost;
+            if (pos[k]) |c| leftmost = @max(leftmost, c + 1);
+        }
+
+        // Phase 2: park resting AODs right to left, so each one's right
+        // neighbour - active or resting - is already placed and bounds it.
+        var k = n;
+        while (k > 0) {
+            k -= 1;
+            if (match[k] != null) continue;
+
+            // The rightmost AOD is unbounded on the right.
+            const max_col = if (k + 1 < n) (pos[k + 1] orelse aod_slot.len) else aod_slot.len;
+
+            // Rightmost free column in [min_col[k], max_col): no fixed atom,
+            // no AOD placed this timestep.
+            var c = max_col;
+            var placed = false;
+            while (c > min_col[k]) {
+                c -= 1;
+                if (slm_slots[c] == null and aod_slot[c] == null) {
+                    aod_slot[c] = aod_nodes[k];
+                    pos[k] = c;
+                    placed = true;
+                    break;
+                }
+            }
+            if (!placed) {
+                trace.print("Failed to place resting AOD {d} at time step {d}\n", .{ aod_nodes[k], t });
+                return error.NoRestingSlotAvailable;
+            }
+        }
+
+        moveable[t] = aod_slot;
+    }
+
+    return moveable;
 }
 
 // A constraint is an interval of gap slots (slot k sits just left of slm[k],
@@ -235,11 +317,12 @@ pub fn computePositions(
 // new     [-----]          {0,1}
 // merged  [-----]          same interval: one shared gap
 test "repeated identical constraint merges to one gap" {
-    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var resting: std.ArrayList(Constraint) = .empty;
-    defer resting.deinit(gpa);
-    try resting.append(gpa, .{ .min_slot = 0, .max_slot = 1 });
-    try mergeConstraints(gpa, &resting, &.{.{ .min_slot = 0, .max_slot = 1 }});
+    try resting.append(arena, .{ .min_slot = 0, .max_slot = 1 });
+    try mergeConstraints(arena, &resting, &.{.{ .min_slot = 0, .max_slot = 1 }});
     try std.testing.expectEqual(@as(usize, 1), resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 0, .max_slot = 1 }, resting.items[0]);
 }
@@ -252,11 +335,12 @@ test "repeated identical constraint merges to one gap" {
 // new                 [-------------------------]
 // merged  [-]         [-------------------------]   disjoint: two gaps
 test "non-overlapping constraints accumulate to two gaps" {
-    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var resting: std.ArrayList(Constraint) = .empty;
-    defer resting.deinit(gpa);
-    try resting.append(gpa, .{ .min_slot = 0, .max_slot = 0 });
-    try mergeConstraints(gpa, &resting, &.{.{ .min_slot = 3, .max_slot = 9 }});
+    try resting.append(arena, .{ .min_slot = 0, .max_slot = 0 });
+    try mergeConstraints(arena, &resting, &.{.{ .min_slot = 3, .max_slot = 9 }});
     try std.testing.expectEqual(@as(usize, 2), resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 0, .max_slot = 0 }, resting.items[0]);
     try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 9 }, resting.items[1]);
@@ -271,11 +355,12 @@ test "non-overlapping constraints accumulate to two gaps" {
 // new                 [-------------------------]
 // merged              [---------]                   overlap: one narrowed gap
 test "overlap with acc leading narrows to the intersection" {
-    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var resting: std.ArrayList(Constraint) = .empty;
-    defer resting.deinit(gpa);
-    try resting.append(gpa, .{ .min_slot = 0, .max_slot = 5 });
-    try mergeConstraints(gpa, &resting, &.{.{ .min_slot = 3, .max_slot = 9 }});
+    try resting.append(arena, .{ .min_slot = 0, .max_slot = 5 });
+    try mergeConstraints(arena, &resting, &.{.{ .min_slot = 3, .max_slot = 9 }});
     try std.testing.expectEqual(@as(usize, 1), resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 5 }, resting.items[0]);
 }
@@ -288,11 +373,12 @@ test "overlap with acc leading narrows to the intersection" {
 // new     [---------------------]
 // merged              [---------]                   overlap: one narrowed gap
 test "overlap with new leading narrows to the intersection" {
-    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var resting: std.ArrayList(Constraint) = .empty;
-    defer resting.deinit(gpa);
-    try resting.append(gpa, .{ .min_slot = 3, .max_slot = 9 });
-    try mergeConstraints(gpa, &resting, &.{.{ .min_slot = 0, .max_slot = 5 }});
+    try resting.append(arena, .{ .min_slot = 3, .max_slot = 9 });
+    try mergeConstraints(arena, &resting, &.{.{ .min_slot = 0, .max_slot = 5 }});
     try std.testing.expectEqual(@as(usize, 1), resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 5 }, resting.items[0]);
 }
@@ -305,11 +391,12 @@ test "overlap with new leading narrows to the intersection" {
 // new                 [-------------------------]
 // merged              [-]                           touch at 3: one gap
 test "intervals touching at one slot narrow to it" {
-    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var resting: std.ArrayList(Constraint) = .empty;
-    defer resting.deinit(gpa);
-    try resting.append(gpa, .{ .min_slot = 0, .max_slot = 3 });
-    try mergeConstraints(gpa, &resting, &.{.{ .min_slot = 3, .max_slot = 9 }});
+    try resting.append(arena, .{ .min_slot = 0, .max_slot = 3 });
+    try mergeConstraints(arena, &resting, &.{.{ .min_slot = 3, .max_slot = 9 }});
     try std.testing.expectEqual(@as(usize, 1), resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 3 }, resting.items[0]);
 }
@@ -323,11 +410,12 @@ test "intervals touching at one slot narrow to it" {
 // new                     [---------------------]
 // merged  [-------------] [---------------------]   adjacent: two gaps
 test "adjacent intervals without a shared slot stay two gaps" {
-    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     var resting: std.ArrayList(Constraint) = .empty;
-    defer resting.deinit(gpa);
-    try resting.append(gpa, .{ .min_slot = 0, .max_slot = 3 });
-    try mergeConstraints(gpa, &resting, &.{.{ .min_slot = 4, .max_slot = 9 }});
+    try resting.append(arena, .{ .min_slot = 0, .max_slot = 3 });
+    try mergeConstraints(arena, &resting, &.{.{ .min_slot = 4, .max_slot = 9 }});
     try std.testing.expectEqual(@as(usize, 2), resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 0, .max_slot = 3 }, resting.items[0]);
     try std.testing.expectEqual(Constraint{ .min_slot = 4, .max_slot = 9 }, resting.items[1]);
@@ -347,7 +435,9 @@ test "adjacent intervals without a shared slot stay two gaps" {
 //  t4 |  ·  |  ·  |  ·  |  ·  |  ·  |  ·  |  1  |  3  |  7  |
 //     +-----+-----+-----+-----+-----+-----+-----+-----+-----+
 test "placeControlQubits inserts nulls at correct positions" {
-    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     const slm = [_]usize{ 5, 4, 2, 6 };
     const gaps = [_]Constraint{
         .{ .min_slot = 0, .max_slot = 0 },
@@ -356,8 +446,7 @@ test "placeControlQubits inserts nulls at correct positions" {
         .{ .min_slot = 4, .max_slot = 4 },
         .{ .min_slot = 4, .max_slot = 4 },
     };
-    const updated = try placeControlQubits(gpa, &slm, &gaps);
-    defer gpa.free(updated);
+    const updated = try placeControlQubits(arena, &slm, &gaps);
     const expected = [_]?usize{ null, null, 5, 4, 2, null, 6, null, null };
     try std.testing.expectEqualSlices(?usize, &expected, updated);
 }
@@ -373,16 +462,16 @@ test "placeControlQubits inserts nulls at correct positions" {
 //  t2 |  ·  |  ·  |  ·  |  ·  |  ·  |  5  |  6  |  7  |  8  |
 //     +-----+-----+-----+-----+-----+-----+-----+-----+-----+
 test "two adjacent resting slots between each outer atom pair" {
-    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     const slm = [_]usize{ 1, 2, 3, 4 };
     const t0 = [_]?usize{ 1, null, null, 2 };
     const t1 = [_]?usize{ 1, 2, null, 3 };
     const t2 = [_]?usize{ 3, null, null, 4 };
     const timesteps = [_][]const ?usize{ &t0, &t1, &t2 };
-    const gaps = try computePositions(gpa, &slm, &timesteps);
-    defer gpa.free(gaps);
-    const updated = try placeControlQubits(gpa, &slm, gaps);
-    defer gpa.free(updated);
+    const gaps = try computePositions(arena, &slm, &timesteps);
+    const updated = try placeControlQubits(arena, &slm, gaps);
     const expected = [_]?usize{ 1, null, null, 2, null, 3, null, null, 4 };
     try std.testing.expectEqualSlices(?usize, &expected, updated);
 }
@@ -399,17 +488,17 @@ test "two adjacent resting slots between each outer atom pair" {
 //  t3 |  ·  |  ·  |  ·  |  ·  |  4  |  5  |  6  |
 //     +-----+-----+-----+-----+-----+-----+-----+
 test "resting slots spread across three distinct regions" {
-    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     const slm = [_]usize{ 1, 2, 3 };
     const t0 = [_]?usize{ null, 1, 2 };
     const t1 = [_]?usize{ 1, null, 2 };
     const t2 = [_]?usize{ 2, 3, null };
     const t3 = [_]?usize{ 3, null, null };
     const timesteps = [_][]const ?usize{ &t0, &t1, &t2, &t3 };
-    const gaps = try computePositions(gpa, &slm, &timesteps);
-    defer gpa.free(gaps);
-    const updated = try placeControlQubits(gpa, &slm, gaps);
-    defer gpa.free(updated);
+    const gaps = try computePositions(arena, &slm, &timesteps);
+    const updated = try placeControlQubits(arena, &slm, gaps);
     const expected = [_]?usize{ null, 1, null, 2, 3, null, null };
     try std.testing.expectEqualSlices(?usize, &expected, updated);
 }
@@ -428,7 +517,9 @@ test "resting slots spread across three distinct regions" {
 //  t4 |  ·  |  ·  |  ·  |  4  |  5  |  6  |  ·  |
 //     +-----+-----+-----+-----+-----+-----+-----+
 test "constraint narrowing parks each slot adjacent to its bounding partner" {
-    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     const slm = [_]usize{ 1, 2, 3 };
     const t0 = [_]?usize{ null, 2, 3 };
     const t1 = [_]?usize{ 1, null, 3 };
@@ -436,10 +527,8 @@ test "constraint narrowing parks each slot adjacent to its bounding partner" {
     const t3 = [_]?usize{ null, null, 2 };
     const t4 = [_]?usize{ 2, null, null };
     const timesteps = [_][]const ?usize{ &t0, &t1, &t2, &t3, &t4 };
-    const gaps = try computePositions(gpa, &slm, &timesteps);
-    defer gpa.free(gaps);
-    const updated = try placeControlQubits(gpa, &slm, gaps);
-    defer gpa.free(updated);
+    const gaps = try computePositions(arena, &slm, &timesteps);
+    const updated = try placeControlQubits(arena, &slm, gaps);
     const expected = [_]?usize{ 1, null, null, 2, null, null, 3 };
     try std.testing.expectEqualSlices(?usize, &expected, updated);
 }
@@ -457,17 +546,17 @@ test "constraint narrowing parks each slot adjacent to its bounding partner" {
 //  t3 |  ·  |  ·  |  ·  |  ·  |  ·  |  1  |  3  |  9  |  7  |  ·  |
 //     +-----+-----+-----+-----+-----+-----+-----+-----+-----+-----+
 test "gaps flushed mid-sweep survive as fresh constraints" {
-    const gpa = std.testing.allocator;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
     const slm = [_]usize{ 0, 8, 2, 6, 5, 4 };
     const t0 = [_]?usize{ null, 0, 8, 2 };
     const t1 = [_]?usize{ 0, 8, 6, 5 };
     const t2 = [_]?usize{ 2, 5, 4, null };
     const t3 = [_]?usize{ 5, null, null, 4 };
     const timesteps = [_][]const ?usize{ &t0, &t1, &t2, &t3 };
-    const gaps = try computePositions(gpa, &slm, &timesteps);
-    defer gpa.free(gaps);
-    const updated = try placeControlQubits(gpa, &slm, gaps);
-    defer gpa.free(updated);
+    const gaps = try computePositions(arena, &slm, &timesteps);
+    const updated = try placeControlQubits(arena, &slm, gaps);
     const expected = [_]?usize{ null, 0, 8, 2, 6, 5, null, null, 4, null };
     try std.testing.expectEqualSlices(?usize, &expected, updated);
 }
