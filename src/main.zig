@@ -30,26 +30,9 @@ pub fn main(init: std.process.Init) !void {
             cli.fatal("cannot load assembly '{s}': {t}", .{ path, err });
     }
 
-    if (opts.benchmark) {
-        if (opts.out_dir) |dir| try std.Io.Dir.cwd().createDirPath(init.io, dir);
-    }
+    if (opts.out_dir) |dir| try std.Io.Dir.cwd().createDirPath(init.io, dir);
 
-    for (opts.circuits) |qasm_path| {
-        // Per-circuit outputs: the --out/--bench flags for a single run,
-        // paths derived from the qasm name under out_dir for a benchmark run.
-        var out_path = opts.out;
-        var bench_path = opts.bench;
-        if (opts.benchmark) {
-            out_path = null;
-            bench_path = null;
-            if (opts.out_dir) |dir| {
-                const stem = std.fs.path.stem(qasm_path);
-                out_path = try std.fmt.allocPrint(arena, "{s}/{s}.hardware.json", .{ dir, stem });
-                bench_path = try std.fmt.allocPrint(arena, "{s}/{s}.bench.json", .{ dir, stem });
-            }
-        }
-        try compileOne(init, opts, cfg, asm_doc, qasm_path, out_path, bench_path);
-    }
+    for (opts.jobs) |job| try compileOne(init, opts, cfg, asm_doc, job);
 }
 
 fn compileOne(
@@ -57,21 +40,19 @@ fn compileOne(
     opts: cli.Options,
     cfg: arch.ArchConfig,
     asm_doc: ?assembly.Assembly,
-    qasm_path: []const u8,
-    out_path: ?[]const u8,
-    bench_path: ?[]const u8,
+    job: cli.Job,
 ) !void {
     var diag: ?qasm.Diagnostic = null;
     var warnings: std.ArrayList(qasm.Diagnostic) = .empty;
     defer warnings.deinit(init.gpa);
-    var circ = qasm.loadDiag(init.gpa, init.io, qasm_path, &diag, &warnings) catch |err| {
+    var circ = qasm.loadDiag(init.gpa, init.io, job.qasm, &diag, &warnings) catch |err| {
         if (diag) |d|
-            cli.fatal("{s}:{d}:{d}: {t}: {s}", .{ qasm_path, d.line, d.col, err, d.reason });
-        cli.fatal("cannot load circuit '{s}': {t}", .{ qasm_path, err });
+            cli.fatal("{s}:{d}:{d}: {t}: {s}", .{ job.qasm, d.line, d.col, err, d.reason });
+        cli.fatal("cannot load circuit '{s}': {t}", .{ job.qasm, err });
     };
     defer circ.deinit();
     for (warnings.items) |w|
-        std.debug.print("gatecomp: {s}:{d}:{d}: warning: {s}\n", .{ qasm_path, w.line, w.col, w.reason });
+        std.debug.print("gatecomp: {s}:{d}:{d}: warning: {s}\n", .{ job.qasm, w.line, w.col, w.reason });
 
     var pipeline = try circuit.decompose(init.gpa, circ);
     defer pipeline.deinit();
@@ -90,21 +71,21 @@ fn compileOne(
 
     if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
 
-    if (out_path) |path| {
+    if (job.out) |path| {
         try serialize.writeHardware(init.gpa, init.io, path, &sch);
     }
 
     var metrics = bench.measure(&sch, .{});
     metrics.compile_ns = compile_ns;
 
-    if (bench_path) |path| {
+    if (job.bench) |path| {
         serialize.writeBench(init.gpa, init.io, path, metrics) catch |err|
             cli.fatal("cannot write bench '{s}': {t}", .{ path, err });
     }
 
     if (opts.benchmark) {
         std.debug.print("gatecomp: {s}: {d} qubits, {d} frames, schedule {d:.1}us, compile {d:.2}ms\n", .{
-            qasm_path,
+            job.qasm,
             metrics.num_qubits,
             metrics.frames,
             metrics.totalUs(),

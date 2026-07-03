@@ -1,15 +1,16 @@
 //! Run settings loaded from a TOML file (default: config/settings.toml).
 //! The file encodes the CLI arguments so a bare `gatecomp` invocation is
-//! reproducible; explicit command-line flags override these values — the
-//! merge lives in cli.parseArgs.
+//! reproducible. `resolve` layers the three sources: command-line flags
+//! beat file values beat the built-in defaults on `Resolved`.
 
 const std = @import("std");
 const toml = @import("toml");
 
 pub const default_path = "config/settings.toml";
 
-/// Mirrors the [options] table: one key per CLI flag. Null means "not set",
-/// so cli.zig can tell a settings value from a built-in default.
+/// Mirrors the [options] table: one key per CLI flag. Null means "not
+/// set", leaving the value to the layer below. The CLI hands its parsed
+/// flags to `resolve` in this shape too.
 pub const Options = struct {
     arch: ?[]const u8 = null,
     assembly: ?[]const u8 = null,
@@ -30,6 +31,48 @@ pub const Settings = struct {
     options: Options = .{},
     benchmark: Benchmark = .{},
 };
+
+/// Options with every layer applied. The field defaults are the built-in
+/// layer: what a bare run uses when neither the settings file nor the
+/// command line has an opinion.
+pub const Resolved = struct {
+    arch: []const u8 = "config/arch.toml",
+    assembly: ?[]const u8 = null,
+    out: ?[]const u8 = null,
+    bench: ?[]const u8 = null,
+    draw: bool = true,
+    verbose: bool = false,
+    benchmark: Benchmark = .{},
+};
+
+/// Loads the settings file and layers `flags` on top. An explicit `path`
+/// must exist; the default file may be absent.
+pub fn resolve(arena: std.mem.Allocator, io: std.Io, flags: Options, path: ?[]const u8) !Resolved {
+    const cfg: Settings = if (path) |p|
+        try load(arena, io, p)
+    else
+        load(arena, io, default_path) catch |err| switch (err) {
+            error.FileNotFound => .{},
+            else => return err,
+        };
+    return merge(cfg, flags);
+}
+
+fn merge(cfg: Settings, flags: Options) Resolved {
+    var r = Resolved{ .benchmark = cfg.benchmark };
+    apply(&r, cfg.options);
+    apply(&r, flags);
+    return r;
+}
+
+fn apply(r: *Resolved, o: Options) void {
+    if (o.arch) |v| r.arch = v;
+    if (o.assembly) |v| r.assembly = v;
+    if (o.out) |v| r.out = v;
+    if (o.bench) |v| r.bench = v;
+    if (o.draw) |v| r.draw = v;
+    if (o.verbose) |v| r.verbose = v;
+}
 
 /// Parses a settings TOML file. Strings are duped into `arena` because the
 /// parser frees its own storage when it goes out of scope here.
@@ -85,4 +128,17 @@ test "missing tables fall back to defaults" {
     try std.testing.expect(s.options.arch == null);
     try std.testing.expect(s.options.verbose.?);
     try std.testing.expectEqual(@as(usize, 0), s.benchmark.circuits.len);
+}
+
+test "merge precedence: flag beats file beats built-in" {
+    const file = Settings{ .options = .{ .arch = "file.toml", .draw = false } };
+    const r = merge(file, .{ .arch = "flag.toml", .verbose = true });
+    try std.testing.expectEqualStrings("flag.toml", r.arch);
+    try std.testing.expect(!r.draw); // file value survives: no flag given
+    try std.testing.expect(r.verbose);
+
+    const bare = merge(.{}, .{});
+    try std.testing.expectEqualStrings("config/arch.toml", bare.arch);
+    try std.testing.expect(bare.draw);
+    try std.testing.expect(!bare.verbose);
 }
