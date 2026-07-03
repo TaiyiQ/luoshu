@@ -1,0 +1,24 @@
+# ── Options ────────────────────────────────────────────────────────
+# One key per CLI flag; commented keys fall back to built-in defaults.
+[options]
+arch = "config/arch.toml"
+# assembly = "config/assembly.json" # storage occupancy from atom-rearrangement
+# out = "schedule.json"             # hardware schedule JSON (single run only)
+# bench = "bench.json"              # benchmark metrics JSON (single run only)
+# draw = false                      # skip the schedule visualization
+# verbose = true                    # trace compiler passes to stderr
+
+# ── Benchmark suite ────────────────────────────────────────────────
+# Circuits compiled when no <circuit.qasm> is given on the command line.
+# Batch runs skip the visualization; each circuit writes
+# <out_dir>/<name>.hardware.json and <out_dir>/<name>.bench.json.
+[benchmark]
+out_dir = "zig-out/bench"
+circuits = [
+    "example/bell-state/bell.qasm",
+    "example/bell-state/bell-serial-20.qasm",
+    "example/bell-state/bell-inter-20.qasm",
+    "example/cycle/cyclic-aod.qasm",
+    "example/ex1/mvp.qasm",
+    "testdata/graph-10-0.qasm",
+]

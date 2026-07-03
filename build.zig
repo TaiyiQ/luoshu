@@ -16,10 +16,17 @@ pub fn build(b: *std.Build) void {
     // circuit (front-end) and route depend only on std; schedule depends on
     // arch; compiler is the driver that orchestrates all of them.
 
+    // Run settings TOML (config/settings.toml): encodes the CLI args.
+    const settings_mod = b.addModule("settings", .{
+        .root_source_file = b.path("src/settings.zig"),
+        .target = target,
+    });
+
     const cli_mod = b.addModule("cli", .{
         .root_source_file = b.path("src/cli.zig"),
         .target = target,
     });
+    cli_mod.addImport("settings", settings_mod);
     exe.root_module.addImport("cli", cli_mod);
 
     const arch_mod = b.addModule("arch", .{
@@ -152,6 +159,7 @@ pub fn build(b: *std.Build) void {
 
     const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
     arch_mod.addImport("toml", toml_dep.module("toml"));
+    settings_mod.addImport("toml", toml_dep.module("toml"));
 
     const raylib_dep = b.dependency("raylib_zig", .{
         .target = target,
@@ -178,7 +186,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit and golden tests");
     const test_mods = [_]*std.Build.Module{
-        arch_mod, assembly_mod, trace_mod, circuit_mod, qasm_mod, schedule_mod, bench_mod, rest_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
+        arch_mod, assembly_mod, settings_mod, trace_mod, circuit_mod, qasm_mod, schedule_mod, bench_mod, rest_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
     };
     for (test_mods) |mod| {
         const t = b.addTest(.{ .root_module = mod });

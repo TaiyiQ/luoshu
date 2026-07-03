@@ -1,5 +1,5 @@
 //! Loader for the storage-zone occupancy handoff from the upstream
-//! atom-rearrangement (Atom Assembly) package — see example/assembly.json.
+//! atom-rearrangement (Atom Assembly) package — see config/assembly.json.
 //!
 //! The file carries a rows x cols 0/1 matrix over the storage SLM trap grid:
 //! occupancy[row][col] == 1 means an atom sits at trap (grid.x(col),
