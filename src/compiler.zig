@@ -110,21 +110,15 @@ pub fn compile(
     for (pipe.stages.items) |*stage| {
         // A stage with no CZ gates has nothing to route, so it is pure Raman pulses.
         if (stage.cz_gates.items.len > 0) {
-            var rounds: std.ArrayList(route.Sequence) = .empty;
-            defer {
-                for (rounds.items) |*s| s.deinit();
-                rounds.deinit(gpa);
-            }
-            try routeStageRounds(gpa, stage.cz_gates.items, pipe.num_qubits, &rounds);
+            var sequence = try routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
+            defer sequence.deinit();
 
-            for (rounds.items) |*sequence| {
-                if (trace.enabled) sequence.print();
+            if (trace.enabled) sequence.print();
 
-                try hw.moveSlmCompute(sequence.fixed);
-                try hw.moveAodCompute(sequence.fixed, sequence.moveable);
-                try hw.moveAodStorage(sequence.moveable);
-                try hw.moveSlmStorage(sequence.fixed);
-            }
+            try hw.moveSlmCompute(sequence.fixed);
+            try hw.moveAodCompute(sequence.fixed, sequence.moveable);
+            try hw.moveAodStorage(sequence.moveable);
+            try hw.moveSlmStorage(sequence.fixed);
         }
 
         // U gates fire last: within a stage, CZs precede the U's, and by

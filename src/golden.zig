@@ -1,6 +1,6 @@
 //! End-to-end golden tests: each case runs the full pipeline (circuit ->
 //! decompose -> route -> compile) and byte-compares the logical routing
-//! output (Sequence JSON, one object per pickup round) and the physical
+//! output (Sequence JSON, one object per CZ stage) and the physical
 //! schedule (Hardware JSON) against checked-in snapshots in testdata/.
 //!
 //! Snapshots pin stability, not correctness: any change to MIS/coloring/
@@ -15,7 +15,6 @@ const assembly = @import("assembly");
 const circuit = @import("circuit");
 const qasm = @import("qasm");
 const compiler = @import("compiler");
-const route = @import("route");
 const serialize = @import("serialize");
 const verify = @import("verify");
 
@@ -149,12 +148,12 @@ pub fn buildCycle6(gpa: std.mem.Allocator) !circuit.Circuit {
 }
 
 // Five-cycle 0-1-3-4-2-0 with a pendant qubit 5 on 1 (mirrors
-// qasm/cyclic-aod.qasm). Used to force CyclicAodOrder and the driver's
-// round splitting; since coloring against the fixed AOD sequence
-// (arXiv:2405.08068) rejects conflicting colors during coloring, it routes
-// in a single round. Kept as the regression case for that coloring. The odd
-// 5-cycle leaves one SLM-SLM edge uncovered (dropped CZ), the known
-// non-bipartite routing gap.
+// qasm/cyclic-aod.qasm). Historically forced CyclicAodOrder and a
+// split-into-rounds fallback in the driver; coloring against the fixed AOD
+// sequence (arXiv:2405.08068) rejects conflicting colors during coloring,
+// so it routes in a single pickup. Kept as the regression case for that
+// coloring. The odd 5-cycle leaves one SLM-SLM edge uncovered (dropped CZ),
+// the known non-bipartite routing gap.
 pub fn buildCyclicAod(gpa: std.mem.Allocator) !circuit.Circuit {
     var c = circuit.Circuit.init(gpa, 6);
     errdefer c.deinit();
@@ -182,9 +181,8 @@ pub fn buildQft5(gpa: std.mem.Allocator) !circuit.Circuit {
 }
 
 /// Serializes the routing output of every CZ-carrying stage as a JSON array,
-/// one Sequence object per pickup round (a stage whose coloring demands
-/// contradictory AOD orders is split into several rounds). U-only stages
-/// route nothing and are skipped.
+/// one Sequence object per stage. U-only stages route nothing and are
+/// skipped.
 pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
     var buf: std.Io.Writer.Allocating = .init(gpa);
     defer buf.deinit();
@@ -195,21 +193,15 @@ pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
     for (pipe.stages.items) |*stage| {
         if (stage.cz_gates.items.len == 0) continue;
 
-        var rounds: std.ArrayList(route.Sequence) = .empty;
-        defer {
-            for (rounds.items) |*s| s.deinit();
-            rounds.deinit(gpa);
-        }
-        try compiler.routeStageRounds(gpa, stage.cz_gates.items, pipe.num_qubits, &rounds);
+        var seq = try compiler.routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
+        defer seq.deinit();
 
-        for (rounds.items) |seq| {
-            const json = try serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
-            defer gpa.free(json);
+        const json = try serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
+        defer gpa.free(json);
 
-            if (!first) try w.writeAll(",\n");
-            first = false;
-            try w.writeAll(json);
-        }
+        if (!first) try w.writeAll(",\n");
+        first = false;
+        try w.writeAll(json);
     }
     try w.writeAll("\n]");
 
