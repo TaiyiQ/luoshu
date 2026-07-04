@@ -1,6 +1,6 @@
 [
 {
-  "slm_slots": [2, 4, 3, 1],
+  "slm_slots": [1, 2, 3, 4],
   "aod_slots_per_color": [
     [0, null, null, null],
     [null, 0, null, null],
@@ -10,7 +10,7 @@
   "max_color": 3
 },
 {
-  "slm_slots": [2, 4, 3],
+  "slm_slots": [2, 3, 4],
   "aod_slots_per_color": [
     [1, null, null],
     [null, 1, null],
@@ -19,7 +19,7 @@
   "max_color": 2
 },
 {
-  "slm_slots": [4, 3],
+  "slm_slots": [3, 4],
   "aod_slots_per_color": [
     [2, null],
     [null, 2]

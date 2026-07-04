@@ -149,10 +149,12 @@ pub fn buildCycle6(gpa: std.mem.Allocator) !circuit.Circuit {
 }
 
 // Five-cycle 0-1-3-4-2-0 with a pendant qubit 5 on 1 (mirrors
-// qasm/cyclic-aod.qasm). The deterministic coloring's class 0 forces AOD
-// column 1 left of 4 while class 2 forces 4 left of 1 — no rigid column
-// order satisfies both, so routing returns CyclicAodOrder and the driver
-// must split the CZ set into separate pickup rounds.
+// qasm/cyclic-aod.qasm). Used to force CyclicAodOrder and the driver's
+// round splitting; since coloring against the fixed AOD sequence
+// (arXiv:2405.08068) rejects conflicting colors during coloring, it routes
+// in a single round. Kept as the regression case for that coloring. The odd
+// 5-cycle leaves one SLM-SLM edge uncovered (dropped CZ), the known
+// non-bipartite routing gap.
 pub fn buildCyclicAod(gpa: std.mem.Allocator) !circuit.Circuit {
     var c = circuit.Circuit.init(gpa, 6);
     errdefer c.deinit();
@@ -355,8 +357,7 @@ test "qasm: bell compiles legally from testdata/bell.qasm" {
     try qasmCompilesLegally("testdata/bell.qasm");
 }
 
-// All six CZs land in one stage; routing rejects the coloring with
-// CyclicAodOrder and the driver must split the stage into pickup rounds.
+// All six CZs land in one stage and route as a single pickup round.
 test "qasm: cyclic-aod compiles legally from testdata/cyclic-aod.qasm" {
     try qasmCompilesLegally("testdata/cyclic-aod.qasm");
 }
