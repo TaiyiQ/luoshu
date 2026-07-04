@@ -620,7 +620,7 @@ pub const Hardware = struct {
     // Pick up atoms from storage in `ord` order, traversing without
     // crossing occupied sites. The physical AOD drives a single row tone,
     // so the register holds one shared y at every step; only the column
-    // (x) tones move per-atom. Atoms in other storage rows are reached by
+    // tones move per-atom. Atoms in other storage rows are reached by
     // riding the whole register to their row.
     fn pickup(s: *Hardware, ord: []const usize) !Register {
         // Every picked-up atom occupies its own AOD column.
@@ -655,18 +655,40 @@ pub const Hardware = struct {
                 try s.rideRegister(&register, next.pos.x, next.pos.y);
             } else if (next.isLeftOf(front)) {
                 const dx: i32 = front.pos.x - next.pos.x;
-                for (register.items) |a| try s.moveAtom(a, 0, -d); // up
+
+                // Up
+                for (register.items) |a| try s.moveAtom(a, 0, -d);
                 s.step();
-                for (register.items) |a| try s.moveAtom(a, -(dx + d), 0); // left
+
+                // Left
+                for (register.items) |a| try s.moveAtom(a, -(dx + d), 0);
                 s.step();
-                // Before descending, shift any atom that would land on an occupied site.
+
+                // Before descending, shift any atom that would land on an
+                // occupied site. Register atoms can sit a half-pitch apart, so
+                // a shifting atom may land exactly on its left neighbour; the
+                // neighbour must shift along - overtaking it would invert AOD
+                // column order - so sweep right to left and cascade the shift.
+                const by_x = try s.gpa.dupe(*Atom, register.items);
+                defer s.gpa.free(by_x);
+                std.sort.block(*Atom, by_x, {}, struct {
+                    fn gt(_: void, lhs: *const Atom, rhs: *const Atom) bool {
+                        return lhs.pos.x > rhs.pos.x;
+                    }
+                }.gt);
                 var conflict = true;
                 while (conflict) {
                     conflict = false;
-                    for (register.items) |a| {
-                        if (occupied.contains(.{ .x = a.pos.x, .y = a.pos.y + d })) {
+                    var bump_x: ?i32 = null; // right neighbour's post-shift x
+                    for (by_x) |a| {
+                        const blocked = occupied.contains(.{ .x = a.pos.x, .y = a.pos.y + d });
+                        const bumped = if (bump_x) |bx| bx == a.pos.x else false;
+                        if (blocked or bumped) {
                             try s.moveAtom(a, -d, 0);
+                            bump_x = a.pos.x;
                             conflict = true;
+                        } else {
+                            bump_x = null;
                         }
                     }
                     s.step(); // no-op when there was no conflict
@@ -704,9 +726,11 @@ pub const Hardware = struct {
         const sgrid = s.cfg.storage_zone.grid();
         const d = sgrid.halfSepX();
 
+        // Step 1
         for (register.items) |a| try s.moveAtom(a, 0, -d);
         s.step();
 
+        // Step 2
         const sorted = try s.gpa.dupe(*Atom, register.items);
         defer s.gpa.free(sorted);
         std.sort.block(*Atom, sorted, {}, struct {
@@ -721,6 +745,7 @@ pub const Hardware = struct {
         }
         s.step();
 
+        // Step 3
         for (register.items) |a| try s.moveAtom(a, 0, dest_y - a.pos.y);
         s.step();
     }
@@ -970,6 +995,52 @@ test "pickup keeps the AOD register in a single row across storage rows" {
 
     var in_aod = try expectSingleAodRow(gpa, hw.frames.items);
     defer in_aod.deinit();
+}
+
+// Left traversals leave register atoms a half-pitch apart (the register
+// parks half a pitch left of each pickup). When a later traversal hovers
+// such a pair over storage and only the right atom sits above an occupied
+// site, its avoidance shift lands exactly on its neighbour unless the
+// neighbour shifts along.
+test "pickup avoidance shift cascades instead of merging register columns" {
+    const gpa = std.testing.allocator;
+
+    // Widen storage to six columns: three left traversals need the room.
+    var cfg = testShuttleCfg();
+    cfg.storage_zone.slm.num_col = 6;
+    cfg.storage_zone.dimension_nm[0] = 6000;
+
+    // Bottom row: a blocker at column 0 that is never picked up, and four
+    // pickups right to left. After picking columns 5, 4, 3 the register
+    // sits at x 2000, 2500, 3000; traversing to column 1 shifts it to
+    // -500, 0, 500, hovering the middle atom over the blocker.
+    var hw = try Hardware.init(gpa, cfg, 5, &.{
+        .{ .row = 2, .col = 0 },
+        .{ .row = 2, .col = 5 },
+        .{ .row = 2, .col = 4 },
+        .{ .row = 2, .col = 3 },
+        .{ .row = 2, .col = 1 },
+    });
+    defer hw.deinit();
+
+    var register = try hw.pickup(&.{ 1, 2, 3, 4 });
+    defer register.deinit(gpa);
+
+    // Site exclusivity at the end of every frame — the invariant
+    // verify.verify enforces on full schedules.
+    const pos = try gpa.dupe(Point, hw.initial);
+    defer gpa.free(pos);
+    for (hw.frames.items) |frame| {
+        for (frame.items) |op| switch (op) {
+            .move => |m| pos[m.qubit] = m.dest,
+            else => {},
+        };
+        for (pos[0 .. pos.len - 1], 0..) |p, i| {
+            for (pos[i + 1 ..]) |q| {
+                try std.testing.expect(p.x != q.x or p.y != q.y);
+            }
+        }
+    }
 }
 
 // Idle atoms can sit on any storage row at measurement time; readout
