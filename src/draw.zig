@@ -1290,9 +1290,32 @@ fn drawCzGate(cz: circuit.Cz, x: f32, dy: f32, y_offset: f32) void {
     rl.drawCircleV(.{ .x = x, .y = ty }, radius, .dark_gray);
 }
 
+const LaidGate = struct { gate: circuit.Native, col: usize };
+
+// Place one gate at the leftmost column free on every wire it touches (a CZ
+// touches its whole control..target span, keeping its connector clear) and
+// advance those wires past it. Returns the columns used so far.
+fn placeGate(
+    gpa: std.mem.Allocator,
+    laid: *std.ArrayList(LaidGate),
+    next_free: []usize,
+    gate: circuit.Native,
+) !usize {
+    const span: [2]usize = switch (gate) {
+        .u => |g| .{ g.qubit, g.qubit },
+        .cz => |g| .{ @min(g.control, g.target), @max(g.control, g.target) },
+        .reset => |g| .{ g.qubit, g.qubit },
+    };
+    var col: usize = 0;
+    for (next_free[span[0] .. span[1] + 1]) |f| col = @max(col, f);
+    @memset(next_free[span[0] .. span[1] + 1], col + 1);
+    try laid.append(gpa, .{ .gate = gate, .col = col });
+    return col + 1;
+}
+
 /// Draw the circuit. Pass `stages` to group gates into labelled, divided
 /// columns; pass `null` to lay every gate out flat in order.
-pub fn pipeline(c: circuit.Circuit, p: ?circuit.Pipeline) !void {
+pub fn pipeline(gpa: std.mem.Allocator, c: circuit.Circuit, p: ?circuit.Pipeline) !void {
     const screenWidth = 800;
     const screenHeight = 450;
     rl.setTraceLogLevel(.err);
@@ -1310,8 +1333,37 @@ pub fn pipeline(c: circuit.Circuit, p: ?circuit.Pipeline) !void {
     const y_offset: f32 = font_size / 2;
     const col_w: f32 = 60;
 
-    const total_cols: usize = c.gates.items.len; // one column per gate
-    const content_w: f32 = @as(f32, @floatFromInt(total_cols)) * col_w;
+    // Column layout, computed once. Gates on disjoint wires share a column,
+    // so independent U's align vertically instead of staggering. A stage
+    // starts past its predecessor's columns, so stages never share one.
+    var laid: std.ArrayList(LaidGate) = .empty;
+    defer laid.deinit(gpa);
+    var stage_cols: std.ArrayList(usize) = .empty; // each stage's first column
+    defer stage_cols.deinit(gpa);
+
+    const next_free = try gpa.alloc(usize, c.n);
+    defer gpa.free(next_free);
+    @memset(next_free, 0);
+
+    var n_cols: usize = 0;
+    if (p) |pipe| {
+        for (pipe.stages.items) |stage| {
+            try stage_cols.append(gpa, n_cols);
+            @memset(next_free, n_cols);
+            for (stage.cz_gates.items) |g| {
+                n_cols = @max(n_cols, try placeGate(gpa, &laid, next_free, .{ .cz = g }));
+            }
+            for (stage.u_gates.items) |g| {
+                n_cols = @max(n_cols, try placeGate(gpa, &laid, next_free, .{ .u = g }));
+            }
+        }
+    } else {
+        for (c.gates.items) |gate| {
+            n_cols = @max(n_cols, try placeGate(gpa, &laid, next_free, gate));
+        }
+    }
+
+    const content_w: f32 = @as(f32, @floatFromInt(n_cols)) * col_w;
     const max_scroll: f32 = @max(0, content_w - (sw - x_offset));
 
     var scroll: f32 = 0;
@@ -1334,40 +1386,22 @@ pub fn pipeline(c: circuit.Circuit, p: ?circuit.Pipeline) !void {
             rl.drawLineV(.{ .x = x_offset, .y = y }, .{ .x = sw, .y = y }, .dark_gray);
         }
 
-        // Gates. The column index `col` advances per gate either way; the only
-        // difference with stages is the divider + label drawn at each group's start.
-        const colX = struct {
-            fn at(col: usize, cw: f32, xo: f32, s: f32) f32 {
-                return xo + (@as(f32, @floatFromInt(col)) + 0.5) * cw - s;
-            }
-        }.at;
+        // Stage dividers + labels at each stage's first column (flat mode
+        // laid no stages, so this is a no-op there).
+        for (stage_cols.items, 0..) |sc, s| {
+            const stage_x0 = x_offset + @as(f32, @floatFromInt(sc)) * col_w - scroll;
+            if (s > 0) rl.drawLineV(.{ .x = stage_x0, .y = 0 }, .{ .x = stage_x0, .y = sh }, .light_gray);
+            const slabel = try std.fmt.bufPrintZ(&buf, "S{d}", .{s});
+            rl.drawText(slabel, @intFromFloat(stage_x0 + 4), 4, font_size, .gray);
+        }
 
-        var col: usize = 0;
-        if (p) |pipe| {
-            for (pipe.stages.items, 0..) |stage, s| {
-                const stage_x0 = x_offset + @as(f32, @floatFromInt(col)) * col_w - scroll;
-                if (s > 0) rl.drawLineV(.{ .x = stage_x0, .y = 0 }, .{ .x = stage_x0, .y = sh }, .light_gray);
-                const slabel = try std.fmt.bufPrintZ(&buf, "S{d}", .{s});
-                rl.drawText(slabel, @intFromFloat(stage_x0 + 4), 4, font_size, .gray);
-
-                for (stage.cz_gates.items) |gate| {
-                    drawCzGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset);
-                    col += 1;
-                }
-
-                for (stage.u_gates.items) |gate| {
-                    drawUGate(gate, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size);
-                    col += 1;
-                }
-            }
-        } else {
-            for (c.gates.items) |gate| {
-                switch (gate) {
-                    .u => |g| drawUGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size),
-                    .cz => |g| drawCzGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset),
-                    .reset => |g| drawResetGate(g, colX(col, col_w, x_offset, scroll), dy, y_offset, font_size),
-                }
-                col += 1;
+        // Gates, at the columns assigned by the layout pass.
+        for (laid.items) |lg| {
+            const x = x_offset + (@as(f32, @floatFromInt(lg.col)) + 0.5) * col_w - scroll;
+            switch (lg.gate) {
+                .u => |g| drawUGate(g, x, dy, y_offset, font_size),
+                .cz => |g| drawCzGate(g, x, dy, y_offset),
+                .reset => |g| drawResetGate(g, x, dy, y_offset, font_size),
             }
         }
 
