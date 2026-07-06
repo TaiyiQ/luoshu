@@ -78,65 +78,53 @@ pub const Pipeline = struct {
     }
 };
 
-/// Group the circuit's gates into stages, where a "stage" is a set of gates
-/// that can run in parallel (no shared qubits within a stage).
+/// Group the circuit's gates into stages. Within a stage, the CZ gates
+/// execute first, then the U gates fire as Raman pulses — sequentially per
+/// qubit, in circuit order.
 ///
-/// CZ gates are diagonal and mutually commute, so any run of CZs with no
-/// intervening U on a shared qubit forms one stage and may share qubits
-/// freely. A U gate is a barrier: it advances its qubit to the next stage.
-/// Within a stage, CZ gate indices are listed first, then U gate indices.
-///
-/// Returns a `Stages` = list of stages, indexed by stage number. Each stage is
-/// its a list of gate indices into `c.gates.items`. Within a stage, the CZ
-/// gates are listed first, followed by the U gates:
-///
-///     stages.items[s]      -> gate indices that run during stage s (CZs, then Us)
-///     stages.items[s][k]   -> index of the k-th gate in stage s
-///
-///   stage 0: [ 0, 1, ..., 2, 3, ... ]   // CZ indices first, then U indices
-///   stage 1: [ 4, ..., 7, ... ]
-///   stage 2: [ ... ]
-///
-/// A qubit's stage is advanced by each U gate on it; a CZ is placed at the
-/// later of its two qubits' current stages and pins both qubits there, so
-/// gates never reorder across a shared qubit.
-///
-/// Caller owns the result and must free it with `freeStages`.
+/// Only a CZ/U boundary on a shared qubit forces a new stage: CZs are
+/// diagonal and mutually commute, so a run of CZs shares one stage and may
+/// share qubits freely, and a run of U's on one qubit shares one stage
+/// because the pulses fire in order. A qubit therefore advances to the next
+/// stage exactly when its gate kind flips, and gates never reorder across a
+/// shared qubit.
 pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
     var pipe = try Pipeline.init(gpa, c.n);
     errdefer pipe.deinit();
 
-    var map = std.AutoHashMap(usize, usize).init(gpa);
-    defer map.deinit();
-    for (0..c.n) |q| try map.put(q, 0);
-
-    const Pending = struct { stage: usize, gate: Native };
-    var pending: std.ArrayList(Pending) = .empty;
-    defer pending.deinit(gpa);
+    // Per-qubit cursor: the stage holding the qubit's latest gate, and that
+    // gate's kind. A same-kind gate joins that stage; a kind flip moves past it.
+    const Cursor = struct { stage: usize = 0, last: enum { none, u, cz } = .none };
+    const cursors = try gpa.alloc(Cursor, c.n);
+    defer gpa.free(cursors);
+    @memset(cursors, .{});
 
     for (c.gates.items) |gate| {
         switch (gate) {
             .u => |g| {
-                const stage = map.get(g.qubit).?;
-                try pending.append(gpa, .{ .stage = stage, .gate = gate });
-                try map.put(g.qubit, stage + 1);
+                const cur = &cursors[g.qubit];
+                if (cur.last == .cz) cur.stage += 1;
+                cur.last = .u;
+                try pipe.place(cur.stage, gate);
             },
             .cz => |g| {
-                const stage = @max(map.get(g.control).?, map.get(g.target).?);
+                const a = cursors[g.control];
+                const b = cursors[g.target];
+                const stage = @max(
+                    a.stage + @intFromBool(a.last == .u),
+                    b.stage + @intFromBool(b.last == .u),
+                );
                 try pipe.place(stage, gate);
-                // Pin both qubits to the CZ's stage, or a later U on the
+                // Pin both qubits to the CZ's stage, or a later gate on the
                 // qubit that was lagging would be staged before this CZ.
-                // Same-stage is fine: within a stage CZs execute first.
-                try map.put(g.control, stage);
-                try map.put(g.target, stage);
+                cursors[g.control] = .{ .stage = stage, .last = .cz };
+                cursors[g.target] = .{ .stage = stage, .last = .cz };
             },
             // Reset is a front-end-only op: it carries no unitary, so it is not
             // scheduled onto the hardware pipeline.
             .reset => {},
         }
     }
-
-    for (pending.items) |p| try pipe.place(p.stage, p.gate);
 
     return pipe;
 }
@@ -291,18 +279,17 @@ test "decompose: a U barrier splits CZs on its qubit into separate stages" {
     var pipe = try decompose(std.testing.allocator, c);
     defer pipe.deinit();
 
-    try std.testing.expectEqual(2, pipe.stages.items.len);
-    // Stage 0 holds the first CZ and the barrier H (within a stage, CZs
-    // execute before Us); the second CZ lands behind the barrier.
+    // The barrier H gets its own stage between the CZs: a U and a CZ on
+    // the same qubit never share a stage.
+    try std.testing.expectEqual(3, pipe.stages.items.len);
     try std.testing.expectEqual(1, pipe.stages.items[0].cz_gates.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[0].u_gates.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[1].cz_gates.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[1].u_gates.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[2].cz_gates.items.len);
 }
 
 test "decompose never stages a gate before a preceding gate on its qubit" {
     // h(1); cz(0,1); h(0) — q0 lags q1 at the CZ. The trailing h(0) must
-    // land in the CZ's stage (where Us run after CZs) or later, never
-    // before it.
+    // land after the CZ's stage, never before or beside it.
     var c = Circuit.init(std.testing.allocator, 2);
     defer c.deinit();
     try c.h(1);
@@ -312,7 +299,7 @@ test "decompose never stages a gate before a preceding gate on its qubit" {
     var pipe = try decompose(std.testing.allocator, c);
     defer pipe.deinit();
 
-    try std.testing.expectEqual(2, pipe.stages.items.len);
+    try std.testing.expectEqual(3, pipe.stages.items.len);
 
     const s0 = pipe.stages.items[0];
     try std.testing.expectEqual(0, s0.cz_gates.items.len);
@@ -321,8 +308,35 @@ test "decompose never stages a gate before a preceding gate on its qubit" {
 
     const s1 = pipe.stages.items[1];
     try std.testing.expectEqual(1, s1.cz_gates.items.len);
-    try std.testing.expectEqual(1, s1.u_gates.items.len);
-    try std.testing.expectEqual(0, s1.u_gates.items[0].qubit);
+    try std.testing.expectEqual(0, s1.u_gates.items.len);
+
+    const s2 = pipe.stages.items[2];
+    try std.testing.expectEqual(1, s2.u_gates.items.len);
+    try std.testing.expectEqual(0, s2.u_gates.items[0].qubit);
+}
+
+test "decompose stacks same-qubit U runs into single stages" {
+    // The bell pattern: a run of U's per qubit, one CZ, a trailing U run.
+    // U's on one qubit fire as sequential pulses within a stage, so only
+    // the CZ/U boundaries split: three stages, not one per U layer.
+    var c = Circuit.init(std.testing.allocator, 2);
+    defer c.deinit();
+    try c.h(0);
+    try c.x(0);
+    try c.h(1);
+    try c.x(1);
+    try c.cz(0, 1);
+    try c.h(1);
+    try c.x(1);
+
+    var pipe = try decompose(std.testing.allocator, c);
+    defer pipe.deinit();
+
+    try std.testing.expectEqual(3, pipe.stages.items.len);
+    try std.testing.expectEqual(4, pipe.stages.items[0].u_gates.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[1].cz_gates.items.len);
+    try std.testing.expectEqual(0, pipe.stages.items[1].u_gates.items.len);
+    try std.testing.expectEqual(2, pipe.stages.items[2].u_gates.items.len);
 }
 
 test {
