@@ -634,71 +634,29 @@ pub const Hardware = struct {
 
         if (ord.len == 0) return register;
 
-        // Sites occupied by atoms not (yet) in the register. Unregistered
-        // atoms never move during pickup, so removal on pickup keeps the
-        // set exact.
-        var occupied = std.AutoHashMap(Point, void).init(s.gpa);
-        defer occupied.deinit();
-        for (s.placement) |atom| try occupied.put(atom.pos, {});
-
         // Pick up first atom.
-        try s.pickUpAtom(&register, &occupied, &s.placement[ord[0]]);
+        try s.loadAtom(&s.placement[ord[0]]);
+        try register.append(s.gpa, &s.placement[ord[0]]);
         s.step();
+
         var front = s.placement[ord[0]];
 
-        // Move the registered atoms to always make the
-        // next qubit the front of the row.
         for (ord[1..]) |q| {
             const next = s.placement[q];
 
-            if (next.pos.y != front.pos.y) {
+            // Advancing rightward along the row needs no traversal: the
+            // register always parks left of the last pickup. Anything else
+            // (row change or leftward advance) rides - the packed half-lane
+            // columns share no x with any trap site, so the descent lands
+            // conflict-free by construction.
+            if (next.pos.y != front.pos.y or next.isLeftOf(front)) {
                 try s.rideRegister(&register, next.pos.x, next.pos.y);
-            } else if (next.isLeftOf(front)) {
-                const dx: i32 = front.pos.x - next.pos.x;
-
-                // Up
-                for (register.items) |a| try s.moveAtom(a, 0, -d);
-                s.step();
-
-                // Left
-                for (register.items) |a| try s.moveAtom(a, -(dx + d), 0);
-                s.step();
-
-                // Before descending, shift any atom that would land on an
-                // occupied site. Register atoms can sit a half-pitch apart, so
-                // a shifting atom may land exactly on its left neighbour; the
-                // neighbour must shift along - overtaking it would invert AOD
-                // column order - so sweep right to left and cascade the shift.
-                const by_x = try s.gpa.dupe(*Atom, register.items);
-                defer s.gpa.free(by_x);
-                std.sort.block(*Atom, by_x, {}, struct {
-                    fn gt(_: void, lhs: *const Atom, rhs: *const Atom) bool {
-                        return lhs.pos.x > rhs.pos.x;
-                    }
-                }.gt);
-                var conflict = true;
-                while (conflict) {
-                    conflict = false;
-                    var bump_x: ?i32 = null; // right neighbour's post-shift x
-                    for (by_x) |a| {
-                        const blocked = occupied.contains(.{ .x = a.pos.x, .y = a.pos.y + d });
-                        const bumped = if (bump_x) |bx| bx == a.pos.x else false;
-                        if (blocked or bumped) {
-                            try s.moveAtom(a, -d, 0);
-                            bump_x = a.pos.x;
-                            conflict = true;
-                        } else {
-                            bump_x = null;
-                        }
-                    }
-                    s.step(); // no-op when there was no conflict
-                }
-                for (register.items) |a| try s.moveAtom(a, 0, d); // down
-                s.step();
             }
 
-            try s.pickUpAtom(&register, &occupied, &s.placement[q]);
+            try s.loadAtom(&s.placement[q]);
+            try register.append(s.gpa, &s.placement[q]);
             s.step();
+
             front = next;
         }
 
@@ -748,17 +706,6 @@ pub const Hardware = struct {
         // Step 3
         for (register.items) |a| try s.moveAtom(a, 0, dest_y - a.pos.y);
         s.step();
-    }
-
-    fn pickUpAtom(
-        s: *Hardware,
-        register: *Register,
-        occupied: *std.AutoHashMap(Point, void),
-        atom: *Atom,
-    ) !void {
-        try s.loadAtom(atom);
-        try register.append(s.gpa, atom);
-        _ = occupied.remove(atom.pos);
     }
 };
 
@@ -997,12 +944,10 @@ test "pickup keeps the AOD register in a single row across storage rows" {
     defer in_aod.deinit();
 }
 
-// Left traversals leave register atoms a half-pitch apart (the register
-// parks half a pitch left of each pickup). When a later traversal hovers
-// such a pair over storage and only the right atom sits above an occupied
-// site, its avoidance shift lands exactly on its neighbour unless the
-// neighbour shifts along.
-test "pickup avoidance shift cascades instead of merging register columns" {
+// A left traversal carries the register past a storage site that is never
+// picked up. Packing into half-lanes keeps the descent clear of the
+// blocker: no half-lane x coincides with a trap site.
+test "pickup traversal past an occupied site preserves site exclusivity" {
     const gpa = std.testing.allocator;
 
     // Widen storage to six columns: three left traversals need the room.
@@ -1011,9 +956,8 @@ test "pickup avoidance shift cascades instead of merging register columns" {
     cfg.storage_zone.dimension_nm[0] = 6000;
 
     // Bottom row: a blocker at column 0 that is never picked up, and four
-    // pickups right to left. After picking columns 5, 4, 3 the register
-    // sits at x 2000, 2500, 3000; traversing to column 1 shifts it to
-    // -500, 0, 500, hovering the middle atom over the blocker.
+    // pickups right to left. The traversal to column 1 packs the register
+    // at x -1500, -500, 500, bracketing the blocker at x 0.
     var hw = try Hardware.init(gpa, cfg, 5, &.{
         .{ .row = 2, .col = 0 },
         .{ .row = 2, .col = 5 },
