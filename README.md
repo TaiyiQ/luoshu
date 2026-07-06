@@ -20,16 +20,24 @@ Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule f
 
 - Check the CLI help output.
 ```
-> zig build run
+> zig build run -- --help
 
-gatecomp <circuit.qasm> [options]
+usage: gatecomp [circuit.qasm] [options]
+
+Compiles one circuit when <circuit.qasm> is given; without it, runs
+every circuit in the settings [benchmark] list (visualization off,
+per-circuit outputs under the benchmark out_dir).
 
 options:
-  --arch <file>       architecture TOML (default: ./arch.toml)
-  --asm <file>        storage-occupancy JSON from the upstream
-                      atom-rearrangement package
+  --config <file>     settings TOML encoding these options
+                      (default: ./config/settings.toml, may be absent)
+  --arch <file>       architecture TOML (default: ./config/arch.toml)
+  --asm <file>        storage occupancy JSON from the upstream
+                      atom-rearrangement package; omitting it uses
+                      procedural placement
   --out <path>        write the hardware schedule as JSON
-  --draw / --no-draw  open the schedule visualization (default: on)
+  --bench <path>      write schedule benchmark metrics as JSON
+  --no-draw           skip the schedule visualization
   -v, --verbose       trace the compiler passes to stderr
   -h, --help          show this help
 ```
@@ -43,8 +51,28 @@ zig build run -- ../qasm/mvp.qasm
 - Explicit arguments and default overrides.
 
 ```shell
-zig build run -- ../qasm/mvp.qasm --arch arch.toml --asm example/assembly.json --out schedule.json --draw
+zig build run -- ../qasm/mvp.qasm --arch config/arch.toml --asm config/assembly.json --out schedule.json
 ```
+
+## Configuration
+
+`config/` holds the run configuration:
+
+- `config/arch.toml` — the neutral-atom architecture (zones, SLM grids, AOD limits, constraints).
+- `config/assembly.json` — storage occupancy handoff from the atom-rearrangement package.
+- `config/settings.toml` — encodes the CLI arguments (`[options]`), so a bare `gatecomp` needs no flags. Command-line flags always win over settings values.
+
+`[benchmark]` in `settings.toml` lists circuits to compile when no `<circuit.qasm>` is given:
+
+```shell
+> zig build run
+
+gatecomp: example/bell-state/bell.qasm: 2 qubits, 30 frames, schedule 1025.7us, compile 0.95ms
+gatecomp: example/ex1/mvp.qasm: 8 qubits, 72 frames, schedule 2186.7us, compile 0.99ms
+...
+```
+
+Each circuit writes `<out_dir>/<name>.hardware.json` and `<out_dir>/<name>.bench.json`.
 
 ## Visualizer
 

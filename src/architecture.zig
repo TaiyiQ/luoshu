@@ -668,7 +668,7 @@ test "validate rejects an out-of-range fidelity" {
 }
 
 test "the example config loads and validates" {
-    const cfg = try load(std.testing.allocator, std.testing.io, "arch.toml");
+    const cfg = try load(std.testing.allocator, std.testing.io, "config/arch.toml");
     defer cfg.deinit(std.testing.allocator);
 }
 
@@ -706,7 +706,7 @@ test "zone grids compose the zone offset with the SLM offset" {
 }
 
 test "corridorY lies in the trap-free lane between storage and compute" {
-    const cfg = try load(std.testing.allocator, std.testing.io, "arch.toml");
+    const cfg = try load(std.testing.allocator, std.testing.io, "config/arch.toml");
     defer cfg.deinit(std.testing.allocator);
 
     const cy = cfg.corridorY();
