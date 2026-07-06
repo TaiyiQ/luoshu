@@ -128,22 +128,22 @@ pub fn compile(
         }
 
         // U gates fire last: within a stage, CZs precede the U's, and by
-        // now all atoms are back at their storage positions. A stage may
-        // hold a run of U's per qubit, and same-qubit pulses cannot share
-        // a timestep, so the k-th pulse on each qubit fires in the stage's
-        // k-th raman wave. lowerU still runs in circuit order (the frame
-        // phase accumulates sequentially per qubit); waves only reorder
-        // pulses across qubits, whose U's commute.
+        // now all atoms are back at their storage positions. A stage may hold
+        // a run of U's per qubit, and same-qubit pulses cannot share a timestep,
+        // so the k-th pulse on each qubit fires in the stage's k-th raman wave.
         const pulses = try gpa.alloc(schedule.RamanGate, stage.u_gates.items.len);
         defer gpa.free(pulses);
+
         const wave = try gpa.alloc(usize, stage.u_gates.items.len);
         defer gpa.free(wave);
+
         const batch = try gpa.alloc(schedule.RamanGate, stage.u_gates.items.len);
+        @memset(rank, 0);
         defer gpa.free(batch);
 
-        @memset(rank, 0);
         var n: usize = 0;
         var n_waves: usize = 0;
+
         for (stage.u_gates.items) |gate| {
             const p = lowerU(&frame_phase[gate.qubit], gate) orelse continue;
             pulses[n] = p;
@@ -155,12 +155,14 @@ pub fn compile(
 
         for (0..n_waves) |w| {
             var m: usize = 0;
+
             for (pulses[0..n], wave[0..n]) |p, pw| {
                 if (pw == w) {
                     batch[m] = p;
                     m += 1;
                 }
             }
+
             try hw.raman(batch[0..m]);
         }
     }

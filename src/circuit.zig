@@ -78,52 +78,49 @@ pub const Pipeline = struct {
     }
 };
 
-/// Group the circuit's gates into stages. Within a stage, the CZ gates
-/// execute first, then the U gates fire as Raman pulses — sequentially per
-/// qubit, in circuit order.
+/// Group the circuit's gates into stages. Stages are homogeneous - all CZ
+/// or all U - so the pipeline alternates choreographed CZ episodes with
+/// Raman-pulse episodes, and an idle qubit's U joins the nearest U stage
+/// rather than riding along in a CZ stage.
 ///
-/// Only a CZ/U boundary on a shared qubit forces a new stage: CZs are
-/// diagonal and mutually commute, so a run of CZs shares one stage and may
-/// share qubits freely, and a run of U's on one qubit shares one stage
-/// because the pulses fire in order. A qubit therefore advances to the next
-/// stage exactly when its gate kind flips, and gates never reorder across a
-/// shared qubit.
+/// Gates never reorder across a shared qubit; across disjoint qubits
+/// a gate may join an earlier stage of its kind, which is safe
+/// exactly because disjoint gates commute.
 pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
     var pipe = try Pipeline.init(gpa, c.n);
     errdefer pipe.deinit();
 
-    // Per-qubit cursor: the stage holding the qubit's latest gate, and that
-    // gate's kind. A same-kind gate joins that stage; a kind flip moves past it.
-    const Cursor = struct { stage: usize = 0, last: enum { none, u, cz } = .none };
-    const cursors = try gpa.alloc(Cursor, c.n);
+    // Earliest stage of the wanted kind at or past `from`. A stage's kind
+    // is whichever list is populated; falling off the end names the fresh stage that
+    // place() then creates.
+    const fit = struct {
+        fn earliest(stages: []const Stage, from: usize, cz: bool) usize {
+            var s = from;
+            while (s < stages.len and (stages[s].cz_gates.items.len != 0) != cz) s += 1;
+            return s;
+        }
+    }.earliest;
+
+    // Per-qubit cursor: the stage holding the qubit's latest gate.
+    const cursors = try gpa.alloc(usize, c.n);
     defer gpa.free(cursors);
-    @memset(cursors, .{});
+    @memset(cursors, 0);
 
     for (c.gates.items) |gate| {
-        switch (gate) {
-            .u => |g| {
-                const cur = &cursors[g.qubit];
-                if (cur.last == .cz) cur.stage += 1;
-                cur.last = .u;
-                try pipe.place(cur.stage, gate);
-            },
-            .cz => |g| {
-                const a = cursors[g.control];
-                const b = cursors[g.target];
-                const stage = @max(
-                    a.stage + @intFromBool(a.last == .u),
-                    b.stage + @intFromBool(b.last == .u),
-                );
-                try pipe.place(stage, gate);
-                // Pin both qubits to the CZ's stage, or a later gate on the
-                // qubit that was lagging would be staged before this CZ.
-                cursors[g.control] = .{ .stage = stage, .last = .cz };
-                cursors[g.target] = .{ .stage = stage, .last = .cz };
-            },
-            // Reset is a front-end-only op: it carries no unitary, so it is not
-            // scheduled onto the hardware pipeline.
-            .reset => {},
-        }
+        const q: [2]u32 = switch (gate) {
+            .u => |g| .{ g.qubit, g.qubit },
+            .cz => |g| .{ g.control, g.target },
+            // Reset is a front-end-only op: it carries no unitary, so it is
+            // not scheduled onto the hardware pipeline.
+            .reset => continue,
+        };
+        const from = @max(cursors[q[0]], cursors[q[1]]);
+        const stage = fit(pipe.stages.items, from, gate == .cz);
+        try pipe.place(stage, gate);
+        // Pin every touched qubit to the gate's stage, or a later gate on
+        // a qubit that was lagging would be staged before this one.
+        cursors[q[0]] = stage;
+        cursors[q[1]] = stage;
     }
 
     return pipe;
@@ -313,6 +310,26 @@ test "decompose never stages a gate before a preceding gate on its qubit" {
     const s2 = pipe.stages.items[2];
     try std.testing.expectEqual(1, s2.u_gates.items.len);
     try std.testing.expectEqual(0, s2.u_gates.items[0].qubit);
+}
+
+test "decompose keeps stages homogeneous: an idle-qubit U joins the U stage" {
+    // q2 is untouched by the CZ, so its U *could* run beside it — but a
+    // stage is one episode kind, so the U belongs in the U stage with the
+    // post-CZ U on q0.
+    var c = Circuit.init(std.testing.allocator, 3);
+    defer c.deinit();
+    try c.cz(0, 1);
+    try c.h(2);
+    try c.h(0);
+
+    var pipe = try decompose(std.testing.allocator, c);
+    defer pipe.deinit();
+
+    try std.testing.expectEqual(2, pipe.stages.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[0].cz_gates.items.len);
+    try std.testing.expectEqual(0, pipe.stages.items[0].u_gates.items.len);
+    try std.testing.expectEqual(0, pipe.stages.items[1].cz_gates.items.len);
+    try std.testing.expectEqual(2, pipe.stages.items[1].u_gates.items.len);
 }
 
 test "decompose stacks same-qubit U runs into single stages" {
