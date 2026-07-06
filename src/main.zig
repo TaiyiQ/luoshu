@@ -95,9 +95,9 @@ fn compileOne(
 
     if (opts.draw) {
         // Draw original circuit.
-        try draw.pipeline(circ, null);
+        try draw.pipeline(init.gpa, circ, null);
         // Draw circuit decomposed into stages.
-        try draw.pipeline(circ, pipeline);
+        try draw.pipeline(init.gpa, circ, pipeline);
         // Draw arch layout and compiled schedule.
         try draw.physical(init.gpa, cfg, sch, asm_doc);
     }
