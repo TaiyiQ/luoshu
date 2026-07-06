@@ -1280,15 +1280,14 @@ fn drawResetGate(r: circuit.Reset, x: f32, dy: f32, y_offset: f32, font_size: i3
     rl.drawText("R", @intFromFloat(x - 6), @intFromFloat(qy - 10), font_size, .white);
 }
 
+// CZ is symmetric, so both qubits get the filled control dot (dot-and-⊕ would read as a CX).
 fn drawCzGate(cz: circuit.Cz, x: f32, dy: f32, y_offset: f32) void {
     const radius: f32 = 8;
     const cy = wireY(cz.control, dy, y_offset);
     const ty = wireY(cz.target, dy, y_offset);
     rl.drawLineV(.{ .x = x, .y = cy }, .{ .x = x, .y = ty }, .dark_gray);
     rl.drawCircleV(.{ .x = x, .y = cy }, radius, .dark_gray);
-    rl.drawCircleLinesV(.{ .x = x, .y = ty }, radius, .dark_gray);
-    rl.drawLineV(.{ .x = x - radius, .y = ty }, .{ .x = x + radius, .y = ty }, .dark_gray);
-    rl.drawLineV(.{ .x = x, .y = ty - radius }, .{ .x = x, .y = ty + radius }, .dark_gray);
+    rl.drawCircleV(.{ .x = x, .y = ty }, radius, .dark_gray);
 }
 
 /// Draw the circuit. Pass `stages` to group gates into labelled, divided
