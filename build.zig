@@ -143,6 +143,7 @@ pub fn build(b: *std.Build) void {
     });
     viewmodel_mod.addImport("schedule", schedule_mod);
     viewmodel_mod.addImport("arch", arch_mod);
+    viewmodel_mod.addImport("circuit", circuit_mod);
 
     const draw_mod = b.addModule("draw", .{
         .root_source_file = b.path("src/draw.zig"),
@@ -155,8 +156,8 @@ pub fn build(b: *std.Build) void {
     draw_mod.addImport("viewmodel", viewmodel_mod);
     exe.root_module.addImport("draw", draw_mod);
 
-    // raygui-based schedule visualizer (`--viz gui`): the in-progress
-    // rewrite of draw.physical.
+    // raygui-based visualizer (`--viz gui`): one window hosting the circuit,
+    // stage, and schedule views — the in-progress rewrite of draw.zig.
     const viz_mod = b.addModule("viz", .{
         .root_source_file = b.path("src/viz.zig"),
         .target = target,
@@ -164,6 +165,7 @@ pub fn build(b: *std.Build) void {
     viz_mod.addImport("schedule", schedule_mod);
     viz_mod.addImport("arch", arch_mod);
     viz_mod.addImport("assembly", assembly_mod);
+    viz_mod.addImport("circuit", circuit_mod);
     viz_mod.addImport("viewmodel", viewmodel_mod);
     exe.root_module.addImport("viz", viz_mod);
 

@@ -6,6 +6,7 @@
 const std = @import("std");
 const schedule = @import("schedule");
 const arch = @import("arch");
+const circuit = @import("circuit");
 
 const Point = schedule.Point;
 
@@ -53,6 +54,87 @@ pub fn slmZoneRect(zone_ox: i32, zone_oy: i32, slm: arch.Slm) ZoneRect {
     const y1 = y0 + @as(i32, @intCast((slm.num_row - 1) * slm.sep_nm[1])) + 2 * pad_y;
     return .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1 };
 }
+
+/// One gate with the diagram column the layout pass assigned it.
+pub const LaidGate = struct { gate: circuit.Native, col: usize };
+
+/// Column layout for the circuit diagrams: each gate takes the leftmost
+/// column free on every wire it touches (a CZ blocks its whole
+/// control..target span, keeping its connector clear), so gates on disjoint
+/// wires share a column instead of staggering. With a pipeline, a stage
+/// starts past its predecessor's columns, so stages never share one.
+pub const CircuitLayout = struct {
+    gpa: std.mem.Allocator,
+    laid: []LaidGate,
+    /// Each stage's first column; empty when laid out flat (no pipeline).
+    stage_cols: []usize,
+    n_cols: usize,
+    num_qubits: usize,
+
+    pub fn init(gpa: std.mem.Allocator, c: circuit.Circuit, p: ?circuit.Pipeline) !CircuitLayout {
+        var laid: std.ArrayList(LaidGate) = .empty;
+        defer laid.deinit(gpa);
+        var stage_cols: std.ArrayList(usize) = .empty;
+        defer stage_cols.deinit(gpa);
+
+        const next_free = try gpa.alloc(usize, c.n);
+        defer gpa.free(next_free);
+        @memset(next_free, 0);
+
+        var n_cols: usize = 0;
+        if (p) |pipe| {
+            for (pipe.stages.items) |stage| {
+                try stage_cols.append(gpa, n_cols);
+                @memset(next_free, n_cols);
+                for (stage.cz_gates.items) |g| {
+                    n_cols = @max(n_cols, try place(gpa, &laid, next_free, .{ .cz = g }));
+                }
+                for (stage.u_gates.items) |g| {
+                    n_cols = @max(n_cols, try place(gpa, &laid, next_free, .{ .u = g }));
+                }
+            }
+        } else {
+            for (c.gates.items) |gate| {
+                n_cols = @max(n_cols, try place(gpa, &laid, next_free, gate));
+            }
+        }
+
+        const laid_owned = try laid.toOwnedSlice(gpa);
+        errdefer gpa.free(laid_owned);
+        return .{
+            .gpa = gpa,
+            .laid = laid_owned,
+            .stage_cols = try stage_cols.toOwnedSlice(gpa),
+            .n_cols = n_cols,
+            .num_qubits = c.n,
+        };
+    }
+
+    pub fn deinit(l: *CircuitLayout) void {
+        l.gpa.free(l.laid);
+        l.gpa.free(l.stage_cols);
+    }
+
+    // Place one gate at the leftmost column free on every wire it touches
+    // and advance those wires past it. Returns the columns used so far.
+    fn place(
+        gpa: std.mem.Allocator,
+        laid: *std.ArrayList(LaidGate),
+        next_free: []usize,
+        gate: circuit.Native,
+    ) !usize {
+        const span: [2]usize = switch (gate) {
+            .u => |g| .{ g.qubit, g.qubit },
+            .cz => |g| .{ @min(g.control, g.target), @max(g.control, g.target) },
+            .reset => |g| .{ g.qubit, g.qubit },
+        };
+        var col: usize = 0;
+        for (next_free[span[0] .. span[1] + 1]) |f| col = @max(col, f);
+        @memset(next_free[span[0] .. span[1] + 1], col + 1);
+        try laid.append(gpa, .{ .gate = gate, .col = col });
+        return col + 1;
+    }
+};
 
 /// Op counts across the whole schedule, shown in the HUD panel.
 pub const Summary = struct {
@@ -354,6 +436,55 @@ test "summary counts ops and num_qubits spans all op kinds" {
     );
 
     try std.testing.expectEqual(@as(usize, 3), vm.num_qubits);
+}
+
+test "flat layout: disjoint gates share a column, a CZ blocks its span" {
+    const gpa = std.testing.allocator;
+
+    var c = circuit.Circuit.init(gpa, 4);
+    defer c.deinit();
+    try c.cz(0, 2); // spans wires 0..2
+    try c.z(1); // inside the CZ span: pushed to column 1
+    try c.z(3); // outside the span: shares column 0
+
+    var lay = try CircuitLayout.init(gpa, c, null);
+    defer lay.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), lay.n_cols);
+    try std.testing.expectEqual(@as(usize, 0), lay.stage_cols.len);
+    try std.testing.expectEqual(@as(usize, 3), lay.laid.len);
+    try std.testing.expectEqual(@as(usize, 0), lay.laid[0].col); // cz
+    try std.testing.expectEqual(@as(usize, 1), lay.laid[1].col); // z(1)
+    try std.testing.expectEqual(@as(usize, 0), lay.laid[2].col); // z(3)
+}
+
+test "staged layout: stages never share a column" {
+    const gpa = std.testing.allocator;
+
+    var c = circuit.Circuit.init(gpa, 2);
+    defer c.deinit();
+    try c.cz(0, 1);
+    try c.h(1); // barrier: next CZ lands in stage 1
+    try c.cz(0, 1);
+
+    var pipe = try circuit.decompose(gpa, c);
+    defer pipe.deinit();
+    try std.testing.expectEqual(@as(usize, 2), pipe.stages.items.len);
+
+    var lay = try CircuitLayout.init(gpa, c, pipe);
+    defer lay.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), lay.stage_cols.len);
+    // Stage 1 starts past every column stage 0 used.
+    try std.testing.expect(lay.stage_cols[1] > lay.stage_cols[0]);
+    for (lay.laid) |lg| {
+        try std.testing.expect(lg.col < lay.n_cols);
+    }
+    // The layout preserves stage grouping: within a stage CZs come first,
+    // so the second CZ sits at or past stage 1's first column.
+    const last = lay.laid[lay.laid.len - 1];
+    try std.testing.expect(last.gate == .cz);
+    try std.testing.expect(last.col >= lay.stage_cols[1]);
 }
 
 test {

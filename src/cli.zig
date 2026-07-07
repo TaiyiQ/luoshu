@@ -18,8 +18,10 @@ const usage =
     \\  --out <path>        write the hardware schedule as JSON
     \\  --bench <path>      write schedule benchmark metrics as JSON
     \\  --no-draw           skip the schedule visualization
-    \\  --viz <mode>        schedule visualizer: classic (default) or gui,
-    \\                      the raygui-based rewrite
+    \\  --viz <mode>        visualizer: classic (default) opens the circuit,
+    \\                      stage, and schedule windows in sequence; gui, the
+    \\                      raygui-based rewrite, hosts all three as tabs in
+    \\                      one window
     \\  -v, --verbose       trace the compiler passes to stderr
     \\  -h, --help          show this help
     \\
