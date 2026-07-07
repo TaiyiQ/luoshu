@@ -10,54 +10,11 @@ const Point = schedule.Point;
 const OpKind = schedule.OpKind;
 const Summary = viewmodel.Summary;
 
-// Enumerate every SLM trap site across storage and compute zones. These are drawn
-// as background indicators in the visualization.
-pub fn allSlmSites(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig) ![]const Point {
-    var sites: std.ArrayList(Point) = .empty;
-
-    {
-        const slm = layout.storage_zone.slm;
-        const x0 = layout.storage_zone.offset_nm[0] + slm.offset_nm[0];
-        const y0 = layout.storage_zone.offset_nm[1] + slm.offset_nm[1];
-        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
-        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
-        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try sites.append(gpa, .{
-                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
-                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
-            });
-        };
-    }
-
-    for (layout.compute_zone.slms) |slm| {
-        const x0 = layout.compute_zone.offset_nm[0] + slm.offset_nm[0];
-        const y0 = layout.compute_zone.offset_nm[1] + slm.offset_nm[1];
-        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
-        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
-        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try sites.append(gpa, .{
-                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
-                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
-            });
-        };
-    }
-
-    {
-        const slm = layout.readout_zone.slm;
-        const x0 = layout.readout_zone.offset_nm[0] + slm.offset_nm[0];
-        const y0 = layout.readout_zone.offset_nm[1] + slm.offset_nm[1];
-        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
-        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
-        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try sites.append(gpa, .{
-                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
-                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
-            });
-        };
-    }
-
-    return try sites.toOwnedSlice(gpa);
-}
+// Layout geometry (trap sites, zone rects) lives in viewmodel so both
+// visualizers share one raylib-free implementation.
+pub const allSlmSites = viewmodel.allSlmSites;
+const ZoneRect = viewmodel.ZoneRect;
+const slmZoneRect = viewmodel.slmZoneRect;
 
 const palette = struct {
     pub const bg = rl.Color{ .r = 48, .g = 52, .b = 70, .a = 255 };
@@ -288,18 +245,6 @@ fn drawGhostQubit(cam: Camera, pos: Point, fill: rl.Color) void {
 
     rl.drawCircleV(screen, screen_radius, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 35 });
     rl.drawCircleLinesV(screen, screen_radius, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 90 });
-}
-
-const ZoneRect = struct { x0: i32, y0: i32, x1: i32, y1: i32 };
-
-fn slmZoneRect(zone_ox: i32, zone_oy: i32, slm: arch_mod.Slm) ZoneRect {
-    const pad_x: i32 = @intCast(slm.sep_nm[0] / 2);
-    const pad_y: i32 = @intCast(slm.sep_nm[1] / 2);
-    const x0 = zone_ox + slm.offset_nm[0] - pad_x;
-    const y0 = zone_oy + slm.offset_nm[1] - pad_y;
-    const x1 = x0 + @as(i32, @intCast((slm.num_col - 1) * slm.sep_nm[0])) + 2 * pad_x;
-    const y1 = y0 + @as(i32, @intCast((slm.num_row - 1) * slm.sep_nm[1])) + 2 * pad_y;
-    return .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1 };
 }
 
 fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {

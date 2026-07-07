@@ -7,6 +7,7 @@ const qasm = @import("qasm");
 const compiler = @import("compiler");
 const bench = @import("bench");
 const draw = @import("draw");
+const viz = @import("viz");
 const serialize = @import("serialize");
 const trace = @import("trace");
 const verify = @import("verify");
@@ -99,6 +100,9 @@ fn compileOne(
         // Draw circuit decomposed into stages.
         try draw.pipeline(init.gpa, circ, pipeline);
         // Draw arch layout and compiled schedule.
-        try draw.physical(init.gpa, cfg, sch, asm_doc);
+        switch (opts.viz) {
+            .classic => try draw.physical(init.gpa, cfg, sch, asm_doc),
+            .gui => try viz.physical(init.gpa, cfg, sch, asm_doc),
+        }
     }
 }

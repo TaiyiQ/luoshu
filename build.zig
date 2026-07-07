@@ -155,6 +155,18 @@ pub fn build(b: *std.Build) void {
     draw_mod.addImport("viewmodel", viewmodel_mod);
     exe.root_module.addImport("draw", draw_mod);
 
+    // raygui-based schedule visualizer (`--viz gui`): the in-progress
+    // rewrite of draw.physical.
+    const viz_mod = b.addModule("viz", .{
+        .root_source_file = b.path("src/viz.zig"),
+        .target = target,
+    });
+    viz_mod.addImport("schedule", schedule_mod);
+    viz_mod.addImport("arch", arch_mod);
+    viz_mod.addImport("assembly", assembly_mod);
+    viz_mod.addImport("viewmodel", viewmodel_mod);
+    exe.root_module.addImport("viz", viz_mod);
+
     // --- External dependecies.
 
     const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
@@ -168,6 +180,8 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.linkLibrary(raylib_dep.artifact("raylib"));
     draw_mod.addImport("raylib", raylib_dep.module("raylib"));
+    viz_mod.addImport("raylib", raylib_dep.module("raylib"));
+    viz_mod.addImport("raygui", raylib_dep.module("raygui"));
 
     b.installArtifact(exe); // enables `zig build`
 
@@ -180,9 +194,10 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // --- Tests: `zig build test`.
-    // draw is excluded: testing it would link raylib; it is still compiled by
-    // the exe build. Every other module carries a std.testing.refAllDecls
-    // test, so dead code fails the build instead of bit-rotting.
+    // draw and viz are excluded: testing them would link raylib; they are
+    // still compiled by the exe build. Every other module carries a
+    // std.testing.refAllDecls test, so dead code fails the build instead of
+    // bit-rotting.
 
     const test_step = b.step("test", "Run unit and golden tests");
     const test_mods = [_]*std.Build.Module{

@@ -1,12 +1,58 @@
-//! Pure per-frame precomputation over a hardware schedule.
-//! Everything draw.zig needs that is a function of the
-//! schedule alone, with no raylib in sight — so it is unit-testable here
-//! and the render loop is pure drawing.
+//! Pure precomputation shared by the visualizers: per-frame state derived
+//! from a hardware schedule, plus layout geometry (trap sites, zone rects)
+//! derived from the architecture — with no raylib in sight, so it is
+//! unit-testable here and the render loops are pure drawing.
 
 const std = @import("std");
 const schedule = @import("schedule");
+const arch = @import("arch");
 
 const Point = schedule.Point;
+
+/// Enumerate every SLM trap site across storage, compute, and readout
+/// zones. Drawn as background indicators in the visualization.
+pub fn allSlmSites(gpa: std.mem.Allocator, layout: arch.ArchConfig) ![]const Point {
+    var sites: std.ArrayList(Point) = .empty;
+
+    try appendSlmSites(gpa, &sites, layout.storage_zone.offset_nm, layout.storage_zone.slm);
+    for (layout.compute_zone.slms) |slm| {
+        try appendSlmSites(gpa, &sites, layout.compute_zone.offset_nm, slm);
+    }
+    try appendSlmSites(gpa, &sites, layout.readout_zone.offset_nm, layout.readout_zone.slm);
+
+    return try sites.toOwnedSlice(gpa);
+}
+
+fn appendSlmSites(
+    gpa: std.mem.Allocator,
+    sites: *std.ArrayList(Point),
+    zone_offset_nm: [2]i32,
+    slm: arch.Slm,
+) !void {
+    const x0 = zone_offset_nm[0] + slm.offset_nm[0];
+    const y0 = zone_offset_nm[1] + slm.offset_nm[1];
+    const x_sep: i32 = @intCast(slm.sep_nm[0]);
+    const y_sep: i32 = @intCast(slm.sep_nm[1]);
+    for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
+        try sites.append(gpa, .{
+            .x = x0 + @as(i32, @intCast(ci)) * x_sep,
+            .y = y0 + @as(i32, @intCast(ri)) * y_sep,
+        });
+    };
+}
+
+/// One zone's SLM grid extent in world nm, padded by half a trap separation.
+pub const ZoneRect = struct { x0: i32, y0: i32, x1: i32, y1: i32 };
+
+pub fn slmZoneRect(zone_ox: i32, zone_oy: i32, slm: arch.Slm) ZoneRect {
+    const pad_x: i32 = @intCast(slm.sep_nm[0] / 2);
+    const pad_y: i32 = @intCast(slm.sep_nm[1] / 2);
+    const x0 = zone_ox + slm.offset_nm[0] - pad_x;
+    const y0 = zone_oy + slm.offset_nm[1] - pad_y;
+    const x1 = x0 + @as(i32, @intCast((slm.num_col - 1) * slm.sep_nm[0])) + 2 * pad_x;
+    const y1 = y0 + @as(i32, @intCast((slm.num_row - 1) * slm.sep_nm[1])) + 2 * pad_y;
+    return .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1 };
+}
 
 /// Op counts across the whole schedule, shown in the HUD panel.
 pub const Summary = struct {
@@ -102,8 +148,6 @@ pub const ViewModel = struct {
 };
 
 // ── Tests ────────────────────────────────────────────────────────────────────
-
-const arch = @import("arch");
 
 var test_no_slms: [0]arch.Slm = .{};
 
