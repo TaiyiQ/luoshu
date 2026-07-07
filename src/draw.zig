@@ -466,6 +466,7 @@ fn drawPanel(
     loaded: []const bool,
     summary: Summary,
     scroll: f32,
+    goto_digits: []const u8,
 ) f32 {
     const screen_h: f32 = @floatFromInt(rl.getScreenHeight());
     const cw: f32 = PANEL_W - 2 * PAD;
@@ -474,6 +475,7 @@ fn drawPanel(
     const ctrl = [_][2][:0]const u8{
         .{ "j / k", "step" },
         .{ "space", "play / pause" },
+        .{ "0-9, enter", "goto frame" },
         .{ "r", "reset" },
         .{ "scroll", "zoom / scroll" },
         .{ "drag", "pan" },
@@ -597,6 +599,13 @@ fn drawPanel(
             0.5,
             palette.text_sub,
         );
+        // Pending goto-frame input, right-aligned on the progress line.
+        if (goto_digits.len > 0) {
+            var gbuf: [24]u8 = undefined;
+            const gtxt = std.fmt.bufPrintSentinel(&gbuf, "goto {s}_", .{goto_digits}, 0) catch "?";
+            const gtw = rl.measureTextEx(font, gtxt, FS_PROGRESS, 0.5).x;
+            rl.drawTextEx(font, gtxt, .{ .x = PAD + cw - gtw, .y = y }, FS_PROGRESS, 0.5, accent);
+        }
         y += FS_PROGRESS + PAD;
     }
 
@@ -833,6 +842,9 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
     rl.initWindow(1280, 800, "Hardware schedule");
     defer rl.closeWindow();
     rl.setTargetFPS(60);
+    // Escape is handled manually: it cancels a pending goto-frame input
+    // first, and only quits when nothing is being typed.
+    rl.setExitKey(.null);
 
     const font = rl.loadFontEx(
         "./asset/JetBrainsMonoNerdFont-Regular.ttf",
@@ -878,6 +890,12 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
     var hold_k: f32 = 0.0;
     var hold_j: f32 = 0.0;
 
+    // Goto-frame input: typed digits accumulate here until enter jumps to
+    // that frame. Indices are 0-based, matching the frame numbers printed
+    // by verify diagnostics (e.g. "schedule verify: frame 2000: ...").
+    var goto_buf: [10]u8 = undefined;
+    var goto_len: usize = 0;
+
     var active = try gpa.alloc(bool, s.placement.len);
     defer gpa.free(active);
 
@@ -887,6 +905,26 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
     while (!rl.windowShouldClose()) {
         const dt = rl.getFrameTime();
         // ── Input ──────────────────────────────────────────────────
+        // Goto-frame: type a frame number, enter jumps there (clamped),
+        // backspace edits, escape cancels.
+        var ch = rl.getCharPressed();
+        while (ch != 0) : (ch = rl.getCharPressed()) {
+            if (ch >= '0' and ch <= '9' and goto_len < goto_buf.len) {
+                goto_buf[goto_len] = @intCast(ch);
+                goto_len += 1;
+            }
+        }
+        if (goto_len > 0 and rl.isKeyPressed(.backspace)) goto_len -= 1;
+        if (goto_len > 0 and (rl.isKeyPressed(.enter) or rl.isKeyPressed(.kp_enter))) {
+            const target = std.fmt.parseInt(usize, goto_buf[0..goto_len], 10) catch frame_count - 1;
+            frame = @min(target, frame_count - 1);
+            playing = false;
+            timer = 0;
+            goto_len = 0;
+        }
+        if (rl.isKeyPressed(.escape)) {
+            if (goto_len > 0) goto_len = 0 else break;
+        }
         if (rl.isKeyPressed(.k)) {
             playing = false;
             frame = @min(frame + 1, frame_count - 1);
@@ -1127,9 +1165,15 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
                 frame_loaded[frame],
                 summary,
                 panel_scroll,
+                goto_buf[0..goto_len],
             );
         } else {
             rl.drawTextEx(font, "h  show panel", .{ .x = 16, .y = 16 }, 13, 0.8, palette.text_sub);
+            if (goto_len > 0) {
+                var buf: [24]u8 = undefined;
+                const txt = std.fmt.bufPrintSentinel(&buf, "goto {s}_", .{goto_buf[0..goto_len]}, 0) catch "?";
+                rl.drawTextEx(font, txt, .{ .x = 16, .y = 38 }, 20, 0.8, palette.text);
+            }
         }
     }
 }
