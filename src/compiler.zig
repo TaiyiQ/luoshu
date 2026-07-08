@@ -102,6 +102,11 @@ pub fn compile(
     @memset(frame_phase, 0);
     defer gpa.free(frame_phase);
 
+    // Per-qubit count of pulses already assigned in the current stage;
+    // a pulse's count is its raman wave. Reset at each stage.
+    const rank = try gpa.alloc(usize, pipe.num_qubits);
+    defer gpa.free(rank);
+
     for (pipe.stages.items) |*stage| {
         // A stage with no CZ gates has nothing to route, so it is pure Raman pulses.
         if (stage.cz_gates.items.len > 0) {
@@ -122,19 +127,44 @@ pub fn compile(
             }
         }
 
-        // U gates fire last: within a stage, CZs precede the U barrier,
-        // and by now all atoms are back at their storage positions.
+        // U gates fire last: within a stage, CZs precede the U's, and by
+        // now all atoms are back at their storage positions. A stage may hold
+        // a run of U's per qubit, and same-qubit pulses cannot share a timestep,
+        // so the k-th pulse on each qubit fires in the stage's k-th raman wave.
         const pulses = try gpa.alloc(schedule.RamanGate, stage.u_gates.items.len);
         defer gpa.free(pulses);
 
+        const wave = try gpa.alloc(usize, stage.u_gates.items.len);
+        defer gpa.free(wave);
+
+        const batch = try gpa.alloc(schedule.RamanGate, stage.u_gates.items.len);
+        @memset(rank, 0);
+        defer gpa.free(batch);
+
         var n: usize = 0;
+        var n_waves: usize = 0;
+
         for (stage.u_gates.items) |gate| {
-            if (lowerU(&frame_phase[gate.qubit], gate)) |p| {
-                pulses[n] = p;
-                n += 1;
-            }
+            const p = lowerU(&frame_phase[gate.qubit], gate) orelse continue;
+            pulses[n] = p;
+            wave[n] = rank[gate.qubit];
+            n += 1;
+            rank[gate.qubit] += 1;
+            n_waves = @max(n_waves, rank[gate.qubit]);
         }
-        try hw.raman(pulses[0..n]);
+
+        for (0..n_waves) |w| {
+            var m: usize = 0;
+
+            for (pulses[0..n], wave[0..n]) |p, pw| {
+                if (pw == w) {
+                    batch[m] = p;
+                    m += 1;
+                }
+            }
+
+            try hw.raman(batch[0..m]);
+        }
     }
 
     try hw.moveReadout();
