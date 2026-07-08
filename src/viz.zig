@@ -206,6 +206,23 @@ fn drawAodHighlight(cam: Camera, positions: []const Point, loaded: []const bool,
     }
 }
 
+/// Halo enclosing a pair of atoms sitting within the blockade radius during
+/// a rydberg pulse — the pairs that actually entangle.
+fn drawPairHalo(cam: Camera, a: Point, b: Point, color: rl.Color) void {
+    const sa = cam.worldToScreen(toVec(a));
+    const sb = cam.worldToScreen(toVec(b));
+    const base_r = ATOM_R * cam.zoom;
+    const center = rl.Vector2{ .x = (sa.x + sb.x) / 2.0, .y = (sa.y + sb.y) / 2.0 };
+    const dx = sb.x - sa.x;
+    const dy = sb.y - sa.y;
+    const r = @sqrt(dx * dx + dy * dy) / 2.0 + base_r * 1.8;
+
+    rl.drawCircleV(center, r, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 12 });
+    rl.drawCircleLinesV(center, r, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 90 });
+    rl.drawCircleLinesV(center, r + 2.0, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 40 });
+    rl.drawCircleLinesV(center, r + 4.0, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 15 });
+}
+
 fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, is_active: bool, is_loaded: bool, fill: rl.Color) void {
     const screen = cam.worldToScreen(toVec(pos));
     const radius = (if (is_loaded) ATOM_R_LOADED else ATOM_R) * cam.zoom;
@@ -377,6 +394,7 @@ const ScheduleView = struct {
     active: []bool,
     draw_positions: []Point,
     last_frame: usize,
+    db_nm: u32,
 
     frame: usize = 0,
     playing: bool = false,
@@ -504,6 +522,21 @@ const ScheduleView = struct {
                 2.0,
                 rl.Color{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 140 },
             );
+        }
+
+        // Halo every active pair within the blockade radius of the pulse.
+        if (rydberg_zone != null) {
+            const db: i64 = v.db_nm;
+            const db2 = db * db;
+            for (v.draw_positions[0..v.vm.num_qubits], 0..) |pa, ia| {
+                if (!v.active[ia]) continue;
+                for (v.draw_positions[0..v.vm.num_qubits], 0..) |pb, ib| {
+                    if (ib <= ia or !v.active[ib]) continue;
+                    const dx: i64 = @as(i64, pa.x) - @as(i64, pb.x);
+                    const dy: i64 = @as(i64, pa.y) - @as(i64, pb.y);
+                    if (dx * dx + dy * dy <= db2) drawPairHalo(v.cam, pa, pb, palette.op_rydberg);
+                }
+            }
         }
 
         for (v.draw_positions, 0..) |pos, id| {
@@ -724,6 +757,7 @@ pub fn run(
         .active = active,
         .draw_positions = draw_positions,
         .last_frame = s.frames.items.len -| 1,
+        .db_nm = layout.constraints.db_nm,
     };
 
     var view: View = .circuit;
