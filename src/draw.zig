@@ -10,54 +10,11 @@ const Point = schedule.Point;
 const OpKind = schedule.OpKind;
 const Summary = viewmodel.Summary;
 
-// Enumerate every SLM trap site across storage and compute zones. These are drawn
-// as background indicators in the visualization.
-pub fn allSlmSites(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig) ![]const Point {
-    var sites: std.ArrayList(Point) = .empty;
-
-    {
-        const slm = layout.storage_zone.slm;
-        const x0 = layout.storage_zone.offset_nm[0] + slm.offset_nm[0];
-        const y0 = layout.storage_zone.offset_nm[1] + slm.offset_nm[1];
-        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
-        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
-        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try sites.append(gpa, .{
-                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
-                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
-            });
-        };
-    }
-
-    for (layout.compute_zone.slms) |slm| {
-        const x0 = layout.compute_zone.offset_nm[0] + slm.offset_nm[0];
-        const y0 = layout.compute_zone.offset_nm[1] + slm.offset_nm[1];
-        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
-        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
-        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try sites.append(gpa, .{
-                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
-                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
-            });
-        };
-    }
-
-    {
-        const slm = layout.readout_zone.slm;
-        const x0 = layout.readout_zone.offset_nm[0] + slm.offset_nm[0];
-        const y0 = layout.readout_zone.offset_nm[1] + slm.offset_nm[1];
-        const x_sep_s: i32 = @intCast(slm.sep_nm[0]);
-        const y_sep_s: i32 = @intCast(slm.sep_nm[1]);
-        for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-            try sites.append(gpa, .{
-                .x = x0 + @as(i32, @intCast(ci)) * x_sep_s,
-                .y = y0 + @as(i32, @intCast(ri)) * y_sep_s,
-            });
-        };
-    }
-
-    return try sites.toOwnedSlice(gpa);
-}
+// Layout geometry (trap sites, zone rects) lives in viewmodel so both
+// visualizers share one raylib-free implementation.
+pub const allSlmSites = viewmodel.allSlmSites;
+const ZoneRect = viewmodel.ZoneRect;
+const slmZoneRect = viewmodel.slmZoneRect;
 
 const palette = struct {
     pub const bg = rl.Color{ .r = 48, .g = 52, .b = 70, .a = 255 };
@@ -290,18 +247,6 @@ fn drawGhostQubit(cam: Camera, pos: Point, fill: rl.Color) void {
     rl.drawCircleLinesV(screen, screen_radius, rl.Color{ .r = fill.r, .g = fill.g, .b = fill.b, .a = 90 });
 }
 
-const ZoneRect = struct { x0: i32, y0: i32, x1: i32, y1: i32 };
-
-fn slmZoneRect(zone_ox: i32, zone_oy: i32, slm: arch_mod.Slm) ZoneRect {
-    const pad_x: i32 = @intCast(slm.sep_nm[0] / 2);
-    const pad_y: i32 = @intCast(slm.sep_nm[1] / 2);
-    const x0 = zone_ox + slm.offset_nm[0] - pad_x;
-    const y0 = zone_oy + slm.offset_nm[1] - pad_y;
-    const x1 = x0 + @as(i32, @intCast((slm.num_col - 1) * slm.sep_nm[0])) + 2 * pad_x;
-    const y1 = y0 + @as(i32, @intCast((slm.num_row - 1) * slm.sep_nm[1])) + 2 * pad_y;
-    return .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1 };
-}
-
 fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
     const tl = cam.worldToScreen(.{ .x = @floatFromInt(r.x0), .y = @floatFromInt(r.y0) });
     const br = cam.worldToScreen(.{ .x = @floatFromInt(r.x1), .y = @floatFromInt(r.y1) });
@@ -466,6 +411,7 @@ fn drawPanel(
     loaded: []const bool,
     summary: Summary,
     scroll: f32,
+    goto_digits: []const u8,
 ) f32 {
     const screen_h: f32 = @floatFromInt(rl.getScreenHeight());
     const cw: f32 = PANEL_W - 2 * PAD;
@@ -474,6 +420,7 @@ fn drawPanel(
     const ctrl = [_][2][:0]const u8{
         .{ "j / k", "step" },
         .{ "space", "play / pause" },
+        .{ "0-9, enter", "goto frame" },
         .{ "r", "reset" },
         .{ "scroll", "zoom / scroll" },
         .{ "drag", "pan" },
@@ -597,6 +544,13 @@ fn drawPanel(
             0.5,
             palette.text_sub,
         );
+        // Pending goto-frame input, right-aligned on the progress line.
+        if (goto_digits.len > 0) {
+            var gbuf: [24]u8 = undefined;
+            const gtxt = std.fmt.bufPrintSentinel(&gbuf, "goto {s}_", .{goto_digits}, 0) catch "?";
+            const gtw = rl.measureTextEx(font, gtxt, FS_PROGRESS, 0.5).x;
+            rl.drawTextEx(font, gtxt, .{ .x = PAD + cw - gtw, .y = y }, FS_PROGRESS, 0.5, accent);
+        }
         y += FS_PROGRESS + PAD;
     }
 
@@ -833,6 +787,9 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
     rl.initWindow(1280, 800, "Hardware schedule");
     defer rl.closeWindow();
     rl.setTargetFPS(60);
+    // Escape is handled manually: it cancels a pending goto-frame input
+    // first, and only quits when nothing is being typed.
+    rl.setExitKey(.null);
 
     const font = rl.loadFontEx(
         "./asset/JetBrainsMonoNerdFont-Regular.ttf",
@@ -878,6 +835,12 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
     var hold_k: f32 = 0.0;
     var hold_j: f32 = 0.0;
 
+    // Goto-frame input: typed digits accumulate here until enter jumps to
+    // that frame. Indices are 0-based, matching the frame numbers printed
+    // by verify diagnostics (e.g. "schedule verify: frame 2000: ...").
+    var goto_buf: [10]u8 = undefined;
+    var goto_len: usize = 0;
+
     var active = try gpa.alloc(bool, s.placement.len);
     defer gpa.free(active);
 
@@ -887,6 +850,26 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
     while (!rl.windowShouldClose()) {
         const dt = rl.getFrameTime();
         // ── Input ──────────────────────────────────────────────────
+        // Goto-frame: type a frame number, enter jumps there (clamped),
+        // backspace edits, escape cancels.
+        var ch = rl.getCharPressed();
+        while (ch != 0) : (ch = rl.getCharPressed()) {
+            if (ch >= '0' and ch <= '9' and goto_len < goto_buf.len) {
+                goto_buf[goto_len] = @intCast(ch);
+                goto_len += 1;
+            }
+        }
+        if (goto_len > 0 and rl.isKeyPressed(.backspace)) goto_len -= 1;
+        if (goto_len > 0 and (rl.isKeyPressed(.enter) or rl.isKeyPressed(.kp_enter))) {
+            const target = std.fmt.parseInt(usize, goto_buf[0..goto_len], 10) catch frame_count - 1;
+            frame = @min(target, frame_count - 1);
+            playing = false;
+            timer = 0;
+            goto_len = 0;
+        }
+        if (rl.isKeyPressed(.escape)) {
+            if (goto_len > 0) goto_len = 0 else break;
+        }
         if (rl.isKeyPressed(.k)) {
             playing = false;
             frame = @min(frame + 1, frame_count - 1);
@@ -1127,9 +1110,15 @@ pub fn physical(gpa: std.mem.Allocator, layout: arch_mod.ArchConfig, s: schedule
                 frame_loaded[frame],
                 summary,
                 panel_scroll,
+                goto_buf[0..goto_len],
             );
         } else {
             rl.drawTextEx(font, "h  show panel", .{ .x = 16, .y = 16 }, 13, 0.8, palette.text_sub);
+            if (goto_len > 0) {
+                var buf: [24]u8 = undefined;
+                const txt = std.fmt.bufPrintSentinel(&buf, "goto {s}_", .{goto_buf[0..goto_len]}, 0) catch "?";
+                rl.drawTextEx(font, txt, .{ .x = 16, .y = 38 }, 20, 0.8, palette.text);
+            }
         }
     }
 }
@@ -1290,29 +1279,6 @@ fn drawCzGate(cz: circuit.Cz, x: f32, dy: f32, y_offset: f32) void {
     rl.drawCircleV(.{ .x = x, .y = ty }, radius, .dark_gray);
 }
 
-const LaidGate = struct { gate: circuit.Native, col: usize };
-
-// Place one gate at the leftmost column free on every wire it touches (a CZ
-// touches its whole control..target span, keeping its connector clear) and
-// advance those wires past it. Returns the columns used so far.
-fn placeGate(
-    gpa: std.mem.Allocator,
-    laid: *std.ArrayList(LaidGate),
-    next_free: []usize,
-    gate: circuit.Native,
-) !usize {
-    const span: [2]usize = switch (gate) {
-        .u => |g| .{ g.qubit, g.qubit },
-        .cz => |g| .{ @min(g.control, g.target), @max(g.control, g.target) },
-        .reset => |g| .{ g.qubit, g.qubit },
-    };
-    var col: usize = 0;
-    for (next_free[span[0] .. span[1] + 1]) |f| col = @max(col, f);
-    @memset(next_free[span[0] .. span[1] + 1], col + 1);
-    try laid.append(gpa, .{ .gate = gate, .col = col });
-    return col + 1;
-}
-
 /// Draw the circuit. Pass `stages` to group gates into labelled, divided
 /// columns; pass `null` to lay every gate out flat in order.
 pub fn pipeline(gpa: std.mem.Allocator, c: circuit.Circuit, p: ?circuit.Pipeline) !void {
@@ -1333,37 +1299,12 @@ pub fn pipeline(gpa: std.mem.Allocator, c: circuit.Circuit, p: ?circuit.Pipeline
     const y_offset: f32 = font_size / 2;
     const col_w: f32 = 60;
 
-    // Column layout, computed once. Gates on disjoint wires share a column,
-    // so independent U's align vertically instead of staggering. A stage
-    // starts past its predecessor's columns, so stages never share one.
-    var laid: std.ArrayList(LaidGate) = .empty;
-    defer laid.deinit(gpa);
-    var stage_cols: std.ArrayList(usize) = .empty; // each stage's first column
-    defer stage_cols.deinit(gpa);
+    // Column layout, computed once in viewmodel (shared with viz and
+    // unit-tested there).
+    var laid = try viewmodel.CircuitLayout.init(gpa, c, p);
+    defer laid.deinit();
 
-    const next_free = try gpa.alloc(usize, c.n);
-    defer gpa.free(next_free);
-    @memset(next_free, 0);
-
-    var n_cols: usize = 0;
-    if (p) |pipe| {
-        for (pipe.stages.items) |stage| {
-            try stage_cols.append(gpa, n_cols);
-            @memset(next_free, n_cols);
-            for (stage.cz_gates.items) |g| {
-                n_cols = @max(n_cols, try placeGate(gpa, &laid, next_free, .{ .cz = g }));
-            }
-            for (stage.u_gates.items) |g| {
-                n_cols = @max(n_cols, try placeGate(gpa, &laid, next_free, .{ .u = g }));
-            }
-        }
-    } else {
-        for (c.gates.items) |gate| {
-            n_cols = @max(n_cols, try placeGate(gpa, &laid, next_free, gate));
-        }
-    }
-
-    const content_w: f32 = @as(f32, @floatFromInt(n_cols)) * col_w;
+    const content_w: f32 = @as(f32, @floatFromInt(laid.n_cols)) * col_w;
     const max_scroll: f32 = @max(0, content_w - (sw - x_offset));
 
     var scroll: f32 = 0;
@@ -1388,7 +1329,7 @@ pub fn pipeline(gpa: std.mem.Allocator, c: circuit.Circuit, p: ?circuit.Pipeline
 
         // Stage dividers + labels at each stage's first column (flat mode
         // laid no stages, so this is a no-op there).
-        for (stage_cols.items, 0..) |sc, s| {
+        for (laid.stage_cols, 0..) |sc, s| {
             const stage_x0 = x_offset + @as(f32, @floatFromInt(sc)) * col_w - scroll;
             if (s > 0) rl.drawLineV(.{ .x = stage_x0, .y = 0 }, .{ .x = stage_x0, .y = sh }, .light_gray);
             const slabel = try std.fmt.bufPrintZ(&buf, "S{d}", .{s});
@@ -1396,7 +1337,7 @@ pub fn pipeline(gpa: std.mem.Allocator, c: circuit.Circuit, p: ?circuit.Pipeline
         }
 
         // Gates, at the columns assigned by the layout pass.
-        for (laid.items) |lg| {
+        for (laid.laid) |lg| {
             const x = x_offset + (@as(f32, @floatFromInt(lg.col)) + 0.5) * col_w - scroll;
             switch (lg.gate) {
                 .u => |g| drawUGate(g, x, dy, y_offset, font_size),

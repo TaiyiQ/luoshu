@@ -18,6 +18,10 @@ const usage =
     \\  --out <path>        write the hardware schedule as JSON
     \\  --bench <path>      write schedule benchmark metrics as JSON
     \\  --no-draw           skip the schedule visualization
+    \\  --viz <mode>        visualizer: classic (default) opens the circuit,
+    \\                      stage, and schedule windows in sequence; gui, the
+    \\                      raygui-based rewrite, hosts all three as tabs in
+    \\                      one window
     \\  -v, --verbose       trace the compiler passes to stderr
     \\  -h, --help          show this help
     \\
@@ -29,6 +33,10 @@ pub const Job = struct {
     out: ?[]const u8 = null,
     bench: ?[]const u8 = null,
 };
+
+/// Which schedule visualizer `main` opens: the original hand-drawn panel or
+/// the raygui-based rewrite.
+pub const Viz = enum { classic, gui };
 
 pub const Options = struct {
     /// Compilations to run: one job for the single positional argument, or
@@ -43,6 +51,7 @@ pub const Options = struct {
     arch_path: []const u8,
     asm_path: ?[]const u8 = null,
     draw: bool = true,
+    viz: Viz = .classic,
     verbose: bool = false,
 };
 
@@ -86,6 +95,9 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
             flags.bench = try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--no-draw")) {
             flags.draw = false;
+        } else if (std.mem.eql(u8, arg, "--viz")) {
+            const v = it.next() orelse fatal("--viz expects a mode", .{});
+            flags.viz = try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
             flags.verbose = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
@@ -105,6 +117,8 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
         .arch_path = cfg.arch,
         .asm_path = cfg.assembly,
         .draw = cfg.draw,
+        .viz = std.meta.stringToEnum(Viz, cfg.viz) orelse
+            fatal("unknown viz mode '{s}' (expected classic or gui)", .{cfg.viz}),
         .verbose = cfg.verbose,
     };
 

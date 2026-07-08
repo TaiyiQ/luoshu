@@ -7,6 +7,7 @@ const qasm = @import("qasm");
 const compiler = @import("compiler");
 const bench = @import("bench");
 const draw = @import("draw");
+const viz = @import("viz");
 const serialize = @import("serialize");
 const trace = @import("trace");
 const verify = @import("verify");
@@ -94,11 +95,16 @@ fn compileOne(
     }
 
     if (opts.draw) {
-        // Draw original circuit.
-        try draw.pipeline(init.gpa, circ, null);
-        // Draw circuit decomposed into stages.
-        try draw.pipeline(init.gpa, circ, pipeline);
-        // Draw arch layout and compiled schedule.
-        try draw.physical(init.gpa, cfg, sch, asm_doc);
+        switch (opts.viz) {
+            // Three windows in sequence: original circuit, staged circuit,
+            // then the arch layout with the compiled schedule.
+            .classic => {
+                try draw.pipeline(init.gpa, circ, null);
+                try draw.pipeline(init.gpa, circ, pipeline);
+                try draw.physical(init.gpa, cfg, sch, asm_doc);
+            },
+            // The same three views as tabs in one window.
+            .gui => try viz.run(init.gpa, cfg, sch, asm_doc, circ, pipeline),
+        }
     }
 }
