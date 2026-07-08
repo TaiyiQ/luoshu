@@ -1,11 +1,8 @@
 const std = @import("std");
 const resting = @import("resting");
-
-// Pass tracing, off by default so the compiler is silent as a library and
-// in tests. The driver enables it via trace.enabled (the CLI's -v flag).
 const trace = @import("trace");
 
-const MIN = -1; // -1 to help k in leastAdmissible start at 0.
+const MIN = -1; // maxColor sentinel: below every real color.
 
 const EdgeNode = struct {
     y: usize,
@@ -101,11 +98,10 @@ pub const Graph = struct {
 pub const Sequence = struct {
     arena: std.heap.ArenaAllocator,
 
-    // List of qubit IDs that will be fixed in the SLM in compute zone.
+    // Qubit IDs fixed in the SLM in the compute zone.
     fixed: []const ?usize,
 
-    // Key is the timeframe, and value if a list of qubit IDs that
-    // will move across the fixed SLM qubits in the compute zone.
+    // Per timeframe: qubit IDs moving across the fixed SLM qubits.
     moveable: [][]?usize,
 
     pub fn deinit(s: *Sequence) void {
@@ -161,30 +157,32 @@ const Aod = struct {
     }
 };
 
-const AodConstraints = struct {
-    adj: []std.ArrayList(usize), // adj[i] = AOD indices that i must come before
-    n: usize,
+/// Left-to-right SLM ordering constraints built during edge coloring:
+/// adj[q] holds the qubits q must sit left of. Kept acyclic by construction
+/// - leastAdmissible checks reachability before committing.
+const SlmOrder = struct {
     gpa: std.mem.Allocator,
+    adj: []std.ArrayList(usize),
+    n: usize,
 
-    fn init(gpa: std.mem.Allocator, n: usize) !AodConstraints {
+    fn init(gpa: std.mem.Allocator, n: usize) !SlmOrder {
         const adj = try gpa.alloc(std.ArrayList(usize), n);
         for (adj) |*a| a.* = .empty;
         return .{ .adj = adj, .n = n, .gpa = gpa };
     }
 
-    fn deinit(self: *AodConstraints) void {
+    fn deinit(self: *SlmOrder) void {
         for (self.adj) |*a| a.deinit(self.gpa);
         self.gpa.free(self.adj);
     }
 
-    // BFS: can `from` reach `to`?
-    fn canReach(self: *const AodConstraints, from: usize, to: usize) bool {
+    // Is `from` transitively forced left of `to`? Reflexive.
+    fn mustPrecede(self: *const SlmOrder, from: usize, to: usize) bool {
         if (from == to) return true;
 
         var visited = self.gpa.alloc(bool, self.n) catch return false;
-
-        defer self.gpa.free(visited);
         @memset(visited, false);
+        defer self.gpa.free(visited);
 
         var queue: std.ArrayList(usize) = .empty;
         defer queue.deinit(self.gpa);
@@ -204,12 +202,15 @@ const AodConstraints = struct {
                 }
             }
         }
+
         return false;
     }
 
-    fn addConstraint(self: *AodConstraints, from: usize, to: usize) !void {
+    // Record `from` left of `to`. Does not check for cycles; callers verify
+    // via mustPrecede before committing.
+    fn addConstraint(self: *SlmOrder, from: usize, to: usize) !void {
         if (from == to) return;
-        for (self.adj[from].items) |x| if (x == to) return; // no duplicates
+        for (self.adj[from].items) |x| if (x == to) return;
         try self.adj[from].append(self.gpa, to);
     }
 };
@@ -218,7 +219,6 @@ fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !Aod {
     var set = try gpa.alloc(bool, g.n);
     @memset(set, false);
 
-    // Sort nodes descending by degree.
     var order = try std.ArrayList(usize).initCapacity(gpa, g.n);
     defer order.deinit(gpa);
 
@@ -226,7 +226,6 @@ fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !Aod {
 
     std.sort.heap(usize, order.items, g, struct {
         fn less(graph: Graph, a: usize, b: usize) bool {
-            //return graph.degree[a] > graph.degree[b];
             if (graph.degree[a] != graph.degree[b]) {
                 return graph.degree[a] > graph.degree[b];
             }
@@ -234,12 +233,13 @@ fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !Aod {
         }
     }.less);
 
-    // Greedy MIS: add a node when none of its neighbours are in the set.
-    // Skip isolated nodes (degree 0): they have no two-qubit interactions and
-    // must remain SLM qubits.
+    // Greedy MIS. Isolated nodes have no two-qubit interactions and must
+    // remain SLM qubits.
     for (order.items) |v| {
         if (g.degree[v] == 0) continue;
+
         var add = true;
+
         var e = g.edges[v];
         while (e) |edge| : (e = edge.next) {
             if (set[edge.y]) {
@@ -247,52 +247,128 @@ fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !Aod {
                 break;
             }
         }
+
         if (add) set[v] = true;
     }
 
-    // nodes holds only AOD nodes, in degree-sorted order.
     var nodes = try std.ArrayList(usize).initCapacity(gpa, g.n);
+    defer nodes.deinit(gpa);
 
     for (order.items) |v| {
         if (set[v]) try nodes.append(gpa, v);
     }
 
-    trace.print(">> AOD ordered nodes: {any}\n", .{nodes.items});
+    // Group AODs by connected component, keeping degree order within each.
+    // This order is final: nodes[0] is the rightmost AOD column, and the
+    // coloring only ever accepts colors that respect it.
+    const none = std.math.maxInt(usize);
 
-    return .{ .set = set, .nodes = nodes };
+    const comp = try gpa.alloc(usize, g.n);
+    @memset(comp, none);
+    defer gpa.free(comp);
+
+    var n_comp: usize = 0;
+    var stack: std.ArrayList(usize) = .empty;
+    defer stack.deinit(gpa);
+
+    for (0..g.n) |root| {
+        if (comp[root] != none) continue;
+
+        comp[root] = n_comp;
+        try stack.append(gpa, root);
+
+        while (stack.pop()) |u| {
+            var e = g.edges[u];
+
+            while (e) |edge| : (e = edge.next) {
+                if (comp[edge.y] == none) {
+                    comp[edge.y] = n_comp;
+                    try stack.append(gpa, edge.y);
+                }
+            }
+        }
+
+        n_comp += 1;
+    }
+
+    const done = try gpa.alloc(bool, n_comp);
+    @memset(done, false);
+    defer gpa.free(done);
+
+    var grouped = try std.ArrayList(usize).initCapacity(gpa, nodes.items.len);
+    for (nodes.items) |v| {
+        if (done[comp[v]]) continue;
+
+        done[comp[v]] = true;
+
+        for (nodes.items) |u| {
+            if (comp[u] == comp[v]) grouped.appendAssumeCapacity(u);
+        }
+    }
+
+    return .{ .set = set, .nodes = grouped };
 }
 
-// Use a modified DSatur algorithm to color edges instead of nodes.
-fn colorEdges(gpa: std.mem.Allocator, g: *Graph, aod: Aod) !void {
-    // Map node_id -> index in aod_nodes (stable across the whole coloring).
-    var aod_idx = std.AutoHashMap(usize, usize).init(gpa);
-    defer aod_idx.deinit();
+const ColoredEdge = struct { aod: usize, slm: usize, color: i32 };
 
-    for (aod.nodes.items, 0..) |a, i| try aod_idx.put(a, i);
+// Modified DSatur edge coloring, after arXiv:2405.08068 (and qmap's
+// NAGraphAlgorithms). Edges are colored AOD by AOD in the fixed sequence
+// order while a partial order on the SLM qubits grows alongside: an AOD
+// gates its SLM partners left to right in color order, and AODs sharing a
+// color class order their partners by AOD rank. leastAdmissible rejects
+// colors that contradict the partial order, so the AOD sequence never needs
+// reordering and the SLM layout is just a topological sort of `order`.
+fn colorEdges(gpa: std.mem.Allocator, g: *Graph, aod: Aod, order: *SlmOrder) !void {
+    // rank_of[q] = index of AOD q in the fixed sequence (0 = rightmost).
+    const rank_of = try gpa.alloc(usize, g.n);
+    @memset(rank_of, 0);
+    defer gpa.free(rank_of);
 
-    // Constraint graph: maintained incrementally to detect cycles early.
-    var constraints = try AodConstraints.init(gpa, aod.nodes.items.len);
-    defer constraints.deinit();
+    for (aod.nodes.items, 0..) |q, i| rank_of[q] = i;
 
-    for (aod.nodes.items) |v| {
+    // cov_degree[q] = number of AOD neighbours; edge-sort tie-break.
+    const cov_degree = try gpa.alloc(usize, g.n);
+    @memset(cov_degree, 0);
+    defer gpa.free(cov_degree);
+
+    for (0..g.n) |u| {
+        var e = g.edges[u];
+        while (e) |edge| : (e = edge.next) {
+            if (aod.set[edge.y]) cov_degree[u] += 1;
+        }
+    }
+
+    var colored: std.ArrayList(ColoredEdge) = .empty;
+    defer colored.deinit(gpa);
+
+    for (aod.nodes.items, 0..) |v, rank_v| {
         var adj: std.ArrayList(usize) = .empty;
         defer adj.deinit(gpa);
 
         var e = g.edges[v];
         while (e) |edge| : (e = edge.next) try adj.append(gpa, edge.y);
 
-        const Ctx = struct { g: *Graph, v: usize };
-        std.sort.heap(usize, adj.items, Ctx{ .g = g, .v = v }, struct {
+        const Ctx = struct { g: *Graph, v: usize, order: *const SlmOrder, cov: []const usize };
+        std.sort.heap(usize, adj.items, Ctx{ .g = g, .v = v, .order = order, .cov = cov_degree }, struct {
             fn less(ctx: Ctx, a: usize, b: usize) bool {
+                if (a == b) return false;
+
+                // An SLM already ordered left of another must be gated first.
+                if (ctx.order.mustPrecede(a, b)) return true;
+                if (ctx.order.mustPrecede(b, a)) return false;
+
                 const sat_a = countSaturation(ctx.g, ctx.v, a);
                 const sat_b = countSaturation(ctx.g, ctx.v, b);
                 if (sat_a != sat_b) return sat_a > sat_b;
-                return ctx.g.degree[a] > ctx.g.degree[b];
+
+                if (ctx.cov[a] != ctx.cov[b]) return ctx.cov[a] > ctx.cov[b];
+
+                return a < b;
             }
         }.less);
 
         for (adj.items) |y| {
-            const c = try leastAdmissible(g, v, y, &aod_idx, &constraints);
+            const c = try leastAdmissible(v, y, rank_v, rank_of, colored.items, order);
 
             var n = g.edges[v];
             while (n) |edge| : (n = edge.next) {
@@ -303,85 +379,72 @@ fn colorEdges(gpa: std.mem.Allocator, g: *Graph, aod: Aod) !void {
             while (n) |edge| : (n = edge.next) {
                 if (edge.y == v) edge.color = c;
             }
+
+            // Commit the constraints the color implies; leastAdmissible
+            // already verified none closes a cycle.
+            for (colored.items) |f| {
+                if (f.aod == v) {
+                    if (f.color < c) {
+                        try order.addConstraint(f.slm, y);
+                    } else {
+                        try order.addConstraint(y, f.slm);
+                    }
+                } else if (f.color == c) {
+                    if (rank_v < rank_of[f.aod]) {
+                        try order.addConstraint(f.slm, y);
+                    } else {
+                        try order.addConstraint(y, f.slm);
+                    }
+                }
+            }
+
+            try colored.append(gpa, .{ .aod = v, .slm = y, .color = c });
         }
     }
 }
 
+/// Smallest color for edge (v, y) - v the AOD, y the SLM - that keeps the
+/// SLM partial order acyclic. Errors when no color can: the coloring cannot
+/// complete against the fixed AOD column order.
 fn leastAdmissible(
-    g: *Graph,
     v: usize,
     y: usize,
-    aod_idx: *const std.AutoHashMap(usize, usize),
-    constraints: *AodConstraints,
+    rank_v: usize,
+    rank_of: []const usize,
+    colored: []const ColoredEdge,
+    order: *const SlmOrder,
 ) !i32 {
-    const v_idx = aod_idx.get(v).?;
-
-    var forbidden = std.AutoHashMap(i32, void).init(g.gpa);
-    defer forbidden.deinit();
-
-    // Edges from v (same AOD): forbidden only, no order constraint.
-    var e = g.edges[v];
-    while (e) |edge| : (e = edge.next) {
-        if (edge.y != y) {
-            if (edge.color) |c| _ = forbidden.getOrPut(c) catch {};
-        }
+    // Colors already on y are a floor, not just forbidden: y sits at one
+    // column, so every AOD gating it must have left before v arrives.
+    var min_c: i32 = 0;
+    for (colored) |f| {
+        if (f.slm == y) min_c = @max(min_c, f.color + 1);
     }
 
-    // Edges from y to other AODs: forbidden + local order constraint.
-    var order_max: i32 = MIN;
-    e = g.edges[y];
-    while (e) |edge| : (e = edge.next) {
-        if (edge.y != v) {
-            if (edge.color) |c| {
-                _ = forbidden.getOrPut(c) catch {};
-                order_max = @max(order_max, c);
-            }
-        }
-    }
-
-    var k: i32 = order_max + 1;
+    var k: i32 = min_c;
     outer: while (true) : (k += 1) {
-        if (forbidden.get(k) != null) continue;
+        for (colored) |f| {
+            if (f.aod == v) {
+                // v cannot gate two partners in one class...
+                if (f.color == k) continue :outer;
 
-        // Cycle check: would assigning color k to edge (v→y) create a cycle
-        // in the global AOD constraint graph?
-        //
-        // Assigning color k means:
-        //   for each AOD u also connected to y with color c_u:
-        //     c_u < k  →  u must come before v  →  add constraint u→v
-        //     c_u > k  →  v must come before u  →  add constraint v→u
-        //
-        // u→v creates a cycle iff v can already reach u.
-        // v→u creates a cycle iff u can already reach v.
-        e = g.edges[y];
-        while (e) |edge| : (e = edge.next) {
-            if (edge.y == v) continue;
-            const u_idx = aod_idx.get(edge.y) orelse continue; // skip SLM neighbors
-            if (edge.color) |c| {
-                if (c < k) {
-                    // Would add u→v; cycle if v can already reach u.
-                    if (constraints.canReach(v_idx, u_idx)) continue :outer;
-                } else if (c > k) {
-                    // Would add v→u; cycle if u can already reach v.
-                    if (constraints.canReach(u_idx, v_idx)) continue :outer;
+                if (f.color > k) {
+                    // ...and would add y -> f.slm; cycle if f.slm already reaches y.
+                    if (order.mustPrecede(f.slm, y)) continue :outer;
+                } else {
+                    // Would add f.slm -> y. f.color stays below every later
+                    // candidate too, so this cycle cannot be colored around.
+                    if (order.mustPrecede(y, f.slm)) return error.CyclicAodOrder;
+                }
+            } else if (f.color == k) {
+                // Same class: the SLM order must mirror the AOD ranks.
+                if (rank_v > rank_of[f.aod]) {
+                    if (order.mustPrecede(f.slm, y)) continue :outer;
+                } else {
+                    if (order.mustPrecede(y, f.slm)) continue :outer;
                 }
             }
         }
-
-        // k is valid — permanently commit all new constraints.
-        e = g.edges[y];
-        while (e) |edge| : (e = edge.next) {
-            if (edge.y == v) continue;
-            const u_idx = aod_idx.get(edge.y) orelse continue;
-            if (edge.color) |c| {
-                if (c < k) {
-                    try constraints.addConstraint(u_idx, v_idx);
-                } else if (c > k) {
-                    try constraints.addConstraint(v_idx, u_idx);
-                }
-            }
-        }
-
         return k;
     }
 }
@@ -390,7 +453,6 @@ fn countSaturation(g: *Graph, u: usize, v: usize) usize {
     var seen = std.AutoHashMap(i32, void).init(g.gpa);
     defer seen.deinit();
 
-    // Edges from u.
     var e = g.edges[u];
     while (e) |edge| : (e = edge.next) {
         const w = edge.y;
@@ -401,11 +463,10 @@ fn countSaturation(g: *Graph, u: usize, v: usize) usize {
         }
     }
 
-    // Edges from v.
     e = g.edges[v];
     while (e) |edge| : (e = edge.next) {
         const w = edge.y;
-        if (w != v) {
+        if (w != u) {
             if (edge.color) |c| {
                 _ = seen.getOrPut(c) catch {};
             }
@@ -415,197 +476,47 @@ fn countSaturation(g: *Graph, u: usize, v: usize) usize {
     return seen.count();
 }
 
-fn slmGraph(gpa: std.mem.Allocator, g: *Graph, aod_set: []const bool) !Graph {
-    var dep = try Graph.init(gpa, g.n, true);
-
-    // For each AOD v...
-    for (0..g.n) |v| {
-        // Only AODs give constraints.
-        if (!aod_set[v]) continue;
-
-        // Collect SLM neighbours and their colors.
-        const Adj = struct { y: usize, col: i32 };
-        var adj: std.ArrayList(Adj) = .empty;
-        defer adj.deinit(gpa);
-
-        var e = g.edges[v];
-        while (e) |edge| : (e = edge.next) {
-            const u = edge.y;
-            // If the neighbour is an SLM.
-            if (!aod_set[u]) {
-                if (edge.color) |c| {
-                    try adj.append(gpa, .{ .y = u, .col = c });
-                }
-            }
-        }
-
-        // Sort by increasing color.
-        std.sort.heap(Adj, adj.items, {}, struct {
-            fn less(_: void, a: Adj, b: Adj) bool {
-                return a.col < b.col;
-            }
-        }.less);
-
-        // Add directed constraints: consecutive pais y1 -> y2 ("y1" left of "y2").
-        for (0..@as(usize, if (adj.items.len == 0) 0 else adj.items.len - 1)) |i| {
-            const y1 = adj.items[i].y;
-            const y2 = adj.items[i + 1].y;
-            try dep.addEdge(y1, y2);
-        }
-    }
-
-    return dep;
-}
-
-/// The SLM partner AOD `v` gates with in color class `t`, if any.
-fn activePartner(g: *const Graph, aod_set: []const bool, v: usize, t: i32) ?usize {
-    var e = g.edges[v];
-    while (e) |edge| : (e = edge.next) {
-        if (edge.color == t and !aod_set[edge.y]) return edge.y;
-    }
-    return null;
-}
-
-/// The schedule assumes a fixed physical column order for the AODs
-/// (aod.nodes[0] is the rightmost column). Two AODs active in the same
-/// color class sit at their partners' slots simultaneously, so their
-/// column order is dictated by the partners' SLM order. Reorders
-/// aod.nodes to satisfy every color class at once (topological sort over
-/// the per-class constraints); the MIS degree order survives wherever the
-/// constraints leave slack. Errors if the color classes demand
-/// contradictory orders — such a coloring cannot be laid out with rigid
-/// AOD columns.
-fn orderAodNodes(gpa: std.mem.Allocator, g: *Graph, aod: *Aod, slm_order: []const usize) !void {
-    const n = aod.nodes.items.len;
-    if (n < 2) return;
-
-    var slm_pos = std.AutoHashMap(usize, usize).init(gpa);
-    defer slm_pos.deinit();
-    for (slm_order, 0..) |q, i| try slm_pos.put(q, i);
-
-    // adj[i] contains j: nodes[i] must sit left of nodes[j].
-    var constraints = try AodConstraints.init(gpa, n);
-    defer constraints.deinit();
-
-    const in_degree = try gpa.alloc(usize, n);
-    defer gpa.free(in_degree);
-    @memset(in_degree, 0);
-
-    const Active = struct { idx: usize, slot: usize };
-    var active: std.ArrayList(Active) = .empty;
-    defer active.deinit(gpa);
-
-    const max_c = g.maxColor() catch return;
-    var t: i32 = 0;
-    while (t <= max_c) : (t += 1) {
-        active.clearRetainingCapacity();
-        for (aod.nodes.items, 0..) |v, i| {
-            const partner = activePartner(g, aod.set, v, t) orelse continue;
-            const slot = slm_pos.get(partner) orelse continue;
-            try active.append(gpa, .{ .idx = i, .slot = slot });
-        }
-
-        std.sort.heap(Active, active.items, {}, struct {
-            fn less(_: void, a: Active, b: Active) bool {
-                return a.slot < b.slot;
-            }
-        }.less);
-
-        // Consecutive pairs suffice: order is transitive.
-        for (0..@as(usize, if (active.items.len == 0) 0 else active.items.len - 1)) |i| {
-            const from = active.items[i].idx;
-            const to = active.items[i + 1].idx;
-            const before = constraints.adj[from].items.len;
-            try constraints.addConstraint(from, to);
-            if (constraints.adj[from].items.len > before) in_degree[to] += 1;
-        }
-    }
-
-    // Kahn topological sort, emitting left to right. Among free nodes pick
-    // the highest original index — the leftmost under the MIS order — so an
-    // unconstrained input keeps its original order exactly.
-    const placed = try gpa.alloc(bool, n);
-    defer gpa.free(placed);
-    @memset(placed, false);
-
-    var ordered = try std.ArrayList(usize).initCapacity(gpa, n);
-    defer ordered.deinit(gpa);
-
-    while (ordered.items.len < n) {
-        var pick: ?usize = null;
-        var i = n;
-        while (i > 0) {
-            i -= 1;
-            if (!placed[i] and in_degree[i] == 0) {
-                pick = i;
-                break;
-            }
-        }
-        const p = pick orelse return error.CyclicAodOrder;
-        placed[p] = true;
-        ordered.appendAssumeCapacity(aod.nodes.items[p]);
-        for (constraints.adj[p].items) |j| in_degree[j] -= 1;
-    }
-
-    // `ordered` reads left to right; nodes[0] must be the rightmost column.
-    std.mem.reverse(usize, ordered.items);
-    @memcpy(aod.nodes.items, ordered.items);
-
-    trace.print(">> AOD nodes ordered by SLM slots: {any}\n", .{aod.nodes.items});
-}
-
-fn topoSort(gpa: std.mem.Allocator, g: Graph, aod_set: []const bool, orig: Graph) ![]usize {
-    // Only SLM qubits that participate in at least one CZ interaction.
-    // Isolated qubits (orig.degree == 0) have no placement constraints.
+/// Left-to-right SLM layout: topological sort of the partial order built
+/// during coloring. Isolated qubits (degree 0) are not placed.
+fn topoSort(gpa: std.mem.Allocator, order: SlmOrder, aod_set: []const bool, g: Graph) ![]usize {
     var n_slm: usize = 0;
     for (0..g.n) |i| {
-        if (!aod_set[i] and orig.degree[i] > 0) n_slm += 1;
+        if (!aod_set[i] and g.degree[i] > 0) n_slm += 1;
     }
 
-    var order = try std.ArrayList(usize).initCapacity(gpa, n_slm);
-    defer order.deinit(gpa);
+    var out = try std.ArrayList(usize).initCapacity(gpa, n_slm);
+    defer out.deinit(gpa);
 
-    // Compure in-degrees; arrows pointing INTO each SLM.
     var in_degree = try gpa.alloc(usize, g.n);
     @memset(in_degree, 0);
     defer gpa.free(in_degree);
 
-    for (0..g.n) |u| {
-        if (aod_set[u] or orig.degree[u] == 0) continue;
-        var e = g.edges[u];
-        while (e) |edge| : (e = edge.next) {
-            if (!aod_set[edge.y] and orig.degree[edge.y] > 0) in_degree[edge.y] += 1;
-        }
+    for (order.adj) |list| {
+        for (list.items) |j| in_degree[j] += 1;
     }
 
-    // Queue of SLM with zero in-degree can be placed first.
     var queue: std.ArrayList(usize) = .empty;
     defer queue.deinit(gpa);
 
     for (0..g.n) |i| {
-        if (!aod_set[i] and orig.degree[i] > 0 and in_degree[i] == 0) try queue.append(gpa, i);
+        if (!aod_set[i] and g.degree[i] > 0 and in_degree[i] == 0) try queue.append(gpa, i);
     }
 
     while (queue.items.len > 0) {
         const u = queue.orderedRemove(0);
-        try order.append(gpa, u);
+        try out.append(gpa, u);
 
-        // Reduce in-degrees of neighbours.
-        var e = g.edges[u];
-        while (e) |edge| : (e = edge.next) {
-            const v = edge.y;
-            if (!aod_set[v] and orig.degree[v] > 0) {
-                in_degree[v] -= 1;
-                if (in_degree[v] == 0) try queue.append(gpa, v);
-            }
+        for (order.adj[u].items) |w| {
+            in_degree[w] -= 1;
+            if (in_degree[w] == 0) try queue.append(gpa, w);
         }
     }
 
-    // A cycle leaves nodes with nonzero in-degree unplaced; a partial order
-    // would silently produce an illegal layout downstream.
-    if (order.items.len != n_slm) return error.CyclicSlmConstraints;
+    // The coloring keeps the partial order acyclic by construction; a
+    // leftover node would silently produce an illegal layout downstream.
+    if (out.items.len != n_slm) return error.CyclicSlmConstraints;
 
-    return order.toOwnedSlice(gpa);
+    return out.toOwnedSlice(gpa);
 }
 
 // `timesteps[t][k]` is the SLM partner of aod_nodes[k] (left-to-right column
@@ -652,28 +563,23 @@ pub fn computeSequence(gpa: std.mem.Allocator, g: *Graph) !Sequence {
     errdefer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    // 1. AOD set.
+    // AOD set. Its order is final: nodes[0] is the rightmost column.
     var aod = try maxIndependentSet(gpa, g.*);
     defer aod.deinit(gpa);
+    trace.print(">> AOD ordered nodes: {any}\n", .{aod.nodes.items});
 
-    // 2. Color edges.
-    try colorEdges(gpa, g, aod);
+    // Color edges against the fixed AOD order, accumulating the SLM
+    // partial order as colors commit.
+    var order = try SlmOrder.init(gpa, g.n);
+    defer order.deinit();
+    try colorEdges(gpa, g, aod, &order);
     edgeColors(g.*);
 
-    // 3. SLM order.
-    var dep_graph = try slmGraph(gpa, g, aod.set);
-    defer dep_graph.deinit();
-    //dep_graph.print("slm-dep");
-
-    const slm_order = try topoSort(gpa, dep_graph, aod.set, g.*);
+    const slm_order = try topoSort(gpa, order, aod.set, g.*);
     defer gpa.free(slm_order);
     trace.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
 
-    // 4. Make the assumed AOD column order consistent with the SLM layout.
-    try orderAodNodes(gpa, g, &aod, slm_order);
-
-    // aod.nodes[0] is the rightmost column; everything downstream works with
-    // the physical left-to-right order.
+    // Downstream stages work with the physical left-to-right order.
     const aod_lr = try arena_alloc.dupe(usize, aod.nodes.items);
     std.mem.reverse(usize, aod_lr);
 
@@ -718,12 +624,10 @@ pub const SnapshotCase = struct {
     kind: SnapshotKind,
     path: []const u8,
 
-    /// A known routing bug (the route-level sibling of
-    /// golden.Case.known_violation): this graph is non-bipartite, so no
-    /// independent vertex cover exists — the greedy MIS must leave an edge
-    /// between two SLM qubits, and computeSequence silently drops that CZ
-    /// (active pairs are only ever AOD-SLM). Asserted so the completeness
-    /// test fails loudly the day routing rejects or splits such graphs.
+    /// Known routing bug (route-level sibling of golden.Case.known_violation):
+    /// the graph is non-bipartite, so the greedy MIS leaves an SLM-SLM edge
+    /// and computeSequence silently drops that CZ. Asserted so the
+    /// completeness test fails loudly the day routing handles such graphs.
     known_incomplete: bool = false,
 };
 
@@ -746,10 +650,9 @@ pub const snapshot_cases = [_]SnapshotCase{
     // K5: SLM set is K4
     .{ .kind = .qft, .path = "testdata/qft.json", .known_incomplete = true },
 
-    // testdata/graph-10-0.qasm: the only known graph exercising the
-    // mid-sweep flush in resting.mergeConstraints (two AODs rest between
-    // an adjacent active pair at the last timestep). Triangles {0,3,8}
-    // and {4,6,9} force SLM-SLM edges, so the cover is incomplete.
+    // only known graph exercising the mid-sweep flush in
+    // resting.mergeConstraints; triangles {0,3,8} and {4,6,9} force
+    // SLM-SLM edges, so the cover is incomplete.
     .{ .kind = .graph_10_0, .path = "testdata/graph-10-0.json", .known_incomplete = true },
 };
 
@@ -760,13 +663,12 @@ test "snapshots: routed graphs match testdata/" {
 }
 
 // Asserts `seq` realizes `g` exactly: every edge appears as an active pair
-// — (fixed[i], moveable[t][i]) both non-null — in exactly one timeframe,
+// (fixed[i] and moveable[t][i] both non-null) in exactly one timeframe,
 // nothing is pulsed that is not an edge, and no qubit is both fixed and
 // moveable. A dropped edge is a CZ that never happens; a duplicated one
-// cancels itself (CZ·CZ = identity). The snapshots pin the routed bytes;
-// only this property says what would make them wrong. (Resting AODs only
-// land on slots whose fixed entry is null — see resting.scheduleTargetQubits
-// — so both-non-null is always an intended gate.)
+// cancels itself (CZ*CZ = identity). Resting AODs only land on slots whose
+// fixed entry is null (resting.scheduleTargetQubits), so both-non-null is
+// always an intended gate.
 fn expectSequenceCoversGraph(gpa: std.mem.Allocator, g: *const Graph, seq: *const Sequence) !void {
     var is_fixed = try gpa.alloc(bool, g.n);
     defer gpa.free(is_fixed);
@@ -775,7 +677,6 @@ fn expectSequenceCoversGraph(gpa: std.mem.Allocator, g: *const Graph, seq: *cons
         if (maybe_q) |q| is_fixed[q] = true;
     }
 
-    // Count every active pair, keyed by the normalized qubit pair.
     var covered = std.AutoHashMap(u64, usize).init(gpa);
     defer covered.deinit();
 
@@ -792,7 +693,6 @@ fn expectSequenceCoversGraph(gpa: std.mem.Allocator, g: *const Graph, seq: *cons
         }
     }
 
-    // Every edge of g covered exactly once...
     var complete = true;
     var n_edges: usize = 0;
     for (g.edges, 0..) |list, u| {
@@ -808,7 +708,6 @@ fn expectSequenceCoversGraph(gpa: std.mem.Allocator, g: *const Graph, seq: *cons
             n_edges += 1;
         }
     }
-    // ...and no pair pulsed that is not an edge.
     if (covered.count() != n_edges) {
         trace.print("{d} active pairs for {d} edges\n", .{ covered.count(), n_edges });
         complete = false;
@@ -836,13 +735,12 @@ test "computeSequence covers every snapshot graph's edges exactly once" {
     }
 }
 
-test "computeSequence rejects a cyclic AOD column order" {
+test "computeSequence routes the cyclic-aod graph in one round" {
     const gpa = std.testing.allocator;
-    // Five-cycle 0-1-3-4-2-0 with a pendant qubit 5 on 1 — the same
-    // interaction graph as testdata/cyclic-aod.qasm. No rigid AOD column
-    // order satisfies the coloring; the driver reacts by splitting the CZ
-    // set into rounds (compiler.routeStageRounds), so the rejection must
-    // originate here.
+    // Five-cycle 0-1-3-4-2-0 with a pendant qubit 5 on 1, the interaction
+    // graph of testdata/cyclic-aod.qasm. The old post-hoc AOD column
+    // ordering rejected this with CyclicAodOrder. The odd cycle still
+    // drops one SLM-SLM edge, so coverage stays incomplete.
     var g = try Graph.init(gpa, 6, false);
     defer g.deinit();
     try g.addEdge(0, 1);
@@ -852,7 +750,13 @@ test "computeSequence rejects a cyclic AOD column order" {
     try g.addEdge(2, 4);
     try g.addEdge(3, 4);
 
-    try std.testing.expectError(error.CyclicAodOrder, computeSequence(gpa, &g));
+    var seq = try computeSequence(gpa, &g);
+    defer seq.deinit();
+
+    try std.testing.expectError(
+        error.SequenceIncomplete,
+        expectSequenceCoversGraph(gpa, &g, &seq),
+    );
 }
 
 pub fn buildMvpGraph(gpa: std.mem.Allocator) !Graph {
@@ -880,10 +784,8 @@ pub fn buildCycleGraph(gpa: std.mem.Allocator) !Graph {
     return g;
 }
 
-// Two rows of AODs interleaved with SLMs, with vertical rungs
-// creating cross-row ordering constraints. Tests whether the
-// SLM topo-sort correctly handles constraints coming from
-// two independent "lanes" of AODs simultaneously.
+// Vertical rungs create cross-row constraints: the SLM topo-sort
+// must merge constraints from two independent AOD lanes.
 //
 // 0-1-2-3
 // | | | |
@@ -903,10 +805,8 @@ pub fn buildLadderGraph(gpa: std.mem.Allocator) !Graph {
     return g;
 }
 
-// Checkerboard MIS gives 5 AODs and 4 SLMs.
-// Many unmatched AODs at each timestep means
-// maximum pressure on placeSlmQubits gap
-// counting and the left-scan resting logic.
+// Checkerboard MIS (5 AODs, 4 SLMs): many unmatched AODs per timestep
+// pressure gap counting and the left-scan resting logic.
 //
 // 0-1-2
 // | | |
