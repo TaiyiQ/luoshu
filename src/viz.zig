@@ -178,6 +178,34 @@ fn drawSlot(cam: Camera, slot: Point, positions: []const Point, loaded: []const 
     }
 }
 
+/// Row/column crosshair for atoms riding the AOD. The bands span the full
+/// screen; the tab and transport bars paint over them afterwards.
+fn drawAodHighlight(cam: Camera, positions: []const Point, loaded: []const bool, frame_ops: []const OpKind) void {
+    const fill = rl.Color{ .r = palette.accent.r, .g = palette.accent.g, .b = palette.accent.b, .a = 15 };
+    const edge = rl.Color{ .r = palette.accent.r, .g = palette.accent.g, .b = palette.accent.b, .a = 55 };
+    const hw = ATOM_R * cam.zoom;
+    const sw: f32 = @floatFromInt(rl.getScreenWidth());
+    const sh: f32 = @floatFromInt(rl.getScreenHeight());
+
+    for (positions, 0..) |pos, id| {
+        if (id >= loaded.len or !loaded[id]) continue;
+        const s = cam.worldToScreen(toVec(pos));
+
+        // Horizontal row — visible while the atom is in the AOD (disappears on store).
+        rl.drawRectangleV(.{ .x = 0, .y = s.y - hw }, .{ .x = sw, .y = 2.0 * hw }, fill);
+        rl.drawLineEx(.{ .x = 0, .y = s.y }, .{ .x = sw, .y = s.y }, 1.0, edge);
+
+        // Vertical column — only at the timestep this atom is loaded (picked up).
+        const being_loaded = for (frame_ops) |op| {
+            if (op == .load and op.load.qubit == @as(u32, @intCast(id))) break true;
+        } else false;
+        if (being_loaded) {
+            rl.drawRectangleV(.{ .x = s.x - hw, .y = 0 }, .{ .x = 2.0 * hw, .y = sh }, fill);
+            rl.drawLineEx(.{ .x = s.x, .y = 0 }, .{ .x = s.x, .y = sh }, 1.0, edge);
+        }
+    }
+}
+
 fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, is_active: bool, is_loaded: bool, fill: rl.Color) void {
     const screen = cam.worldToScreen(toVec(pos));
     const radius = (if (is_loaded) ATOM_R_LOADED else ATOM_R) * cam.zoom;
@@ -462,6 +490,8 @@ const ScheduleView = struct {
         drawZone(v.cam, v.storage_rect, if (rydberg_zone == .storage) palette.zone_active else palette.zone_storage);
         drawZone(v.cam, v.compute_rect, if (rydberg_zone == .compute) palette.zone_active else palette.zone_compute);
         drawZone(v.cam, v.readout_rect, if (rydberg_zone == .readout) palette.zone_active else palette.zone_readout);
+
+        drawAodHighlight(v.cam, v.draw_positions, loaded, frame_ops);
 
         for (v.sites) |slot| drawSlot(v.cam, slot, v.vm.positions[v.frame], loaded, v.idle);
 
