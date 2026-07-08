@@ -47,11 +47,18 @@ const Raman = struct {
     targets: []const RamanTarget,
 };
 
-/// One single-qubit rotation request, as handed over by the driver
-/// (a front-end U gate maps theta -> angle, phi -> phase).
+/// One single-qubit rotation request, as handed over by the driver. The
+/// pulse implements the equatorial rotation R(angle, phase) =
+/// Rz(phase)Ry(angle)Rz(-phase); the driver lowers a front-end
+/// U(theta, phi, lambda) into this form via virtual-Z frame tracking,
+/// so phase = 0 fires a plain Ry.
 pub const RamanGate = struct {
     qubit: u32,
+
+    // Physical Raman pulse.
     angle: f64,
+
+    // Drive phase (phi_drive).
     phase: f64,
 };
 
