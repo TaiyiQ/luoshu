@@ -53,6 +53,16 @@ pub fn routeStageRounds(
     try out.append(gpa, sequence);
 }
 
+/// Wrap an angle onto the canonical branch (-pi, pi].
+///
+/// Lossless for pulses: R(theta,beta) is exactly 2pi-periodic in beta, because
+/// the -1 factors from Rz's 4pi periodicity cancel between Rz(beta) and
+/// Rz(-beta). Dropping 2pi multiples of the frame phase only changes
+/// Rz(frame_phase) by a global sign, which is unphysical.
+fn wrapPhase(x: f64) f64 {
+    return std.math.pi - @mod(std.math.pi - x, 2 * std.math.pi);
+}
+
 /// Lower one circuit.U gate to at most one schedule.RamanGate pulse.
 ///
 /// A pulse R(theta,beta) = Rz(beta)*Ry(theta)*Rz(-beta) only rotates about
@@ -64,11 +74,11 @@ fn lowerU(frame_phase: *f64, gate: circuit.U) ?schedule.RamanGate {
     const pulse: ?schedule.RamanGate = if (gate.theta == 0) null else .{
         .qubit = gate.qubit,
         .angle = gate.theta,
-        .phase = -(gate.lambda + frame_phase.*),
+        .phase = wrapPhase(-(gate.lambda + frame_phase.*)),
     };
 
     // Phase reference tracking.
-    frame_phase.* += gate.phi + gate.lambda;
+    frame_phase.* = wrapPhase(frame_phase.* + gate.phi + gate.lambda);
 
     return pulse;
 }
@@ -221,6 +231,8 @@ test "lowerU: pulse stream plus residual frame phase reproduces the U product" {
     for (gates) |g| {
         desired = m.mul(m.uMat(g), desired);
         if (lowerU(&frame_phase, g)) |p| {
+            // Every emitted phase sits on the canonical branch (-pi, pi].
+            try std.testing.expect(p.phase > -pi and p.phase <= pi);
             applied = m.mul(m.pulseMat(p), applied);
             n_pulses += 1;
         }
