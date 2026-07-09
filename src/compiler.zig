@@ -14,10 +14,12 @@ const route = @import("route");
 const schedule = @import("schedule");
 const trace = @import("trace");
 
+const Graph = @import("graph").Graph;
+
 /// Route one stage's CZ gates: build the interaction graph and compile it
 /// into a logical Sequence. Caller owns the result.
 pub fn routeStage(gpa: std.mem.Allocator, cz_gates: []const circuit.Cz, num_qubits: usize) !route.Sequence {
-    var g = try route.Graph.init(gpa, num_qubits, false);
+    var g = try Graph.init(gpa, num_qubits, false);
     defer g.deinit();
 
     for (cz_gates) |gate| try g.addEdge(gate.control, gate.target);

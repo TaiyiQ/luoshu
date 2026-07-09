@@ -90,12 +90,19 @@ pub fn build(b: *std.Build) void {
     rest_mod.addImport("trace", trace_mod);
     exe.root_module.addImport("resting", rest_mod);
 
+    const graph_mod = b.addModule("graph", .{
+        .root_source_file = b.path("src/graph.zig"),
+        .target = target,
+    });
+    graph_mod.addImport("graph", graph_mod);
+
     const route_mod = b.addModule("route", .{
         .root_source_file = b.path("src/route.zig"),
         .target = target,
     });
     route_mod.addImport("trace", trace_mod);
     route_mod.addImport("resting", rest_mod);
+    route_mod.addImport("graph", graph_mod);
 
     const serialize_mod = b.addModule("serialize", .{
         .root_source_file = b.path("src/serialize.zig"),
@@ -115,6 +122,7 @@ pub fn build(b: *std.Build) void {
     compiler_mod.addImport("route", route_mod);
     compiler_mod.addImport("schedule", schedule_mod);
     compiler_mod.addImport("trace", trace_mod);
+    compiler_mod.addImport("graph", graph_mod);
     exe.root_module.addImport("compiler", compiler_mod);
 
     const verify_mod = b.addModule("verify", .{
