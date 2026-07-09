@@ -404,10 +404,10 @@ pub const Hardware = struct {
     // resting), so the first row fixes both the pickup order and each
     // atom's entry column: atoms are stored directly at their first
     // timeframe positions, and the first sweep iteration degenerates
+    // to the Rydberg pulse alone.
     pub fn moveAodCompute(s: *Hardware, fixed: []const ?usize, moveable: [][]?usize) !void {
         if (moveable.len == 0) return;
 
-        // to the Rydberg pulse alone.
         var ordered: std.ArrayList(usize) = .empty;
         defer ordered.deinit(s.gpa);
 
@@ -428,11 +428,24 @@ pub const Hardware = struct {
 
         // Manhattan entry into SLM[1] — mirrors moveSlmCompute for SLM[0].
         const grid = s.cfg.compute_zone.grid(1);
+        try s.enterComputeSlm(register.items, cols.items, grid);
+
+        // Sweep: for each timeframe, lift atoms into AOD (t), slide to column (t),
+        // then deposit back into SLM (t+1, red flash). Rows where nothing
+        // moves emit nothing, so they consume no timestep.
+        try s.sweepMoveableRows(moveable, fixed, grid);
+    }
+
+    /// Manhattan entry of a freshly picked-up register into compute SLM[1]:
+    /// move each atom to its first-timeframe column (offset by half the
+    /// column pitch to avoid crossings), drop to the top row to pair with
+    /// SLM[0]'s fixed atoms, then slide onto the column and store.
+    fn enterComputeSlm(s: *Hardware, register: []const *Atom, cols: []const usize, grid: arch.Grid) !void {
         const d = grid.halfSepX();
 
         // Step 1: move each atom to its first-timeframe column x + d
         // (inter-column offset avoids crossings).
-        for (register.items, cols.items) |a, col| {
+        for (register, cols) |a, col| {
             try s.moveAtom(a, grid.x(col) - a.pos.x + d, 0);
         }
         s.step();
@@ -440,21 +453,29 @@ pub const Hardware = struct {
         // Step 2: drop all atoms to SLM[1]'s top row, pairing with the fixed
         // atoms in SLM[0]'s top row.
         const y_dest = grid.y(0);
-        for (register.items) |a| {
+        for (register) |a| {
             try s.moveAtom(a, 0, y_dest - a.pos.y);
         }
         s.step();
 
         // Step 3: slide left d to land on column x, then place into compute SLM.
-        for (register.items) |a| {
+        for (register) |a| {
             try s.moveAtom(a, -d, 0);
             try s.storeAtom(a);
         }
         s.step();
+    }
 
-        // Sweep: for each timeframe, lift atoms into AOD (t), slide to column (t),
-        // then deposit back into SLM (t+1, red flash). Rows where nothing
-        // moves emit nothing, so they consume no timestep.
+    /// Sweeps each timeframe row: lifts its atoms into AOD, slides them to
+    /// column, deposits them back into SLM, then fires the entangling pulse
+    /// pairing this row's atoms with their fixed SLM[0] partners. This
+    /// timeframe's pairs now sit within blockade range of their partners;
+    /// conflicting CZs live in different rows, so one pulse per row. The
+    /// pulse records its intended pairs (slot i pairs the fixed atom in
+    /// SLM[0] with this row's atom in SLM[1]) so the verifier can prove the
+    /// pulse reaches what the router asked. Rows where nothing moves emit
+    /// nothing, so they consume no timestep.
+    fn sweepMoveableRows(s: *Hardware, moveable: [][]?usize, fixed: []const ?usize, grid: arch.Grid) !void {
         for (moveable) |row| {
             var moved_q: std.ArrayList(usize) = .empty;
             defer moved_q.deinit(s.gpa);
@@ -477,12 +498,6 @@ pub const Hardware = struct {
             for (moved_q.items) |q| try s.storeAtom(&s.placement[q]);
             s.step();
 
-            // This timeframe's pairs now sit within blockade range of their
-            // partners: fire the entangling pulse for this color class.
-            // Conflicting CZs live in different rows, so one pulse per row.
-            // The pulse records its intended pairs (slot i pairs the fixed
-            // atom in SLM[0] with this row's atom in SLM[1]) so the
-            // verifier can prove the pulse reaches what the router asked.
             if (has_qubit) {
                 var n_pairs: usize = 0;
                 for (row, 0..) |maybe_q, i| {

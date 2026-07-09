@@ -216,11 +216,26 @@ const SlmOrder = struct {
 };
 
 fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !Aod {
-    var set = try gpa.alloc(bool, g.n);
-    @memset(set, false);
+    const order = try degreeSortedOrder(gpa, g);
+    defer gpa.free(order);
 
+    const set = try greedyMis(gpa, g, order);
+
+    var nodes = try std.ArrayList(usize).initCapacity(gpa, g.n);
+    defer nodes.deinit(gpa);
+    for (order) |v| {
+        if (set[v]) try nodes.append(gpa, v);
+    }
+
+    const grouped = try groupByComponent(gpa, g, nodes.items);
+
+    return .{ .set = set, .nodes = grouped };
+}
+
+/// Nodes sorted by descending degree (ties broken by higher index first) —
+/// the fixed visitation order for the greedy MIS and later for grouping.
+fn degreeSortedOrder(gpa: std.mem.Allocator, g: Graph) ![]usize {
     var order = try std.ArrayList(usize).initCapacity(gpa, g.n);
-    defer order.deinit(gpa);
 
     for (0..g.n) |i| order.appendAssumeCapacity(i);
 
@@ -233,9 +248,16 @@ fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !Aod {
         }
     }.less);
 
-    // Greedy MIS. Isolated nodes have no two-qubit interactions and must
-    // remain SLM qubits.
-    for (order.items) |v| {
+    return order.toOwnedSlice(gpa);
+}
+
+/// Greedy maximum independent set over `order`. Isolated nodes have no
+/// two-qubit interactions and must remain SLM qubits.
+fn greedyMis(gpa: std.mem.Allocator, g: Graph, order: []const usize) ![]bool {
+    var set = try gpa.alloc(bool, g.n);
+    @memset(set, false);
+
+    for (order) |v| {
         if (g.degree[v] == 0) continue;
 
         var add = true;
@@ -251,16 +273,13 @@ fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !Aod {
         if (add) set[v] = true;
     }
 
-    var nodes = try std.ArrayList(usize).initCapacity(gpa, g.n);
-    defer nodes.deinit(gpa);
+    return set;
+}
 
-    for (order.items) |v| {
-        if (set[v]) try nodes.append(gpa, v);
-    }
-
-    // Group AODs by connected component, keeping degree order within each.
-    // This order is final: nodes[0] is the rightmost AOD column, and the
-    // coloring only ever accepts colors that respect it.
+/// Groups AOD nodes by connected component, keeping degree order within each.
+/// This order is final: nodes[0] is the rightmost AOD column, and the
+/// coloring only ever accepts colors that respect it.
+fn groupByComponent(gpa: std.mem.Allocator, g: Graph, nodes: []const usize) !std.ArrayList(usize) {
     const none = std.math.maxInt(usize);
 
     const comp = try gpa.alloc(usize, g.n);
@@ -295,18 +314,18 @@ fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !Aod {
     @memset(done, false);
     defer gpa.free(done);
 
-    var grouped = try std.ArrayList(usize).initCapacity(gpa, nodes.items.len);
-    for (nodes.items) |v| {
+    var grouped = try std.ArrayList(usize).initCapacity(gpa, nodes.len);
+    for (nodes) |v| {
         if (done[comp[v]]) continue;
 
         done[comp[v]] = true;
 
-        for (nodes.items) |u| {
+        for (nodes) |u| {
             if (comp[u] == comp[v]) grouped.appendAssumeCapacity(u);
         }
     }
 
-    return .{ .set = set, .nodes = grouped };
+    return grouped;
 }
 
 const ColoredEdge = struct { aod: usize, slm: usize, color: i32 };
