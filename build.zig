@@ -72,12 +72,16 @@ pub fn build(b: *std.Build) void {
     assembly_mod.addImport("arch", arch_mod);
     exe.root_module.addImport("assembly", assembly_mod);
 
-    // Pass tracing, silent unless the driver enables it (-v).
+    // Pass tracing, silent unless the driver enables it (-v). Also the home
+    // of the shared "quiet-suppressible diagnostic print" helper used by
+    // arch/assembly/verify's validation checks.
     const trace_mod = b.addModule("trace", .{
         .root_source_file = b.path("src/trace.zig"),
         .target = target,
     });
     exe.root_module.addImport("trace", trace_mod);
+    arch_mod.addImport("trace", trace_mod);
+    assembly_mod.addImport("trace", trace_mod);
 
     const rest_mod = b.addModule("resting", .{
         .root_source_file = b.path("src/resting.zig"),
@@ -119,6 +123,7 @@ pub fn build(b: *std.Build) void {
     });
     verify_mod.addImport("schedule", schedule_mod);
     verify_mod.addImport("arch", arch_mod);
+    verify_mod.addImport("trace", trace_mod);
     exe.root_module.addImport("verify", verify_mod);
 
     // Golden tests over the full pipeline: circuit -> Sequence/Hardware JSON,

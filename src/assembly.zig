@@ -10,6 +10,7 @@
 const std = @import("std");
 const arch = @import("arch");
 const schedule = @import("schedule");
+const trace = @import("trace");
 
 pub const AssemblyError = error{
     MalformedOccupancy,
@@ -101,7 +102,7 @@ pub const CheckError = error{
 pub var quiet = false;
 
 fn cfail(comptime fmt: []const u8, args: anytype) void {
-    if (!quiet) std.debug.print("assembly: " ++ fmt ++ "\n", args);
+    trace.diag(quiet, "assembly: " ++ fmt, args);
 }
 
 /// Driver-level validation, here rather than in main so it is testable:

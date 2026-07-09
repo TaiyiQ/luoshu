@@ -1,5 +1,6 @@
 const std = @import("std");
 const toml = @import("toml");
+const trace = @import("trace");
 
 // ── Raw structs (floats) — mirrors the TOML exactly ──────────────────────────
 
@@ -279,8 +280,7 @@ pub const ConfigError = error{
 pub var quiet: bool = false;
 
 fn cfail(comptime fmt: []const u8, args: anytype) void {
-    if (quiet) return;
-    std.debug.print("arch config: " ++ fmt ++ "\n", args);
+    trace.diag(quiet, "arch config: " ++ fmt, args);
 }
 
 /// Structural legality of a converted config.

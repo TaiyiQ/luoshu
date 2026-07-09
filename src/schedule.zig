@@ -506,7 +506,12 @@ pub const Hardware = struct {
     // Apply single-qubit rotations as Raman pulses at the atoms' current
     // storage-zone positions. All gates of the batch fire in one timestep.
     pub fn raman(s: *Hardware, gates: []const RamanGate) !void {
-        // FIXME, do we need a list of targets?
+        // Raman.targets is a slice so one op could carry a whole batch, but
+        // this is the only producer and it always allocates a 1-element
+        // slice, emitting one op per gate instead. Batching into a single
+        // multi-target op would change the emitted frame/JSON shape that
+        // verify.zig and serialize.zig read, so leave as-is until there's a
+        // reason to actually batch.
         for (gates) |gate| {
             const targets = try s.arena.allocator().alloc(RamanTarget, 1);
             targets[0] = .{
