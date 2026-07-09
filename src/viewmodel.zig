@@ -464,27 +464,31 @@ test "staged layout: stages never share a column" {
     var c = circuit.Circuit.init(gpa, 2);
     defer c.deinit();
     try c.cz(0, 1);
-    try c.h(1); // barrier: next CZ lands in stage 1
+    try c.h(1); // U barrier: homogeneous staging splits into its own stage
     try c.cz(0, 1);
 
     var pipe = try circuit.decompose(gpa, c);
     defer pipe.deinit();
-    try std.testing.expectEqual(@as(usize, 2), pipe.stages.items.len);
+    // [cz(0,1)], [h(1)], [cz(0,1)] — stages alternate CZ/U kind, so the U
+    // barrier can't share a stage with either CZ.
+    try std.testing.expectEqual(@as(usize, 3), pipe.stages.items.len);
 
     var lay = try CircuitLayout.init(gpa, c, pipe);
     defer lay.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), lay.stage_cols.len);
-    // Stage 1 starts past every column stage 0 used.
-    try std.testing.expect(lay.stage_cols[1] > lay.stage_cols[0]);
+    try std.testing.expectEqual(@as(usize, 3), lay.stage_cols.len);
+    // Each stage starts past every column the previous one used.
+    for (lay.stage_cols[1..], lay.stage_cols[0 .. lay.stage_cols.len - 1]) |sc, prev| {
+        try std.testing.expect(sc > prev);
+    }
     for (lay.laid) |lg| {
         try std.testing.expect(lg.col < lay.n_cols);
     }
     // The layout preserves stage grouping: within a stage CZs come first,
-    // so the second CZ sits at or past stage 1's first column.
+    // so the second CZ sits at or past the last stage's first column.
     const last = lay.laid[lay.laid.len - 1];
     try std.testing.expect(last.gate == .cz);
-    try std.testing.expect(last.col >= lay.stage_cols[1]);
+    try std.testing.expect(last.col >= lay.stage_cols[2]);
 }
 
 test {

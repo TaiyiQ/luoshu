@@ -2,26 +2,10 @@ const std = @import("std");
 const arch = @import("arch");
 
 pub const Zone = enum { storage, compute, readout };
-const Axis = enum { x, y };
 
 pub const Atom = struct {
     id: u32,
     pos: Point,
-
-    fn order(s: Atom, other: Atom) std.math.Order {
-        return switch (std.math.order(s.pos.x, other.pos.x)) {
-            .eq => std.math.order(s.pos.y, other.pos.y),
-            else => |o| o,
-        };
-    }
-
-    pub fn isLeftOf(s: Atom, other: Atom) bool {
-        return s.order(other) == .lt;
-    }
-
-    pub fn isRightOf(s: Atom, other: Atom) bool {
-        return s.order(other) == .gt;
-    }
 };
 
 pub const Point = struct {
@@ -29,8 +13,6 @@ pub const Point = struct {
     y: i32,
 };
 
-/// A storage-zone trap by grid index: occupancy[row][col] in the upstream
-/// atom-rearrangement handoff maps to trap (grid.x(col), grid.y(row)).
 pub const Site = struct {
     row: u32,
     col: u32,
@@ -84,7 +66,11 @@ const Rydberg = struct {
     /// checks each pair sits within the blockade radius at pulse time.
     pairs: []const [2]u32 = &.{},
 };
-const Measure = struct { zone: Zone, qubits: []u32 };
+
+const Measure = struct {
+    zone: Zone,
+    qubits: []u32,
+};
 
 pub const OpKind = union(enum) {
     raman: Raman,
@@ -624,11 +610,9 @@ pub const Hardware = struct {
         s.step();
     }
 
-    // Pick up atoms from storage in `ord` order, traversing without
-    // crossing occupied sites. The physical AOD drives a single row tone,
-    // so the register holds one shared y at every step; only the column
-    // tones move per-atom. Atoms in other storage rows are reached by
-    // riding the whole register to their row.
+    // Pick up atoms from storage in order, traversing without crossing occupied sites.
+    // The physical AOD drives a single row tone, so the register holds one shared
+    // y at every instant; only the column tones move per-atom.
     fn pickup(s: *Hardware, ord: []const usize) !Register {
         // Every picked-up atom occupies its own AOD column.
         if (ord.len > s.cfg.aod.max_num_col) return error.AodCapacityExceeded;
@@ -641,77 +625,61 @@ pub const Hardware = struct {
 
         if (ord.len == 0) return register;
 
-        // Pick up first atom.
+        // Pick up the first atom and hover it into the lane above its row.
+        var front = s.placement[ord[0]].pos;
         try s.loadAtom(&s.placement[ord[0]]);
+        try s.moveAtom(&s.placement[ord[0]], 0, -d);
         try register.append(s.gpa, &s.placement[ord[0]]);
         s.step();
 
-        var front = s.placement[ord[0]];
-
         for (ord[1..]) |q| {
-            const next = s.placement[q];
+            const next = s.placement[q].pos;
 
-            // Advancing rightward along the row needs no traversal: the
-            // register always parks left of the last pickup. Anything else
-            // (row change or leftward advance) rides - the packed half-lane
-            // columns share no x with any trap site, so the descent lands
-            // conflict-free by construction.
-            if (next.pos.y != front.pos.y or next.isLeftOf(front)) {
-                try s.rideRegister(&register, next.pos.x, next.pos.y);
+            try s.packRegister(&register, next.x);
+
+            // Row change: ride the packed register to the target row's lane.
+            if (next.y != front.y) {
+                for (register.items) |a| try s.moveAtom(a, 0, next.y - d - a.pos.y);
+                s.step();
             }
 
+            // Dip inline: the row tone descends to the storage row - the
+            // held columns land between sites.
+            for (register.items) |a| try s.moveAtom(a, 0, d);
             try s.loadAtom(&s.placement[q]);
             try register.append(s.gpa, &s.placement[q]);
+            s.step();
+
+            // Rise back into the lane as one row.
+            for (register.items) |a| try s.moveAtom(a, 0, -d);
             s.step();
 
             front = next;
         }
 
         // Stage the register in the trap-free band past the bottom storage
-        // row. From the bottom row that is a plain drop; from any other row
-        // the descent crosses trap rows, so ride instead.
+        // row: pack the columns off the trap-column lattice, then drop as one row.
         const y_stage = sgrid.bottomRowY() + 4 * d;
-        if (front.pos.y == sgrid.bottomRowY()) {
-            for (register.items) |a| try s.moveAtom(a, 0, y_stage - a.pos.y);
-            s.step();
-        } else {
-            try s.rideRegister(&register, front.pos.x, y_stage);
-        }
+        try s.packRegister(&register, front.x);
+        for (register.items) |a| try s.moveAtom(a, 0, y_stage - a.pos.y);
+        s.step();
 
         return register;
     }
 
-    // Carries the whole register to `dest_y` in three steps: hover into the
-    // trap-free lane above the current row, pack the columns into the
-    // half-lanes left of `anchor_x`, then ride down/up as one row. Packing
-    // assigns lanes in current x order, so no two AOD columns cross; the
-    // half-lane x means the vertical ride crosses no trap site, whatever
-    // rows it passes. The register's shared y is preserved throughout.
-    fn rideRegister(s: *Hardware, register: *Register, anchor_x: i32, dest_y: i32) !void {
+    // Packs the register's columns one per inter-column gap immediately
+    // left of `anchor_x`, parked at the gap midpoints: a following dip or
+    // vertical ride then crosses no trap site, whatever rows it passes,
+    // and no held column ever comes closer than half a pitch to a stored atom.
+    fn packRegister(s: *Hardware, register: *const Register, anchor_x: i32) !void {
         const sgrid = s.cfg.storage_zone.grid();
         const d = sgrid.halfSepX();
 
-        // Step 1
-        for (register.items) |a| try s.moveAtom(a, 0, -d);
-        s.step();
-
-        // Step 2
-        const sorted = try s.gpa.dupe(*Atom, register.items);
-        defer s.gpa.free(sorted);
-        std.sort.block(*Atom, sorted, {}, struct {
-            fn lt(_: void, a: *const Atom, b: *const Atom) bool {
-                return a.pos.x < b.pos.x;
-            }
-        }.lt);
-        for (sorted, 0..) |a, i| {
-            const back: i32 = @intCast(sorted.len - 1 - i);
+        for (register.items, 0..) |a, i| {
+            const back: i32 = @intCast(register.items.len - 1 - i);
             const dest_x = anchor_x - d - back * sgrid.sep_nm[0];
             if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
         }
-        s.step();
-
-        // Step 3
-        for (register.items) |a| try s.moveAtom(a, 0, dest_y - a.pos.y);
         s.step();
     }
 };
@@ -905,15 +873,22 @@ fn testShuttleCfg() arch.ArchConfig {
 }
 
 // Replays `frames`, asserting that all AOD-held atoms share one y at the
-// end of every frame (the physical AOD drives a single row tone). Returns
-// the held set so callers can also assert on the terminal state.
+// end of every frame, and that every load is inline with the held columns
+// at the instant it fires — the trap must form on the atom, and the held
+// columns ride the same single row tone, so a register hovering on
+// another row cannot load. Returns the held set so callers can also
+// assert on the terminal state.
 fn expectSingleAodRow(gpa: std.mem.Allocator, frames: []const Frame) !std.AutoHashMap(u32, i32) {
     var in_aod = std.AutoHashMap(u32, i32).init(gpa);
     errdefer in_aod.deinit();
 
     for (frames) |frame| {
         for (frame.items) |op| switch (op) {
-            .load => |l| try in_aod.put(l.qubit, l.position.y),
+            .load => |l| {
+                var held = in_aod.valueIterator();
+                while (held.next()) |y| try std.testing.expectEqual(l.position.y, y.*);
+                try in_aod.put(l.qubit, l.position.y);
+            },
             .store => |st| _ = in_aod.remove(st.qubit),
             .move => |m| if (in_aod.contains(m.qubit)) try in_aod.put(m.qubit, m.dest.y),
             else => {},
@@ -951,9 +926,6 @@ test "pickup keeps the AOD register in a single row across storage rows" {
     defer in_aod.deinit();
 }
 
-// A left traversal carries the register past a storage site that is never
-// picked up. Packing into half-lanes keeps the descent clear of the
-// blocker: no half-lane x coincides with a trap site.
 test "pickup traversal past an occupied site preserves site exclusivity" {
     const gpa = std.testing.allocator;
 
@@ -977,10 +949,10 @@ test "pickup traversal past an occupied site preserves site exclusivity" {
     var register = try hw.pickup(&.{ 1, 2, 3, 4 });
     defer register.deinit(gpa);
 
-    // Site exclusivity at the end of every frame — the invariant
-    // verify.verify enforces on full schedules.
+    // Site exclusivity at the end of every frame.
     const pos = try gpa.dupe(Point, hw.initial);
     defer gpa.free(pos);
+
     for (hw.frames.items) |frame| {
         for (frame.items) |op| switch (op) {
             .move => |m| pos[m.qubit] = m.dest,
@@ -991,6 +963,95 @@ test "pickup traversal past an occupied site preserves site exclusivity" {
                 try std.testing.expect(p.x != q.x or p.y != q.y);
             }
         }
+    }
+}
+
+// Held columns pack against each pickup, one column per inter-column gap,
+// parked at the gap midpoints. The packing sweeps the register rightward
+// past skipped storage sites. No move may cross an atom that is stored
+// for the whole frame, and no gap ever holds more than one register atom.
+test "pickup packs one register column per storage gap" {
+    const gpa = std.testing.allocator;
+
+    var cfg = testShuttleCfg();
+    cfg.storage_zone.slm.num_col = 6;
+    cfg.storage_zone.dimension_nm[0] = 6000;
+
+    // Bottom row: pickups at columns 0, 2, 5 advance rightward past
+    // stored blockers at columns 1 and 3 that are never picked up.
+    var hw = try Hardware.init(gpa, cfg, 5, &.{
+        .{ .row = 2, .col = 0 },
+        .{ .row = 2, .col = 2 },
+        .{ .row = 2, .col = 5 },
+        .{ .row = 2, .col = 1 },
+        .{ .row = 2, .col = 3 },
+    });
+    defer hw.deinit();
+
+    var register = try hw.pickup(&.{ 0, 1, 2 });
+    defer register.deinit(gpa);
+
+    // Replay with trap tracking: a move may not sweep through an atom
+    // that is stored for the whole frame (frame ops are parallel), and
+    // positions stay exclusive at the end of every frame.
+    const pos = try gpa.dupe(Point, hw.initial);
+    defer gpa.free(pos);
+
+    var in_aod = [_]bool{false} ** 5;
+
+    for (hw.frames.items) |frame| {
+        const start_aod = in_aod;
+
+        var moves: std.ArrayList([2]Point) = .empty;
+        defer moves.deinit(gpa);
+
+        for (frame.items) |op| switch (op) {
+            .load => |l| in_aod[l.qubit] = true,
+            .store => |st| in_aod[st.qubit] = false,
+            .move => |m| {
+                try moves.append(gpa, .{ m.src, m.dest });
+                pos[m.qubit] = m.dest;
+            },
+            else => {},
+        };
+
+        for (moves.items) |mv| {
+            for (pos, 0..) |blocker, q| {
+                if (start_aod[q] or in_aod[q]) continue;
+                if (mv[0].y == mv[1].y) {
+                    try std.testing.expect(blocker.y != mv[0].y or
+                        blocker.x <= @min(mv[0].x, mv[1].x) or
+                        blocker.x >= @max(mv[0].x, mv[1].x));
+                } else {
+                    try std.testing.expect(blocker.x != mv[0].x or
+                        blocker.y <= @min(mv[0].y, mv[1].y) or
+                        blocker.y >= @max(mv[0].y, mv[1].y));
+                }
+            }
+        }
+
+        for (pos[0 .. pos.len - 1], 0..) |a, i| {
+            for (pos[i + 1 ..]) |b| {
+                try std.testing.expect(a.x != b.x or a.y != b.y);
+            }
+        }
+
+        // A held column sits either on the column of the site it was just
+        // lifted from or at a gap midpoint. With site exclusivity that
+        // means at most one register atom between any two adjacent trap
+        // columns, half a pitch from both.
+        const sgrid = cfg.storage_zone.grid();
+        for (pos, 0..) |a, q| {
+            if (!in_aod[q]) continue;
+            const rel = @mod(a.x - sgrid.x(0), sgrid.sep_nm[0]);
+            try std.testing.expect(rel == 0 or rel == sgrid.halfSepX());
+        }
+    }
+
+    // Staged register: one atom per gap, at exactly the storage pitch.
+    const sep = cfg.storage_zone.grid().sep_nm[0];
+    for (register.items[1..], register.items[0 .. register.items.len - 1]) |right, left| {
+        try std.testing.expectEqual(sep, right.pos.x - left.pos.x);
     }
 }
 

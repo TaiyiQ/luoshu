@@ -84,6 +84,19 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
                         });
                         return error.LoadPositionMismatch;
                     }
+                    // Single row tone: the trap must form on the atom, and
+                    // every held column rides the same tone, so the load's
+                    // row must be inline with the whole register at this
+                    // instant — not merely by end of frame.
+                    for (0..n) |r| {
+                        if (trap[r] != .aod) continue;
+                        if (pos[r].y != ld.position.y) {
+                            vfail(t, "load of qubit {d} at y={d} while held qubit {d} is at y={d}", .{
+                                q, ld.position.y, r, pos[r].y,
+                            });
+                            return error.LoadOffRegisterRow;
+                        }
+                    }
                     trap[q] = .aod;
                 },
                 .store => |st| {
@@ -907,6 +920,53 @@ test "catches an AOD register split across rows" {
     defer quiet = false;
 
     try std.testing.expectError(error.AodRowSplit, verify(gpa, &hw));
+}
+
+test "catches a load while the register hovers on another row" {
+    const gpa = std.testing.allocator;
+
+    var hw = try makeHw(gpa, &.{ pt(0, 0), pt(1000, 0) });
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
+        },
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(0, 0),
+                .dest = pt(0, -500),
+            },
+        },
+    });
+
+    // Qubit 1 loads at the storage row while qubit 0 hovers in the lane
+    // above. Both end the frame on one y, but at load time the single
+    // row tone would have to be in two places.
+    try addFrame(&hw, &.{
+        .{
+            .load = .{
+                .qubit = 1,
+                .position = pt(1000, 0),
+            },
+        },
+        .{
+            .move = .{
+                .qubit = 1,
+                .src = pt(1000, 0),
+                .dest = pt(1000, -500),
+            },
+        },
+    });
+
+    quiet = true;
+    defer quiet = false;
+
+    try std.testing.expectError(error.LoadOffRegisterRow, verify(gpa, &hw));
 }
 
 test "catches an atom left in the AOD at end of schedule" {
