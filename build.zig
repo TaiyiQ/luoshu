@@ -96,6 +96,13 @@ pub fn build(b: *std.Build) void {
     });
     graph_mod.addImport("graph", graph_mod);
 
+    const color_mod = b.addModule("color", .{
+        .root_source_file = b.path("src/color.zig"),
+        .target = target,
+    });
+    color_mod.addImport("color", color_mod);
+    color_mod.addImport("graph", graph_mod);
+
     const route_mod = b.addModule("route", .{
         .root_source_file = b.path("src/route.zig"),
         .target = target,
@@ -103,6 +110,7 @@ pub fn build(b: *std.Build) void {
     route_mod.addImport("trace", trace_mod);
     route_mod.addImport("resting", rest_mod);
     route_mod.addImport("graph", graph_mod);
+    route_mod.addImport("color", color_mod);
 
     const serialize_mod = b.addModule("serialize", .{
         .root_source_file = b.path("src/serialize.zig"),
