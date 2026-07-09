@@ -625,42 +625,45 @@ pub const Hardware = struct {
 
         if (ord.len == 0) return register;
 
-        // Pick up the first atom and hover it into the lane above its row.
-        var front = s.placement[ord[0]].pos;
+        // Pick up the first atom in place.
         try s.loadAtom(&s.placement[ord[0]]);
-        try s.moveAtom(&s.placement[ord[0]], 0, -d);
         try register.append(s.gpa, &s.placement[ord[0]]);
         s.step();
+
+        var front = s.placement[ord[0]].pos;
 
         for (ord[1..]) |q| {
             const next = s.placement[q].pos;
 
-            try s.packRegister(&register, next.x);
+            // Advancing rightward along the row needs no traversal: the
+            // register always parks left of the last pickup, so the atom loads in place.
+            if (next.y != front.y or next.x < front.x) {
+                for (register.items) |a| try s.moveAtom(a, 0, -d);
+                s.step();
 
-            // Row change: ride the packed register to the target row's lane.
-            if (next.y != front.y) {
-                for (register.items) |a| try s.moveAtom(a, 0, next.y - d - a.pos.y);
+                try s.packRegister(&register, next.x);
+
+                for (register.items) |a| try s.moveAtom(a, 0, next.y - a.pos.y);
                 s.step();
             }
 
-            // Dip inline: the row tone descends to the storage row - the
-            // held columns land between sites.
-            for (register.items) |a| try s.moveAtom(a, 0, d);
             try s.loadAtom(&s.placement[q]);
             try register.append(s.gpa, &s.placement[q]);
-            s.step();
-
-            // Rise back into the lane as one row.
-            for (register.items) |a| try s.moveAtom(a, 0, -d);
             s.step();
 
             front = next;
         }
 
         // Stage the register in the trap-free band past the bottom storage
-        // row: pack the columns off the trap-column lattice, then drop as one row.
+        // row. From the bottom row that is a plain drop; from any other row
+        // the descent crosses trap rows, so hover and pack first.
         const y_stage = sgrid.bottomRowY() + 4 * d;
-        try s.packRegister(&register, front.x);
+        if (front.y != sgrid.bottomRowY()) {
+            for (register.items) |a| try s.moveAtom(a, 0, -d);
+            s.step();
+            try s.packRegister(&register, front.x);
+        }
+
         for (register.items) |a| try s.moveAtom(a, 0, y_stage - a.pos.y);
         s.step();
 
@@ -967,7 +970,7 @@ test "pickup traversal past an occupied site preserves site exclusivity" {
 }
 
 // Held columns pack against each pickup, one column per inter-column gap,
-// parked at the gap midpoints. The packing sweeps the register rightward
+// parked at the gap midpoints. The packing sweeps the register leftward
 // past skipped storage sites. No move may cross an atom that is stored
 // for the whole frame, and no gap ever holds more than one register atom.
 test "pickup packs one register column per storage gap" {
@@ -977,7 +980,7 @@ test "pickup packs one register column per storage gap" {
     cfg.storage_zone.slm.num_col = 6;
     cfg.storage_zone.dimension_nm[0] = 6000;
 
-    // Bottom row: pickups at columns 0, 2, 5 advance rightward past
+    // Bottom row: pickups at columns 5, 2, 0 advance leftward past
     // stored blockers at columns 1 and 3 that are never picked up.
     var hw = try Hardware.init(gpa, cfg, 5, &.{
         .{ .row = 2, .col = 0 },
@@ -988,7 +991,7 @@ test "pickup packs one register column per storage gap" {
     });
     defer hw.deinit();
 
-    var register = try hw.pickup(&.{ 0, 1, 2 });
+    var register = try hw.pickup(&.{ 2, 1, 0 });
     defer register.deinit(gpa);
 
     // Replay with trap tracking: a move may not sweep through an atom
@@ -1048,11 +1051,18 @@ test "pickup packs one register column per storage gap" {
         }
     }
 
-    // Staged register: one atom per gap, at exactly the storage pitch.
-    const sep = cfg.storage_zone.grid().sep_nm[0];
-    for (register.items[1..], register.items[0 .. register.items.len - 1]) |right, left| {
+    // Staged register: the packed atoms sit one full pitch apart, and the
+    // most recently picked atom - never repacked, since staging from the
+    // bottom row needs no traversal - is still at its real trap column,
+    // half a pitch from the packed atom beside it.
+    const sgrid = cfg.storage_zone.grid();
+    const sep = sgrid.sep_nm[0];
+    const d = sgrid.halfSepX();
+    const last = register.items.len - 1;
+    for (register.items[1..last], register.items[0 .. last - 1]) |right, left| {
         try std.testing.expectEqual(sep, right.pos.x - left.pos.x);
     }
+    try std.testing.expectEqual(d, register.items[last].pos.x - register.items[last - 1].pos.x);
 }
 
 // Idle atoms can sit on any storage row at measurement time; readout
