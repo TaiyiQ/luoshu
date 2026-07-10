@@ -1,4 +1,5 @@
 const std = @import("std");
+const trace = @import("trace");
 
 const MIN = -1; // maxColor sentinel: below every real color.
 
@@ -78,6 +79,31 @@ pub const Graph = struct {
         }
         if (max_c == MIN) return error.NoColors;
         return max_c;
+    }
+
+    pub fn edgeColors(self: *const Graph) void {
+        if (!trace.enabled) return;
+        std.debug.print(">> Edge Colors\n", .{});
+
+        for (0..self.n) |x| {
+            var has_any = false;
+
+            var e = self.edges[x];
+            while (e) |edge| : (e = edge.next) {
+                const y = edge.y;
+                if (x < y) {
+                    if (edge.color) |c| {
+                        if (!has_any) {
+                            std.debug.print("  {d} -> ", .{x});
+                            has_any = true;
+                        }
+                        std.debug.print("{d}:{d} ", .{ y, c });
+                    }
+                }
+            }
+
+            if (has_any) std.debug.print("\n", .{});
+        }
     }
 
     pub fn print(self: *const Graph, name: []const u8) void {

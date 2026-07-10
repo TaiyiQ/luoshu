@@ -95,6 +95,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
     graph_mod.addImport("graph", graph_mod);
+    graph_mod.addImport("trace", trace_mod);
 
     const color_mod = b.addModule("color", .{
         .root_source_file = b.path("src/color.zig"),

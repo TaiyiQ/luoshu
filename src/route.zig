@@ -276,7 +276,7 @@ pub fn computeSequence(gpa: std.mem.Allocator, g: *Graph) !Sequence {
     var order = try color.SlmOrder.init(gpa, g.n);
     defer order.deinit();
     try color.dsatur(gpa, g, aod_nodes, &order);
-    edgeColors(g.*);
+    g.edgeColors();
 
     const slm_order = try topoSort(gpa, order.adj, aod_set, g.*);
     defer gpa.free(slm_order);
@@ -579,29 +579,4 @@ pub fn buildGraph10Graph(gpa: std.mem.Allocator) !Graph {
     try g.addEdge(4, 6);
     try g.addEdge(9, 6);
     return g;
-}
-
-pub fn edgeColors(g: Graph) void {
-    if (!trace.enabled) return;
-    std.debug.print(">> Edge Colors\n", .{});
-
-    for (0..g.n) |x| {
-        var has_any = false;
-
-        var e = g.edges[x];
-        while (e) |edge| : (e = edge.next) {
-            const y = edge.y;
-            if (x < y) {
-                if (edge.color) |c| {
-                    if (!has_any) {
-                        std.debug.print("  {d} -> ", .{x});
-                        has_any = true;
-                    }
-                    std.debug.print("{d}:{d} ", .{ y, c });
-                }
-            }
-        }
-
-        if (has_any) std.debug.print("\n", .{});
-    }
 }
