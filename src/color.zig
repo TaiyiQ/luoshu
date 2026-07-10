@@ -241,3 +241,212 @@ fn countSaturation(g: *Graph, u: usize, v: usize) usize {
 
     return seen.count();
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}
+
+/// Aod over `n` qubits with the given nodes, in sequence order.
+fn testAod(gpa: std.mem.Allocator, n: usize, nodes: []const usize) !Aod {
+    const set = try gpa.alloc(bool, n);
+    errdefer gpa.free(set);
+    @memset(set, false);
+
+    var list: std.ArrayList(usize) = .empty;
+    errdefer list.deinit(gpa);
+
+    for (nodes) |q| {
+        set[q] = true;
+        try list.append(gpa, q);
+    }
+
+    return .{ .set = set, .nodes = list };
+}
+
+fn edgeColor(g: *const Graph, x: usize, y: usize) ?i32 {
+    var e = g.edges[x];
+    while (e) |edge| : (e = edge.next) {
+        if (edge.y == y) return edge.color;
+    }
+    return null;
+}
+
+test "mustPrecede is reflexive and empty without constraints" {
+    var order = try SlmOrder.init(std.testing.allocator, 2);
+    defer order.deinit();
+
+    try std.testing.expect(order.mustPrecede(0, 0));
+    try std.testing.expect(!order.mustPrecede(0, 1));
+}
+
+test "mustPrecede follows constraint chains transitively, not backwards" {
+    // Transitively here means:
+    // If constraint A contains constraint B, and constraint B contains
+    // constraint C, then C is transitively located within A.
+    var order = try SlmOrder.init(std.testing.allocator, 3);
+    defer order.deinit();
+
+    try order.addConstraint(0, 1);
+    try order.addConstraint(1, 2);
+
+    try std.testing.expect(order.mustPrecede(0, 2)); // transitively
+    try std.testing.expect(!order.mustPrecede(2, 0));
+    try std.testing.expect(!order.mustPrecede(1, 0));
+}
+
+test "addConstraint drops self loops and duplicates" {
+    var order = try SlmOrder.init(std.testing.allocator, 2);
+    defer order.deinit();
+
+    try order.addConstraint(0, 0);
+    try std.testing.expectEqual(0, order.adj[0].items.len);
+
+    try order.addConstraint(0, 1);
+    try order.addConstraint(0, 1);
+    try std.testing.expectEqual(1, order.adj[0].items.len);
+}
+
+test "leastAdmissible starts at color zero with nothing colored" {
+    var order = try SlmOrder.init(std.testing.allocator, 2);
+    defer order.deinit();
+
+    const rank_of = [_]usize{ 0, 0 };
+    try std.testing.expectEqual(0, try leastAdmissible(0, 1, 0, &rank_of, &.{}, &order));
+}
+
+test "colors already on the slm are a floor, not just forbidden" {
+    var order = try SlmOrder.init(std.testing.allocator, 3);
+    defer order.deinit();
+
+    // AOD 2 gated y=1 at color 1; AOD 0 must arrive strictly later.
+    const colored = [_]ColoredEdge{.{ .aod = 2, .slm = 1, .color = 1 }};
+    const rank_of = [_]usize{ 0, 0, 1 };
+
+    try std.testing.expectEqual(2, try leastAdmissible(0, 1, 0, &rank_of, &colored, &order));
+}
+
+test "an aod cannot gate two partners in one color class" {
+    var order = try SlmOrder.init(std.testing.allocator, 3);
+    defer order.deinit();
+
+    const colored = [_]ColoredEdge{.{ .aod = 0, .slm = 1, .color = 0 }};
+    const rank_of = [_]usize{ 0, 0, 0 };
+
+    try std.testing.expectEqual(1, try leastAdmissible(0, 2, 0, &rank_of, &colored, &order));
+}
+
+test "a partner ordered right of an already-gated one colors above it" {
+    var order = try SlmOrder.init(std.testing.allocator, 3);
+    defer order.deinit();
+
+    // 1 sits left of 2 and v already gated 1 at color 1, so the
+    // edge to 2 can slot neither below nor beside it.
+    try order.addConstraint(1, 2);
+    const colored = [_]ColoredEdge{.{ .aod = 0, .slm = 1, .color = 1 }};
+    const rank_of = [_]usize{ 0, 0, 0 };
+
+    try std.testing.expectEqual(2, try leastAdmissible(0, 2, 0, &rank_of, &colored, &order));
+}
+
+test "leastAdmissible errors when every color inverts the slm order" {
+    var order = try SlmOrder.init(std.testing.allocator, 3);
+    defer order.deinit();
+
+    // 2 sits left of 1, but v already gated 1 below every candidate color.
+    try order.addConstraint(2, 1);
+    const colored = [_]ColoredEdge{.{ .aod = 0, .slm = 1, .color = 0 }};
+    const rank_of = [_]usize{ 0, 0, 0 };
+
+    try std.testing.expectError(error.CyclicAodOrder, leastAdmissible(0, 2, 0, &rank_of, &colored, &order));
+}
+
+test "a shared color class must mirror the aod ranks" {
+    var order = try SlmOrder.init(std.testing.allocator, 4);
+    defer order.deinit();
+
+    // AOD 0 (rank 0, right of v=1) gated 2 at color 0. With 2 already left
+    // of 3, putting (1, 3) in class 0 would need 3 left of 2: skip to 1.
+    try order.addConstraint(2, 3);
+    const colored = [_]ColoredEdge{.{ .aod = 0, .slm = 2, .color = 0 }};
+    const rank_of = [_]usize{ 0, 1, 0, 0 };
+
+    try std.testing.expectEqual(1, try leastAdmissible(1, 3, 1, &rank_of, &colored, &order));
+}
+
+test "dsatur colors a star left to right in gating order" {
+    const gpa = std.testing.allocator;
+
+    var g = try Graph.init(gpa, 4, false);
+    defer g.deinit();
+    try g.addEdge(0, 1);
+    try g.addEdge(0, 2);
+    try g.addEdge(0, 3);
+
+    var aod = try testAod(gpa, 4, &.{0});
+    defer aod.deinit(gpa);
+
+    var order = try SlmOrder.init(gpa, 4);
+    defer order.deinit();
+
+    try dsatur(gpa, &g, aod, &order);
+
+    // All ties in the neighbour sort: lowest index gated first.
+    try std.testing.expectEqual(0, edgeColor(&g, 0, 1));
+    try std.testing.expectEqual(1, edgeColor(&g, 0, 2));
+    try std.testing.expectEqual(2, edgeColor(&g, 0, 3));
+
+    // Partners end up left to right in color order.
+    try std.testing.expect(order.mustPrecede(1, 2));
+    try std.testing.expect(order.mustPrecede(2, 3));
+    try std.testing.expect(order.mustPrecede(1, 3));
+    try std.testing.expect(!order.mustPrecede(3, 1));
+}
+
+test "dsatur gives a shared slm strictly increasing colors" {
+    const gpa = std.testing.allocator;
+
+    var g = try Graph.init(gpa, 3, false);
+    defer g.deinit();
+    try g.addEdge(0, 1);
+    try g.addEdge(2, 1);
+
+    var aod = try testAod(gpa, 3, &.{ 0, 2 });
+    defer aod.deinit(gpa);
+
+    var order = try SlmOrder.init(gpa, 3);
+    defer order.deinit();
+
+    try dsatur(gpa, &g, aod, &order);
+
+    try std.testing.expectEqual(0, edgeColor(&g, 0, 1));
+    try std.testing.expectEqual(1, edgeColor(&g, 2, 1));
+
+    // Both directions of an edge carry the same color.
+    try std.testing.expectEqual(0, edgeColor(&g, 1, 0));
+    try std.testing.expectEqual(1, edgeColor(&g, 1, 2));
+}
+
+test "aods sharing a color class order their partners by rank" {
+    const gpa = std.testing.allocator;
+
+    var g = try Graph.init(gpa, 4, false);
+    defer g.deinit();
+    try g.addEdge(0, 2);
+    try g.addEdge(1, 3);
+
+    var aod = try testAod(gpa, 4, &.{ 0, 1 });
+    defer aod.deinit(gpa);
+
+    var order = try SlmOrder.init(gpa, 4);
+    defer order.deinit();
+
+    try dsatur(gpa, &g, aod, &order);
+
+    // Disjoint edges share class 0; nodes[0] is the rightmost AOD, so the
+    // later (leftward) AOD's partner sits left.
+    try std.testing.expectEqual(0, edgeColor(&g, 0, 2));
+    try std.testing.expectEqual(0, edgeColor(&g, 1, 3));
+
+    try std.testing.expect(order.mustPrecede(3, 2));
+    try std.testing.expect(!order.mustPrecede(2, 3));
+}
