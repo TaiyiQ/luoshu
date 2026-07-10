@@ -335,10 +335,11 @@ pub const SnapshotCase = struct {
     kind: SnapshotKind,
     path: []const u8,
 
-    /// Known routing bug (route-level sibling of golden.Case.known_violation):
-    /// the graph is non-bipartite, so the greedy MIS leaves an SLM-SLM edge
-    /// and computeSequence silently drops that CZ. Asserted so the
-    /// completeness test fails loudly the day routing handles such graphs.
+    /// A single computeSequence round cannot cover this graph: it is
+    /// non-bipartite, so the greedy MIS leaves SLM-SLM edges uncolored.
+    /// Not a lost gate - compiler.routeStage reroutes the residue in
+    /// further rounds until every CZ is covered - but asserted here to pin
+    /// computeSequence's single-round contract.
     known_incomplete: bool = false,
 };
 

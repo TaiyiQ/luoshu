@@ -49,21 +49,34 @@ pub fn main(init: std.process.Init) !void {
 
 // --- Benchmark table -------------------------------------------------------
 //
-// circuit                   qubits  frames  cz/pulse  shuttle_us  loading_us  ...
+// circuit                   qubits  frames       cz    colors  cz/pulse  ...
 // -------------------------------------------------------------------------
-// ex/graph/graph-10-9.qasm      10      49      2.33       235.2      1560.0  ...
+// ex/graph/graph-10-9.qasm      10      49    21/21     10/8       2.33  ...
+//
+// cz = pairs entangled in the schedule / CZ gates handed to routing: a
+// shortfall means the router dropped gates (non-bipartite MIS leftovers).
+// colors = timesteps used / max stage degree (the edge-coloring lower
+// bound), both summed over stages: the gap is the coloring's slack.
 
 /// Combined width of every column after `circuit`, including separators.
 /// Keep in sync with the format strings below.
-const bench_cols_width = 2 + 6 + 2 + 6 + 2 + 8 + 2 + 10 + 2 + 10 + 2 + 8 + 2 + 10;
+const bench_cols_width = 2 + 6 + 2 + 6 + 2 + 11 + 2 + 8 + 2 + 8 + 2 + 10 + 2 + 10 + 2 + 8 + 2 + 10;
 
 const BenchTotals = struct {
+    cz_pairs: usize = 0,
+    cz_requested: usize = 0,
+    colors: usize = 0,
+    max_degree: usize = 0,
     shuttling_us: f64 = 0,
     loading_us: f64 = 0,
     total_us: f64 = 0,
     compile_ns: u64 = 0,
 
     fn add(t: *BenchTotals, m: bench.Metrics) void {
+        t.cz_pairs += m.cz_pairs;
+        t.cz_requested += m.cz_requested orelse 0;
+        t.colors += m.colors orelse 0;
+        t.max_degree += m.max_degree orelse 0;
         t.shuttling_us += m.shuttling_us;
         t.loading_us += m.loading_us;
         t.total_us += m.totalUs();
@@ -90,17 +103,24 @@ fn printBenchRule(jobs: []const cli.Job) void {
 
 fn printBenchHeader(jobs: []const cli.Job) void {
     printBenchPadded("circuit", benchNameWidth(jobs));
-    std.debug.print("  {s:>6}  {s:>6}  {s:>8}  {s:>10}  {s:>10}  {s:>8}  {s:>10}\n", .{
-        "qubits", "frames", "cz/pulse", "shuttle_us", "loading_us", "total_us", "compile_ms",
+    std.debug.print("  {s:>6}  {s:>6}  {s:>11}  {s:>8}  {s:>8}  {s:>10}  {s:>10}  {s:>8}  {s:>10}\n", .{
+        "qubits", "frames", "cz", "colors", "cz/pulse", "shuttle_us", "loading_us", "total_us", "compile_ms",
     });
     printBenchRule(jobs);
 }
 
 fn printBenchRow(jobs: []const cli.Job, job: cli.Job, m: bench.Metrics) void {
+    var cz_buf: [32]u8 = undefined;
+    var colors_buf: [32]u8 = undefined;
+    const cz = std.fmt.bufPrint(&cz_buf, "{d}/{d}", .{ m.cz_pairs, m.cz_requested orelse 0 }) catch "?";
+    const colors = std.fmt.bufPrint(&colors_buf, "{d}/{d}", .{ m.colors orelse 0, m.max_degree orelse 0 }) catch "?";
+
     printBenchPadded(job.qasm, benchNameWidth(jobs));
-    std.debug.print("  {d:>6}  {d:>6}  {d:>8.2}  {d:>10.1}  {d:>10.1}  {d:>8.1}  {d:>10.2}\n", .{
+    std.debug.print("  {d:>6}  {d:>6}  {s:>11}  {s:>8}  {d:>8.2}  {d:>10.1}  {d:>10.1}  {d:>8.1}  {d:>10.2}\n", .{
         m.num_qubits,
         m.frames,
+        cz,
+        colors,
         m.avgCzPerPulse(),
         m.shuttling_us,
         m.loading_us,
@@ -112,11 +132,18 @@ fn printBenchRow(jobs: []const cli.Job, job: cli.Job, m: bench.Metrics) void {
 fn printBenchTotals(jobs: []const cli.Job, sum: BenchTotals) void {
     printBenchRule(jobs);
     var buf: [32]u8 = undefined;
+    var cz_buf: [32]u8 = undefined;
+    var colors_buf: [32]u8 = undefined;
     const label = std.fmt.bufPrint(&buf, "{d} circuits", .{jobs.len}) catch "total";
+    const cz = std.fmt.bufPrint(&cz_buf, "{d}/{d}", .{ sum.cz_pairs, sum.cz_requested }) catch "?";
+    const colors = std.fmt.bufPrint(&colors_buf, "{d}/{d}", .{ sum.colors, sum.max_degree }) catch "?";
+
     printBenchPadded(label, benchNameWidth(jobs));
-    std.debug.print("  {s:>6}  {s:>6}  {s:>8}  {d:>10.1}  {d:>10.1}  {d:>8.1}  {d:>10.2}\n", .{
+    std.debug.print("  {s:>6}  {s:>6}  {s:>11}  {s:>8}  {s:>8}  {d:>10.1}  {d:>10.1}  {d:>8.1}  {d:>10.2}\n", .{
         "",
         "",
+        cz,
+        colors,
         "",
         sum.shuttling_us,
         sum.loading_us,
@@ -154,8 +181,9 @@ fn compileOne(
     }
 
     const initial_sites = if (asm_doc) |a| a.sites else null;
+    var route_stats = compiler.RouteStats{};
     const compile_start = std.Io.Clock.awake.now(init.io);
-    var sch = try compiler.compile(init.gpa, &pipeline, cfg, initial_sites);
+    var sch = try compiler.compile(init.gpa, &pipeline, cfg, initial_sites, &route_stats);
     const compile_ns: u64 = @intCast(compile_start.durationTo(std.Io.Clock.awake.now(init.io)).nanoseconds);
     defer sch.deinit();
 
@@ -167,6 +195,9 @@ fn compileOne(
 
     var metrics = bench.measure(&sch, .{});
     metrics.compile_ns = compile_ns;
+    metrics.cz_requested = route_stats.cz_requested;
+    metrics.colors = route_stats.colors;
+    metrics.max_degree = route_stats.max_degree;
 
     if (job.bench) |path| {
         serialize.writeBench(init.gpa, init.io, path, metrics) catch |err|

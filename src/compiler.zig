@@ -15,15 +15,82 @@ const schedule = @import("schedule");
 
 const Graph = @import("graph").Graph;
 
-/// Route one stage's CZ gates: build the interaction graph and compile it
-/// into a logical Sequence. Caller owns the result.
-pub fn routeStage(gpa: std.mem.Allocator, cz_gates: []const circuit.Cz, num_qubits: usize) !route.Sequence {
-    var g = try Graph.init(gpa, num_qubits, false);
-    defer g.deinit();
+/// Routing quality counters, accumulated over every routing round of a
+/// compile. `cz_requested` counts the CZ gates handed to routing; the
+/// schedule's entangled pairs (bench.Metrics.cz_pairs) fall short of it
+/// only when a gate list repeats a pair within one stage (the interaction
+/// graph deduplicates). `colors` sums each round's timestep count and
+/// `max_degree` each round graph's max degree - the edge-coloring lower
+/// bound - so their gap is the slack the constrained coloring left on the
+/// table.
+pub const RouteStats = struct {
+    cz_requested: usize = 0,
+    colors: usize = 0,
+    max_degree: usize = 0,
+};
 
-    for (cz_gates) |gate| try g.addEdge(gate.control, gate.target);
+/// Route one stage's CZ gates to completion. Each round flies a maximal
+/// independent set and gates every edge it covers; edges between two
+/// grounded qubits cannot gate that round and survive into the next
+/// round's interaction graph, so no CZ is ever dropped (non-bipartite
+/// graphs always leave such a residue). Returns one Sequence per round;
+/// the caller owns the slice and every element.
+pub fn routeStage(
+    gpa: std.mem.Allocator,
+    cz_gates: []const circuit.Cz,
+    num_qubits: usize,
+    stats: ?*RouteStats,
+) ![]route.Sequence {
+    var sequences: std.ArrayList(route.Sequence) = .empty;
+    errdefer {
+        for (sequences.items) |*s| s.deinit();
+        sequences.deinit(gpa);
+    }
 
-    return route.computeSequence(gpa, &g);
+    if (stats) |s| s.cz_requested += cz_gates.len;
+
+    var remaining: std.ArrayList(circuit.Cz) = .empty;
+    defer remaining.deinit(gpa);
+    try remaining.appendSlice(gpa, cz_gates);
+
+    while (remaining.items.len > 0) {
+        var g = try Graph.init(gpa, num_qubits, false);
+        defer g.deinit();
+
+        for (remaining.items) |gate| try g.addEdge(gate.control, gate.target);
+
+        // Capacity first, so the fresh Sequence lands in
+        // the list with no fallible step in between.
+        try sequences.ensureUnusedCapacity(gpa, 1);
+        sequences.appendAssumeCapacity(try route.computeSequence(gpa, &g));
+
+        if (stats) |s| {
+            const max_c = try g.maxColor();
+            s.colors += @intCast(max_c + 1);
+
+            var delta: usize = 0;
+            for (g.degree) |d| delta = @max(delta, d);
+            s.max_degree += delta;
+        }
+
+        // Rebuild the gate list in place with the residue:
+        // edges this round never colored.
+        remaining.clearRetainingCapacity();
+        for (0..g.n) |x| {
+            var e = g.edges[x];
+            while (e) |edge| : (e = edge.next) {
+                if (x < edge.y and edge.color == null) {
+                    try remaining.append(gpa, .{ .control = @intCast(x), .target = @intCast(edge.y) });
+                }
+            }
+        }
+
+        // Every round gates at least one AOD's full
+        // edge set, so the residue must shrink.
+        if (remaining.items.len == g.m) return error.NoRoutingProgress;
+    }
+
+    return sequences.toOwnedSlice(gpa);
 }
 
 /// Wrap an angle onto the canonical branch (-pi, pi].
@@ -64,6 +131,7 @@ pub fn compile(
     pipe: *const circuit.Pipeline,
     cfg: arch.ArchConfig,
     initial_sites: ?[]const schedule.Site,
+    stats: ?*RouteStats,
 ) !schedule.Hardware {
     var hw = try schedule.Hardware.init(gpa, cfg, pipe.num_qubits, initial_sites);
     errdefer hw.deinit();
@@ -83,15 +151,20 @@ pub fn compile(
     for (pipe.stages.items) |*stage| {
         // A stage with no CZ gates has nothing to route, so it is pure Raman pulses.
         if (stage.cz_gates.items.len > 0) {
-            var sequence = try routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
-            defer sequence.deinit();
+            const sequences = try routeStage(gpa, stage.cz_gates.items, pipe.num_qubits, stats);
+            defer {
+                for (sequences) |*s| s.deinit();
+                gpa.free(sequences);
+            }
 
-            sequence.print();
+            for (sequences) |*sequence| {
+                sequence.print();
 
-            try hw.moveSlmCompute(sequence.fixed);
-            try hw.moveAodCompute(sequence.fixed, sequence.moveable);
-            try hw.moveAodStorage(sequence.moveable);
-            try hw.moveSlmStorage(sequence.fixed);
+                try hw.moveSlmCompute(sequence.fixed);
+                try hw.moveAodCompute(sequence.fixed, sequence.moveable);
+                try hw.moveAodStorage(sequence.moveable);
+                try hw.moveSlmStorage(sequence.fixed);
+            }
         }
 
         // U gates fire last: within a stage, CZs precede the U's, and by
@@ -256,6 +329,71 @@ test "lowerU: pulse stream plus residual frame phase reproduces the U product" {
     try std.testing.expectApproxEqAbs(0.0, quot[1][0].magnitude(), tol);
     try std.testing.expectApproxEqAbs(1.0, quot[0][0].magnitude(), tol);
     try std.testing.expectApproxEqAbs(0.0, quot[0][0].sub(quot[1][1]).magnitude(), tol);
+}
+
+// The compiler-level completeness pin, sibling of route.zig's single-round
+// coverage test: computeSequence provably cannot cover a non-bipartite
+// graph in one round (the known_incomplete cases assert that), so this
+// checks that routeStage's residue loop closes the gap - every edge of
+// every snapshot graph gates exactly once across the rounds, and nothing
+// gates that was not asked for. Gates are reconstructed from the sequences
+// themselves: an AOD qubit sharing a column with an SLM qubit at some
+// timestep is one fired CZ.
+test "routeStage gates every stage edge exactly once across rounds" {
+    const gpa = std.testing.allocator;
+
+    for (route.snapshot_cases) |case| {
+        var g = try route.buildSnapshotGraph(case.kind, gpa);
+        defer g.deinit();
+
+        // The stage's gate list: one Cz per undirected edge.
+        var gates: std.ArrayList(circuit.Cz) = .empty;
+        defer gates.deinit(gpa);
+
+        for (0..g.n) |x| {
+            var e = g.edges[x];
+            while (e) |edge| : (e = edge.next) {
+                if (x < edge.y) {
+                    try gates.append(gpa, .{
+                        .control = @intCast(x),
+                        .target = @intCast(edge.y),
+                    });
+                }
+            }
+        }
+
+        const sequences = try routeStage(gpa, gates.items, g.n, null);
+        defer {
+            for (sequences) |*s| s.deinit();
+            gpa.free(sequences);
+        }
+
+        // fired[lo * n + hi] = times the pair (lo, hi) gated.
+        const fired = try gpa.alloc(usize, g.n * g.n);
+        defer gpa.free(fired);
+        @memset(fired, 0);
+
+        for (sequences) |seq| {
+            for (seq.moveable) |row| {
+                for (row, seq.fixed) |aod, slm| {
+                    const q = aod orelse continue;
+                    const p = slm orelse continue;
+                    fired[@min(p, q) * g.n + @max(p, q)] += 1;
+                }
+            }
+        }
+
+        for (gates.items) |gate| {
+            const lo: usize = @min(gate.control, gate.target);
+            const hi: usize = @max(gate.control, gate.target);
+            try std.testing.expectEqual(@as(usize, 1), fired[lo * g.n + hi]);
+        }
+
+        var total: usize = 0;
+        for (fired) |n| total += n;
+
+        try std.testing.expectEqual(gates.items.len, total);
+    }
 }
 
 test {

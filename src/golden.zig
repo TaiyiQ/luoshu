@@ -181,8 +181,8 @@ pub fn buildQft5(gpa: std.mem.Allocator) !circuit.Circuit {
 }
 
 /// Serializes the routing output of every CZ-carrying stage as a JSON array,
-/// one Sequence object per stage. U-only stages route nothing and are
-/// skipped.
+/// one Sequence object per routing round (a stage routes in rounds until
+/// every CZ is covered). U-only stages route nothing and are skipped.
 pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
     var buf: std.Io.Writer.Allocating = .init(gpa);
     defer buf.deinit();
@@ -193,15 +193,20 @@ pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
     for (pipe.stages.items) |*stage| {
         if (stage.cz_gates.items.len == 0) continue;
 
-        var seq = try compiler.routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
-        defer seq.deinit();
+        const seqs = try compiler.routeStage(gpa, stage.cz_gates.items, pipe.num_qubits, null);
+        defer {
+            for (seqs) |*s| s.deinit();
+            gpa.free(seqs);
+        }
 
-        const json = try serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
-        defer gpa.free(json);
+        for (seqs) |*seq| {
+            const json = try serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
+            defer gpa.free(json);
 
-        if (!first) try w.writeAll(",\n");
-        first = false;
-        try w.writeAll(json);
+            if (!first) try w.writeAll(",\n");
+            first = false;
+            try w.writeAll(json);
+        }
     }
     try w.writeAll("\n]");
 
@@ -257,7 +262,7 @@ fn goldenCase(case: Case) !void {
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    var hw = try compiler.compile(gpa, &pipe, cfg, null);
+    var hw = try compiler.compile(gpa, &pipe, cfg, null, null);
     defer hw.deinit();
 
     if (case.known_violation) |expected| {
@@ -316,7 +321,7 @@ test "assembly: qft-5 compiles legally from assembly.json" {
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    var hw = try compiler.compile(gpa, &pipe, cfg, asm_doc.sites);
+    var hw = try compiler.compile(gpa, &pipe, cfg, asm_doc.sites, null);
     defer hw.deinit();
 
     try verify.verify(gpa, &hw);
@@ -339,7 +344,7 @@ fn qasmCompilesLegally(path: []const u8) !void {
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    var hw = try compiler.compile(gpa, &pipe, cfg, null);
+    var hw = try compiler.compile(gpa, &pipe, cfg, null, null);
     defer hw.deinit();
 
     try verify.verify(gpa, &hw);
