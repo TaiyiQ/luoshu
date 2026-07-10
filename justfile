@@ -1,4 +1,4 @@
-run circuit="./example/ex1/mvp.qasm":
+run circuit="./ex/mvp/mvp.qasm":
 	zig build run -- {{circuit}} -v --no-draw
 
 # Compile the [benchmark] circuits from config/settings.toml.

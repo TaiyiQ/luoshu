@@ -7,5 +7,12 @@
     [null, null, null, 4, 1]
   ],
   "max_color": 2
+},
+{
+  "slm_slots": [0],
+  "aod_slots_per_color": [
+    [2]
+  ],
+  "max_color": 0
 }
 ]
