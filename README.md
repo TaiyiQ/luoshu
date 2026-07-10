@@ -1,6 +1,6 @@
 # Gate Compiler
 
-Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule for a neutral-atom quantum computer — native U/CZ transpilation, qubit routing, and atom-move / pulse scheduling.
+Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule for a neutral-atom quantum computer - native U/CZ transpilation, qubit routing, and atom-move / pulse scheduling.
 
 ## Requirements
 
@@ -22,9 +22,9 @@ Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule f
 
 `cfg/` holds the run configuration:
 
-- `cfg/arch.toml` — the neutral-atom architecture (zones, SLM grids, AOD limits, constraints).
-- `cfg/assembly.json` — storage occupancy handoff from the atom-rearrangement package.
-- `cfg/settings.toml` — encodes the CLI arguments (`[options]`), so a bare `gatecomp` needs no flags. Command-line flags always win over settings values.
+- `cfg/arch.toml`: the neutral-atom architecture (zones, SLM grids, AOD limits, constraints).
+- `cfg/assembly.json`: storage occupancy handoff from the atom-rearrangement package.
+- `cfg/settings.toml`: encodes the CLI arguments (`[options]`), so a bare `gatecomp` needs no flags. Command-line flags always win over settings values.
 
 ## Benchmark
 
