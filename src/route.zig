@@ -5,6 +5,12 @@ const color = @import("color");
 
 const Graph = @import("graph").Graph;
 
+/// The routing stage's product, and the ownership vehicle for it: the
+/// static SLM layout plus the per-timestep AOD occupancy, bundled with the
+/// arena every allocation behind them came from. Neither field is derivable
+/// from the other, and one deinit reclaims everything, nested slices included.
+/// Consumers that only need the data take the bare slices instead, so the
+/// type never travels further than the lifetime it guards.
 pub const Sequence = struct {
     arena: std.heap.ArenaAllocator,
 
@@ -19,6 +25,8 @@ pub const Sequence = struct {
     }
 
     pub fn print(s: Sequence) void {
+        if (!trace.enabled) return;
+
         const n_slots = s.fixed.len;
 
         std.debug.print("\n", .{});

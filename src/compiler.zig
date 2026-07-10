@@ -12,7 +12,6 @@ const arch = @import("arch");
 const circuit = @import("circuit");
 const route = @import("route");
 const schedule = @import("schedule");
-const trace = @import("trace");
 
 const Graph = @import("graph").Graph;
 
@@ -87,7 +86,7 @@ pub fn compile(
             var sequence = try routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
             defer sequence.deinit();
 
-            if (trace.enabled) sequence.print();
+            sequence.print();
 
             try hw.moveSlmCompute(sequence.fixed);
             try hw.moveAodCompute(sequence.fixed, sequence.moveable);

@@ -130,7 +130,6 @@ pub fn build(b: *std.Build) void {
     compiler_mod.addImport("circuit", circuit_mod);
     compiler_mod.addImport("route", route_mod);
     compiler_mod.addImport("schedule", schedule_mod);
-    compiler_mod.addImport("trace", trace_mod);
     compiler_mod.addImport("graph", graph_mod);
     exe.root_module.addImport("compiler", compiler_mod);
 
