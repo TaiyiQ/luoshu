@@ -1,4 +1,4 @@
-//! Run settings loaded from a TOML file (default: config/settings.toml).
+//! Run settings loaded from a TOML file (default: cfg/settings.toml).
 //! The file encodes the CLI arguments so a bare `gatecomp` invocation is
 //! reproducible. `resolve` layers the three sources: command-line flags
 //! beat file values beat the built-in defaults on `Resolved`.
@@ -6,7 +6,7 @@
 const std = @import("std");
 const toml = @import("toml");
 
-pub const default_path = "config/settings.toml";
+pub const default_path = "cfg/settings.toml";
 
 /// Mirrors the [options] table: one key per CLI flag. Null means "not
 /// set", leaving the value to the layer below. The CLI hands its parsed
@@ -37,7 +37,7 @@ pub const Settings = struct {
 /// layer: what a bare run uses when neither the settings file nor the
 /// command line has an opinion.
 pub const Resolved = struct {
-    arch: []const u8 = "config/arch.toml",
+    arch: []const u8 = "cfg/arch.toml",
     assembly: ?[]const u8 = null,
     out: ?[]const u8 = null,
     bench: ?[]const u8 = null,
@@ -113,7 +113,7 @@ test "shipped settings file parses" {
     defer arena_state.deinit();
 
     const s = try load(arena_state.allocator(), std.testing.io, default_path);
-    try std.testing.expectEqualStrings("config/arch.toml", s.options.arch.?);
+    try std.testing.expectEqualStrings("cfg/arch.toml", s.options.arch.?);
     try std.testing.expect(s.benchmark.circuits.len > 0);
     try std.testing.expect(s.benchmark.out_dir != null);
 }
@@ -142,7 +142,7 @@ test "merge precedence: flag beats file beats built-in" {
     try std.testing.expect(r.verbose);
 
     const bare = merge(.{}, .{});
-    try std.testing.expectEqualStrings("config/arch.toml", bare.arch);
+    try std.testing.expectEqualStrings("cfg/arch.toml", bare.arch);
     try std.testing.expect(bare.draw);
     try std.testing.expect(!bare.verbose);
 }

@@ -18,7 +18,7 @@ const compiler = @import("compiler");
 const serialize = @import("serialize");
 const verify = @import("verify");
 
-pub const arch_path = "config/arch.toml";
+pub const arch_path = "cfg/arch.toml";
 
 /// One tag per golden circuit. Cases name their circuit by tag and
 /// buildCircuit dispatches exhaustively, so an unused builder or a case
@@ -309,7 +309,7 @@ test "assembly: qft-5 compiles legally from assembly.json" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
 
-    const asm_doc = try assembly.load(gpa, io, "config/assembly.json");
+    const asm_doc = try assembly.load(gpa, io, "cfg/assembly.json");
     defer asm_doc.deinit(gpa);
 
     var circ = try buildQft5(gpa);

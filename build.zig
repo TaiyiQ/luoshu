@@ -16,7 +16,6 @@ pub fn build(b: *std.Build) void {
     // circuit (front-end) and route depend only on std; schedule depends on
     // arch; compiler is the driver that orchestrates all of them.
 
-    // Run settings TOML (config/settings.toml): encodes the CLI args.
     const settings_mod = b.addModule("settings", .{
         .root_source_file = b.path("src/settings.zig"),
         .target = target,

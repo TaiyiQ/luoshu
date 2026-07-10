@@ -1,7 +1,6 @@
-run circuit="./ex/mvp/mvp.qasm":
-	zig build run -- {{circuit}} -v --no-draw
+run:
+	zig build run -- ./ex/graph/graph-90-9.qasm --viz gui
 
-# Compile the [benchmark] circuits from config/settings.toml.
 bench:
 	zig build run
 
