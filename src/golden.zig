@@ -193,7 +193,7 @@ pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
     for (pipe.stages.items) |*stage| {
         if (stage.cz_gates.items.len == 0) continue;
 
-        var seq = try compiler.routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
+        var seq = try compiler.routeStage(gpa, stage.cz_gates.items, pipe.num_qubits, null);
         defer seq.deinit();
 
         const json = try serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
@@ -257,7 +257,7 @@ fn goldenCase(case: Case) !void {
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    var hw = try compiler.compile(gpa, &pipe, cfg, null);
+    var hw = try compiler.compile(gpa, &pipe, cfg, null, null);
     defer hw.deinit();
 
     if (case.known_violation) |expected| {
@@ -316,7 +316,7 @@ test "assembly: qft-5 compiles legally from assembly.json" {
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    var hw = try compiler.compile(gpa, &pipe, cfg, asm_doc.sites);
+    var hw = try compiler.compile(gpa, &pipe, cfg, asm_doc.sites, null);
     defer hw.deinit();
 
     try verify.verify(gpa, &hw);
@@ -339,7 +339,7 @@ fn qasmCompilesLegally(path: []const u8) !void {
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    var hw = try compiler.compile(gpa, &pipe, cfg, null);
+    var hw = try compiler.compile(gpa, &pipe, cfg, null, null);
     defer hw.deinit();
 
     try verify.verify(gpa, &hw);

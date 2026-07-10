@@ -82,6 +82,15 @@ pub const Metrics = struct {
     /// the driver; null when not measured.
     compile_ns: ?u64 = null,
 
+    /// Routing quality, filled by the driver from compiler.RouteStats; null
+    /// when not measured. cz_requested is the CZ gates handed to routing
+    /// (cz_pairs falling short of it means the router dropped gates); colors
+    /// is the timestep count summed over stages; max_degree sums each stage
+    /// graph's max degree, the edge-coloring lower bound.
+    cz_requested: ?usize = null,
+    colors: ?usize = null,
+    max_degree: ?usize = null,
+
     /// Routing overhead = loading + shuttling. NALAC's headline cost.
     pub fn routingUs(m: Metrics) f64 {
         return m.loading_us + m.shuttling_us;

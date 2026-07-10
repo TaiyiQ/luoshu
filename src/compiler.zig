@@ -15,15 +15,47 @@ const schedule = @import("schedule");
 
 const Graph = @import("graph").Graph;
 
+/// Routing quality counters, accumulated across a compile's CZ stages.
+/// `cz_requested` counts the CZ gates handed to routing; the schedule's
+/// entangled pairs (bench.Metrics.cz_pairs) fall short of it whenever the
+/// router drops edges (non-bipartite MIS leftovers). `colors` sums each
+/// stage's timestep count and `max_degree` each stage graph's max degree -
+/// the edge-coloring lower bound - so their gap is the slack the
+/// constrained coloring left on the table.
+pub const RouteStats = struct {
+    cz_requested: usize = 0,
+    colors: usize = 0,
+    max_degree: usize = 0,
+};
+
 /// Route one stage's CZ gates: build the interaction graph and compile it
 /// into a logical Sequence. Caller owns the result.
-pub fn routeStage(gpa: std.mem.Allocator, cz_gates: []const circuit.Cz, num_qubits: usize) !route.Sequence {
+pub fn routeStage(
+    gpa: std.mem.Allocator,
+    cz_gates: []const circuit.Cz,
+    num_qubits: usize,
+    stats: ?*RouteStats,
+) !route.Sequence {
     var g = try Graph.init(gpa, num_qubits, false);
     defer g.deinit();
 
     for (cz_gates) |gate| try g.addEdge(gate.control, gate.target);
 
-    return route.computeSequence(gpa, &g);
+    var sequence = try route.computeSequence(gpa, &g);
+    errdefer sequence.deinit();
+
+    if (stats) |s| {
+        s.cz_requested += cz_gates.len;
+
+        const max_c = try g.maxColor();
+        s.colors += @intCast(max_c + 1);
+
+        var delta: usize = 0;
+        for (g.degree) |d| delta = @max(delta, d);
+        s.max_degree += delta;
+    }
+
+    return sequence;
 }
 
 /// Wrap an angle onto the canonical branch (-pi, pi].
@@ -64,6 +96,7 @@ pub fn compile(
     pipe: *const circuit.Pipeline,
     cfg: arch.ArchConfig,
     initial_sites: ?[]const schedule.Site,
+    stats: ?*RouteStats,
 ) !schedule.Hardware {
     var hw = try schedule.Hardware.init(gpa, cfg, pipe.num_qubits, initial_sites);
     errdefer hw.deinit();
@@ -83,7 +116,7 @@ pub fn compile(
     for (pipe.stages.items) |*stage| {
         // A stage with no CZ gates has nothing to route, so it is pure Raman pulses.
         if (stage.cz_gates.items.len > 0) {
-            var sequence = try routeStage(gpa, stage.cz_gates.items, pipe.num_qubits);
+            var sequence = try routeStage(gpa, stage.cz_gates.items, pipe.num_qubits, stats);
             defer sequence.deinit();
 
             sequence.print();

@@ -42,7 +42,7 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(seq_json);
         try serialize.writeJsonFile(io, case.sequence_path, seq_json);
 
-        var hw = try compiler.compile(gpa, &pipe, cfg, null);
+        var hw = try compiler.compile(gpa, &pipe, cfg, null, null);
         defer hw.deinit();
 
         // Never snapshot an illegal schedule as a golden baseline — except
