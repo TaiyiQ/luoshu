@@ -57,11 +57,13 @@ pub const Sequence = struct {
     }
 };
 
-fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !color.Aod {
+/// AOD qubits in final column order: the caller owns the returned slice.
+fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) ![]usize {
     const order = try degreeSortedOrder(gpa, g);
     defer gpa.free(order);
 
     const set = try greedyMis(gpa, g, order);
+    defer gpa.free(set);
 
     var nodes = try std.ArrayList(usize).initCapacity(gpa, g.n);
     defer nodes.deinit(gpa);
@@ -69,9 +71,7 @@ fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !color.Aod {
         if (set[v]) try nodes.append(gpa, v);
     }
 
-    const grouped = try groupByComponent(gpa, g, nodes.items);
-
-    return .{ .set = set, .nodes = grouped };
+    return groupByComponent(gpa, g, nodes.items);
 }
 
 /// Nodes sorted by descending degree (ties broken by higher index first) —
@@ -121,7 +121,7 @@ fn greedyMis(gpa: std.mem.Allocator, g: Graph, order: []const usize) ![]bool {
 /// Groups AOD nodes by connected component, keeping degree order within each.
 /// This order is final: nodes[0] is the rightmost AOD column, and the
 /// coloring only ever accepts colors that respect it.
-fn groupByComponent(gpa: std.mem.Allocator, g: Graph, nodes: []const usize) !std.ArrayList(usize) {
+fn groupByComponent(gpa: std.mem.Allocator, g: Graph, nodes: []const usize) ![]usize {
     const none = std.math.maxInt(usize);
 
     const comp = try gpa.alloc(usize, g.n);
@@ -157,6 +157,7 @@ fn groupByComponent(gpa: std.mem.Allocator, g: Graph, nodes: []const usize) !std
     defer gpa.free(done);
 
     var grouped = try std.ArrayList(usize).initCapacity(gpa, nodes.len);
+    errdefer grouped.deinit(gpa);
     for (nodes) |v| {
         if (done[comp[v]]) continue;
 
@@ -167,7 +168,7 @@ fn groupByComponent(gpa: std.mem.Allocator, g: Graph, nodes: []const usize) !std
         }
     }
 
-    return grouped;
+    return grouped.toOwnedSlice(gpa);
 }
 
 /// Left-to-right SLM layout: topological sort of the partial order built
@@ -259,24 +260,30 @@ pub fn computeSequence(gpa: std.mem.Allocator, g: *Graph) !Sequence {
     errdefer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    // AOD set. Its order is final: nodes[0] is the rightmost column.
-    var aod = try maxIndependentSet(gpa, g.*);
-    defer aod.deinit(gpa);
-    trace.print(">> AOD ordered nodes: {any}\n", .{aod.nodes.items});
+    // AOD qubits. Their order is final: aod_nodes[0] is the rightmost column.
+    const aod_nodes = try maxIndependentSet(gpa, g.*);
+    defer gpa.free(aod_nodes);
+    trace.print(">> AOD ordered nodes: {any}\n", .{aod_nodes});
+
+    // aod_set[q] = q flies; membership view of aod_nodes for topoSort.
+    const aod_set = try gpa.alloc(bool, g.n);
+    defer gpa.free(aod_set);
+    @memset(aod_set, false);
+    for (aod_nodes) |q| aod_set[q] = true;
 
     // Color edges against the fixed AOD order, accumulating the SLM
     // partial order as colors commit.
     var order = try color.SlmOrder.init(gpa, g.n);
     defer order.deinit();
-    try color.dsatur(gpa, g, aod, &order);
+    try color.dsatur(gpa, g, aod_nodes, &order);
     edgeColors(g.*);
 
-    const slm_order = try topoSort(gpa, order.adj, aod.set, g.*);
+    const slm_order = try topoSort(gpa, order.adj, aod_set, g.*);
     defer gpa.free(slm_order);
     trace.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
 
     // Downstream stages work with the physical left-to-right order.
-    const aod_lr = try arena_alloc.dupe(usize, aod.nodes.items);
+    const aod_lr = try arena_alloc.dupe(usize, aod_nodes);
     std.mem.reverse(usize, aod_lr);
 
     const timesteps = try activePerTimestep(arena_alloc, g, aod_lr, slm_order);

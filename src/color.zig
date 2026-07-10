@@ -2,17 +2,6 @@ const std = @import("std");
 
 const Graph = @import("graph").Graph;
 
-// TODO: This should not belong here. Maybe rethink this struct.
-pub const Aod = struct {
-    set: []bool,
-    nodes: std.ArrayList(usize), // ordered nodes
-
-    pub fn deinit(s: *Aod, gpa: std.mem.Allocator) void {
-        gpa.free(s.set);
-        s.nodes.deinit(gpa);
-    }
-};
-
 const ColoredEdge = struct {
     aod: usize,
     slm: usize,
@@ -84,13 +73,21 @@ pub const SlmOrder = struct {
 // color class order their partners by AOD rank. leastAdmissible rejects
 // colors that contradict the partial order, so the AOD sequence never needs
 // reordering and the SLM layout is just a topological sort of `order`.
-pub fn dsatur(gpa: std.mem.Allocator, g: *Graph, aod: Aod, order: *SlmOrder) !void {
-    // rank_of[q] = index of AOD q in the fixed sequence (0 = rightmost).
+pub fn dsatur(gpa: std.mem.Allocator, g: *Graph, aod_nodes: []const usize, order: *SlmOrder) !void {
+    // rank_of[q] = index of AOD q in the fixed sequence (0 = rightmost);
+    // aod_set[q] = q is one of aod_nodes.
     const rank_of = try gpa.alloc(usize, g.n);
     @memset(rank_of, 0);
     defer gpa.free(rank_of);
 
-    for (aod.nodes.items, 0..) |q, i| rank_of[q] = i;
+    const aod_set = try gpa.alloc(bool, g.n);
+    @memset(aod_set, false);
+    defer gpa.free(aod_set);
+
+    for (aod_nodes, 0..) |q, i| {
+        rank_of[q] = i;
+        aod_set[q] = true;
+    }
 
     // cov_degree[q] = number of AOD neighbours; edge-sort tie-break.
     const cov_degree = try gpa.alloc(usize, g.n);
@@ -100,14 +97,14 @@ pub fn dsatur(gpa: std.mem.Allocator, g: *Graph, aod: Aod, order: *SlmOrder) !vo
     for (0..g.n) |u| {
         var e = g.edges[u];
         while (e) |edge| : (e = edge.next) {
-            if (aod.set[edge.y]) cov_degree[u] += 1;
+            if (aod_set[edge.y]) cov_degree[u] += 1;
         }
     }
 
     var colored: std.ArrayList(ColoredEdge) = .empty;
     defer colored.deinit(gpa);
 
-    for (aod.nodes.items, 0..) |v, rank_v| {
+    for (aod_nodes, 0..) |v, rank_v| {
         var adj: std.ArrayList(usize) = .empty;
         defer adj.deinit(gpa);
 
@@ -246,23 +243,6 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-/// Aod over `n` qubits with the given nodes, in sequence order.
-fn testAod(gpa: std.mem.Allocator, n: usize, nodes: []const usize) !Aod {
-    const set = try gpa.alloc(bool, n);
-    errdefer gpa.free(set);
-    @memset(set, false);
-
-    var list: std.ArrayList(usize) = .empty;
-    errdefer list.deinit(gpa);
-
-    for (nodes) |q| {
-        set[q] = true;
-        try list.append(gpa, q);
-    }
-
-    return .{ .set = set, .nodes = list };
-}
-
 fn edgeColor(g: *const Graph, x: usize, y: usize) ?i32 {
     var e = g.edges[x];
     while (e) |edge| : (e = edge.next) {
@@ -382,13 +362,10 @@ test "dsatur colors a star left to right in gating order" {
     try g.addEdge(0, 2);
     try g.addEdge(0, 3);
 
-    var aod = try testAod(gpa, 4, &.{0});
-    defer aod.deinit(gpa);
-
     var order = try SlmOrder.init(gpa, 4);
     defer order.deinit();
 
-    try dsatur(gpa, &g, aod, &order);
+    try dsatur(gpa, &g, &.{0}, &order);
 
     // All ties in the neighbour sort: lowest index gated first.
     try std.testing.expectEqual(0, edgeColor(&g, 0, 1));
@@ -410,13 +387,10 @@ test "dsatur gives a shared slm strictly increasing colors" {
     try g.addEdge(0, 1);
     try g.addEdge(2, 1);
 
-    var aod = try testAod(gpa, 3, &.{ 0, 2 });
-    defer aod.deinit(gpa);
-
     var order = try SlmOrder.init(gpa, 3);
     defer order.deinit();
 
-    try dsatur(gpa, &g, aod, &order);
+    try dsatur(gpa, &g, &.{ 0, 2 }, &order);
 
     try std.testing.expectEqual(0, edgeColor(&g, 0, 1));
     try std.testing.expectEqual(1, edgeColor(&g, 2, 1));
@@ -434,13 +408,10 @@ test "aods sharing a color class order their partners by rank" {
     try g.addEdge(0, 2);
     try g.addEdge(1, 3);
 
-    var aod = try testAod(gpa, 4, &.{ 0, 1 });
-    defer aod.deinit(gpa);
-
     var order = try SlmOrder.init(gpa, 4);
     defer order.deinit();
 
-    try dsatur(gpa, &g, aod, &order);
+    try dsatur(gpa, &g, &.{ 0, 1 }, &order);
 
     // Disjoint edges share class 0; nodes[0] is the rightmost AOD, so the
     // later (leftward) AOD's partner sits left.
