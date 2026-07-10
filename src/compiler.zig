@@ -59,11 +59,10 @@ pub fn routeStage(
 
         for (remaining.items) |gate| try g.addEdge(gate.control, gate.target);
 
-        {
-            var sequence = try route.computeSequence(gpa, &g);
-            errdefer sequence.deinit();
-            try sequences.append(gpa, sequence);
-        }
+        // Capacity first, so the fresh Sequence lands in
+        // the list with no fallible step in between.
+        try sequences.ensureUnusedCapacity(gpa, 1);
+        sequences.appendAssumeCapacity(try route.computeSequence(gpa, &g));
 
         if (stats) |s| {
             const max_c = try g.maxColor();
@@ -74,27 +73,21 @@ pub fn routeStage(
             s.max_degree += delta;
         }
 
-        // The residue: edges this round never colored (both endpoints
-        // grounded). addEdge deduplicated, so each appears exactly once.
-        var rest: std.ArrayList(circuit.Cz) = .empty;
-        errdefer rest.deinit(gpa);
-
+        // Rebuild the gate list in place with the residue:
+        // edges this round never colored.
+        remaining.clearRetainingCapacity();
         for (0..g.n) |x| {
             var e = g.edges[x];
             while (e) |edge| : (e = edge.next) {
                 if (x < edge.y and edge.color == null) {
-                    try rest.append(gpa, .{ .control = @intCast(x), .target = @intCast(edge.y) });
+                    try remaining.append(gpa, .{ .control = @intCast(x), .target = @intCast(edge.y) });
                 }
             }
         }
 
-        // Every round gates at least one AOD's full edge set, so the
-        // residue must shrink; a round that colors nothing would loop
-        // forever.
-        if (rest.items.len == g.m) return error.NoRoutingProgress;
-
-        remaining.deinit(gpa);
-        remaining = rest;
+        // Every round gates at least one AOD's full
+        // edge set, so the residue must shrink.
+        if (remaining.items.len == g.m) return error.NoRoutingProgress;
     }
 
     return sequences.toOwnedSlice(gpa);
@@ -336,6 +329,71 @@ test "lowerU: pulse stream plus residual frame phase reproduces the U product" {
     try std.testing.expectApproxEqAbs(0.0, quot[1][0].magnitude(), tol);
     try std.testing.expectApproxEqAbs(1.0, quot[0][0].magnitude(), tol);
     try std.testing.expectApproxEqAbs(0.0, quot[0][0].sub(quot[1][1]).magnitude(), tol);
+}
+
+// The compiler-level completeness pin, sibling of route.zig's single-round
+// coverage test: computeSequence provably cannot cover a non-bipartite
+// graph in one round (the known_incomplete cases assert that), so this
+// checks that routeStage's residue loop closes the gap - every edge of
+// every snapshot graph gates exactly once across the rounds, and nothing
+// gates that was not asked for. Gates are reconstructed from the sequences
+// themselves: an AOD qubit sharing a column with an SLM qubit at some
+// timestep is one fired CZ.
+test "routeStage gates every stage edge exactly once across rounds" {
+    const gpa = std.testing.allocator;
+
+    for (route.snapshot_cases) |case| {
+        var g = try route.buildSnapshotGraph(case.kind, gpa);
+        defer g.deinit();
+
+        // The stage's gate list: one Cz per undirected edge.
+        var gates: std.ArrayList(circuit.Cz) = .empty;
+        defer gates.deinit(gpa);
+
+        for (0..g.n) |x| {
+            var e = g.edges[x];
+            while (e) |edge| : (e = edge.next) {
+                if (x < edge.y) {
+                    try gates.append(gpa, .{
+                        .control = @intCast(x),
+                        .target = @intCast(edge.y),
+                    });
+                }
+            }
+        }
+
+        const sequences = try routeStage(gpa, gates.items, g.n, null);
+        defer {
+            for (sequences) |*s| s.deinit();
+            gpa.free(sequences);
+        }
+
+        // fired[lo * n + hi] = times the pair (lo, hi) gated.
+        const fired = try gpa.alloc(usize, g.n * g.n);
+        defer gpa.free(fired);
+        @memset(fired, 0);
+
+        for (sequences) |seq| {
+            for (seq.moveable) |row| {
+                for (row, seq.fixed) |aod, slm| {
+                    const q = aod orelse continue;
+                    const p = slm orelse continue;
+                    fired[@min(p, q) * g.n + @max(p, q)] += 1;
+                }
+            }
+        }
+
+        for (gates.items) |gate| {
+            const lo: usize = @min(gate.control, gate.target);
+            const hi: usize = @max(gate.control, gate.target);
+            try std.testing.expectEqual(@as(usize, 1), fired[lo * g.n + hi]);
+        }
+
+        var total: usize = 0;
+        for (fired) |n| total += n;
+
+        try std.testing.expectEqual(gates.items.len, total);
+    }
 }
 
 test {
