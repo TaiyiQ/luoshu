@@ -34,10 +34,6 @@ const Constraint = struct {
         return self.min_slot <= other.max_slot and other.min_slot <= self.max_slot;
     }
 
-    fn width(self: Constraint) usize {
-        return self.max_slot - self.min_slot + 1;
-    }
-
     // Narrow to the gap slots valid for both constraints.
     fn intersect(a: Constraint, b: Constraint) Constraint {
         return .{
@@ -90,8 +86,12 @@ fn sortedCopy(arena: std.mem.Allocator, items: []const Constraint) ![]Constraint
     return copy;
 }
 
+// Earliest deadline first. Keying the heap by max_slot keeps the flush
+// below complete: every candidate dead for the current entry - and so for
+// every later one, since entries sweep by ascending min_slot - surfaces at
+// the top instead of hiding under a narrower interval.
 fn heapOrder(_: void, a: Constraint, b: Constraint) std.math.Order {
-    return std.math.order(a.width(), b.width());
+    return std.math.order(a.max_slot, b.max_slot);
 }
 
 const Heap = std.PriorityQueue(Constraint, void, heapOrder);
@@ -127,13 +127,22 @@ fn mergeConstraints(
             try result.append(arena, heap.pop().?);
         }
 
-        // Match the narrowest candidate - wider ones have more entries left to
-        // fall back on. Popping consumes it: a slot holds one AOD at a time.
-        if (heap.pop()) |best| {
-            try result.append(arena, slot.intersect(best));
-        } else {
-            try result.append(arena, slot);
+        // Match the most urgent candidate - the one whose window closes
+        // soonest. Popping consumes it: a slot holds one AOD at a time.
+        // The flush guaranteed top.max_slot >= slot.min_slot; overlap still
+        // needs top.min_slot <= slot.max_slot, which the sweep cannot
+        // order (entries ascend by min_slot, so their max_slots interleave
+        // freely). On a miss both sides survive: the entry keeps serving
+        // its earlier timesteps, the candidate waits for a later entry or
+        // flushes as a fresh gap.
+        if (heap.peek()) |top| {
+            if (top.min_slot <= slot.max_slot) {
+                try result.append(arena, slot.intersect(heap.pop().?));
+                continue;
+            }
         }
+
+        try result.append(arena, slot);
     }
 
     // Candidates pushed but never matched: no accumulated entry covered them.
@@ -399,6 +408,33 @@ test "intervals touching at one slot narrow to it" {
     try mergeConstraints(arena, &resting, &.{.{ .min_slot = 3, .max_slot = 9 }});
     try std.testing.expectEqual(@as(usize, 1), resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 3 }, resting.items[0]);
+}
+
+// A candidate must never narrow an entry it does not overlap. Here [4,4]
+// takes the wide entry [0,10], leaving [5,10] facing the disjoint entry
+// [1,3]: it must survive as a fresh gap, not intersect into the inverted
+// interval [5,3] (which would silently drop one reservation and strand a
+// resting AOD in scheduleTargetQubits).
+//
+// slots:   0   1   2   3   4   5   6   7   8   9  10
+// acc     [------------------------------------------]
+// acc         [-------]
+// new                     [-]
+// new                         [---------------------]
+// merged      [-------]   [-] [---------------------]   3 gaps
+test "a candidate never narrows an entry it does not overlap" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var resting: std.ArrayList(Constraint) = .empty;
+    try resting.append(arena, .{ .min_slot = 0, .max_slot = 10 });
+    try resting.append(arena, .{ .min_slot = 1, .max_slot = 3 });
+    try mergeConstraints(arena, &resting, &.{
+        .{ .min_slot = 4, .max_slot = 4 },
+        .{ .min_slot = 5, .max_slot = 10 },
+    });
+    try std.testing.expectEqual(@as(usize, 3), resting.items.len);
+    for (resting.items) |gap| try std.testing.expect(gap.min_slot <= gap.max_slot);
 }
 
 // Adjacent intervals share no slot - slot 3 and slot 4 are different

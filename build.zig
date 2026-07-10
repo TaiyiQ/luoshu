@@ -72,12 +72,16 @@ pub fn build(b: *std.Build) void {
     assembly_mod.addImport("arch", arch_mod);
     exe.root_module.addImport("assembly", assembly_mod);
 
-    // Pass tracing, silent unless the driver enables it (-v).
+    // Pass tracing, silent unless the driver enables it (-v). Also the home
+    // of the shared "quiet-suppressible diagnostic print" helper used by
+    // arch/assembly/verify's validation checks.
     const trace_mod = b.addModule("trace", .{
         .root_source_file = b.path("src/trace.zig"),
         .target = target,
     });
     exe.root_module.addImport("trace", trace_mod);
+    arch_mod.addImport("trace", trace_mod);
+    assembly_mod.addImport("trace", trace_mod);
 
     const rest_mod = b.addModule("resting", .{
         .root_source_file = b.path("src/resting.zig"),
@@ -86,12 +90,28 @@ pub fn build(b: *std.Build) void {
     rest_mod.addImport("trace", trace_mod);
     exe.root_module.addImport("resting", rest_mod);
 
+    const graph_mod = b.addModule("graph", .{
+        .root_source_file = b.path("src/graph.zig"),
+        .target = target,
+    });
+    graph_mod.addImport("graph", graph_mod);
+    graph_mod.addImport("trace", trace_mod);
+
+    const color_mod = b.addModule("color", .{
+        .root_source_file = b.path("src/color.zig"),
+        .target = target,
+    });
+    color_mod.addImport("color", color_mod);
+    color_mod.addImport("graph", graph_mod);
+
     const route_mod = b.addModule("route", .{
         .root_source_file = b.path("src/route.zig"),
         .target = target,
     });
     route_mod.addImport("trace", trace_mod);
     route_mod.addImport("resting", rest_mod);
+    route_mod.addImport("graph", graph_mod);
+    route_mod.addImport("color", color_mod);
 
     const serialize_mod = b.addModule("serialize", .{
         .root_source_file = b.path("src/serialize.zig"),
@@ -110,7 +130,7 @@ pub fn build(b: *std.Build) void {
     compiler_mod.addImport("circuit", circuit_mod);
     compiler_mod.addImport("route", route_mod);
     compiler_mod.addImport("schedule", schedule_mod);
-    compiler_mod.addImport("trace", trace_mod);
+    compiler_mod.addImport("graph", graph_mod);
     exe.root_module.addImport("compiler", compiler_mod);
 
     const verify_mod = b.addModule("verify", .{
@@ -119,6 +139,7 @@ pub fn build(b: *std.Build) void {
     });
     verify_mod.addImport("schedule", schedule_mod);
     verify_mod.addImport("arch", arch_mod);
+    verify_mod.addImport("trace", trace_mod);
     exe.root_module.addImport("verify", verify_mod);
 
     // Golden tests over the full pipeline: circuit -> Sequence/Hardware JSON,
@@ -203,7 +224,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit and golden tests");
     const test_mods = [_]*std.Build.Module{
-        arch_mod, assembly_mod, settings_mod, trace_mod, circuit_mod, qasm_mod, schedule_mod, bench_mod, rest_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
+        arch_mod, assembly_mod, settings_mod, trace_mod, circuit_mod, qasm_mod, schedule_mod, bench_mod, rest_mod, color_mod, route_mod, compiler_mod, serialize_mod, verify_mod, viewmodel_mod, golden_mod,
     };
     for (test_mods) |mod| {
         const t = b.addTest(.{ .root_module = mod });

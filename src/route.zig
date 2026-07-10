@@ -1,100 +1,16 @@
 const std = @import("std");
 const resting = @import("resting");
 const trace = @import("trace");
+const color = @import("color");
 
-const MIN = -1; // maxColor sentinel: below every real color.
+const Graph = @import("graph").Graph;
 
-const EdgeNode = struct {
-    y: usize,
-    color: ?i32,
-    next: ?*EdgeNode,
-};
-
-pub const Graph = struct {
-    gpa: std.mem.Allocator,
-    edges: []?*EdgeNode,
-    degree: []usize,
-    n: usize,
-    m: usize,
-    directed: bool,
-
-    pub fn init(gpa: std.mem.Allocator, n: usize, directed: bool) !Graph {
-        const edges = try gpa.alloc(?*EdgeNode, n);
-        @memset(edges, null);
-
-        const degree = try gpa.alloc(usize, n);
-        @memset(degree, 0);
-
-        return Graph{
-            .gpa = gpa,
-            .edges = edges,
-            .degree = degree,
-            .n = n,
-            .m = 0,
-            .directed = directed,
-        };
-    }
-
-    pub fn deinit(self: *Graph) void {
-        for (self.edges) |v| {
-            var node = v;
-            while (node) |n| {
-                const next = n.next;
-                self.gpa.destroy(n);
-                node = next;
-            }
-        }
-        self.gpa.free(self.edges);
-        self.gpa.free(self.degree);
-    }
-
-    pub fn addEdge(s: *Graph, x: usize, y: usize) !void {
-        if (x == y) return;
-
-        var e = s.edges[x];
-        while (e) |edge| : (e = edge.next) {
-            if (edge.y == y) return;
-        }
-
-        try s.addNode(x, y);
-        if (!s.directed) try s.addNode(y, x);
-        s.m += 1;
-    }
-
-    fn addNode(s: *Graph, x: usize, y: usize) !void {
-        const n = try s.gpa.create(EdgeNode);
-        n.* = .{ .y = y, .color = null, .next = s.edges[x] };
-        s.edges[x] = n;
-        s.degree[x] += 1;
-    }
-
-    pub fn maxColor(g: *const Graph) !i32 {
-        var max_c: i32 = MIN;
-        for (0..g.n) |x| {
-            var e = g.edges[x];
-            while (e) |edge| : (e = edge.next) {
-                if (edge.color) |c| {
-                    max_c = @max(max_c, c);
-                }
-            }
-        }
-        if (max_c == MIN) return error.NoColors;
-        return max_c;
-    }
-
-    pub fn print(self: *const Graph, name: []const u8) void {
-        std.debug.print(">> Graph(name={s}, n={d}, m={d}, directed={}) \n", .{ name, self.n, self.m, self.directed });
-        for (0..self.n) |u| {
-            std.debug.print("  {d} -> ", .{u});
-            var e = self.edges[u];
-            while (e) |edge| : (e = edge.next) {
-                std.debug.print("{d} ", .{edge.y});
-            }
-            std.debug.print("\n", .{});
-        }
-    }
-};
-
+/// The routing stage's product, and the ownership vehicle for it: the
+/// static SLM layout plus the per-timestep AOD occupancy, bundled with the
+/// arena every allocation behind them came from. Neither field is derivable
+/// from the other, and one deinit reclaims everything, nested slices included.
+/// Consumers that only need the data take the bare slices instead, so the
+/// type never travels further than the lifetime it guards.
 pub const Sequence = struct {
     arena: std.heap.ArenaAllocator,
 
@@ -109,6 +25,8 @@ pub const Sequence = struct {
     }
 
     pub fn print(s: Sequence) void {
+        if (!trace.enabled) return;
+
         const n_slots = s.fixed.len;
 
         std.debug.print("\n", .{});
@@ -147,80 +65,27 @@ pub const Sequence = struct {
     }
 };
 
-const Aod = struct {
-    set: []bool,
-    nodes: std.ArrayList(usize), // ordered nodes
+/// AOD qubits in final column order: the caller owns the returned slice.
+fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) ![]usize {
+    const order = try degreeSortedOrder(gpa, g);
+    defer gpa.free(order);
 
-    fn deinit(s: *Aod, gpa: std.mem.Allocator) void {
-        gpa.free(s.set);
-        s.nodes.deinit(gpa);
-    }
-};
+    const set = try greedyMis(gpa, g, order);
+    defer gpa.free(set);
 
-/// Left-to-right SLM ordering constraints built during edge coloring:
-/// adj[q] holds the qubits q must sit left of. Kept acyclic by construction
-/// - leastAdmissible checks reachability before committing.
-const SlmOrder = struct {
-    gpa: std.mem.Allocator,
-    adj: []std.ArrayList(usize),
-    n: usize,
-
-    fn init(gpa: std.mem.Allocator, n: usize) !SlmOrder {
-        const adj = try gpa.alloc(std.ArrayList(usize), n);
-        for (adj) |*a| a.* = .empty;
-        return .{ .adj = adj, .n = n, .gpa = gpa };
+    var nodes = try std.ArrayList(usize).initCapacity(gpa, g.n);
+    defer nodes.deinit(gpa);
+    for (order) |v| {
+        if (set[v]) try nodes.append(gpa, v);
     }
 
-    fn deinit(self: *SlmOrder) void {
-        for (self.adj) |*a| a.deinit(self.gpa);
-        self.gpa.free(self.adj);
-    }
+    return groupByComponent(gpa, g, nodes.items);
+}
 
-    // Is `from` transitively forced left of `to`? Reflexive.
-    fn mustPrecede(self: *const SlmOrder, from: usize, to: usize) bool {
-        if (from == to) return true;
-
-        var visited = self.gpa.alloc(bool, self.n) catch return false;
-        @memset(visited, false);
-        defer self.gpa.free(visited);
-
-        var queue: std.ArrayList(usize) = .empty;
-        defer queue.deinit(self.gpa);
-
-        visited[from] = true;
-        queue.append(self.gpa, from) catch return false;
-
-        while (queue.items.len > 0) {
-            const u = queue.orderedRemove(0);
-
-            if (u == to) return true;
-
-            for (self.adj[u].items) |v| {
-                if (!visited[v]) {
-                    visited[v] = true;
-                    queue.append(self.gpa, v) catch return false;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    // Record `from` left of `to`. Does not check for cycles; callers verify
-    // via mustPrecede before committing.
-    fn addConstraint(self: *SlmOrder, from: usize, to: usize) !void {
-        if (from == to) return;
-        for (self.adj[from].items) |x| if (x == to) return;
-        try self.adj[from].append(self.gpa, to);
-    }
-};
-
-fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !Aod {
-    var set = try gpa.alloc(bool, g.n);
-    @memset(set, false);
-
+/// Nodes sorted by descending degree (ties broken by higher index first) —
+/// the fixed visitation order for the greedy MIS and later for grouping.
+fn degreeSortedOrder(gpa: std.mem.Allocator, g: Graph) ![]usize {
     var order = try std.ArrayList(usize).initCapacity(gpa, g.n);
-    defer order.deinit(gpa);
 
     for (0..g.n) |i| order.appendAssumeCapacity(i);
 
@@ -233,9 +98,16 @@ fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !Aod {
         }
     }.less);
 
-    // Greedy MIS. Isolated nodes have no two-qubit interactions and must
-    // remain SLM qubits.
-    for (order.items) |v| {
+    return order.toOwnedSlice(gpa);
+}
+
+/// Greedy maximum independent set over `order`. Isolated nodes have no
+/// two-qubit interactions and must remain SLM qubits.
+fn greedyMis(gpa: std.mem.Allocator, g: Graph, order: []const usize) ![]bool {
+    var set = try gpa.alloc(bool, g.n);
+    @memset(set, false);
+
+    for (order) |v| {
         if (g.degree[v] == 0) continue;
 
         var add = true;
@@ -251,16 +123,13 @@ fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !Aod {
         if (add) set[v] = true;
     }
 
-    var nodes = try std.ArrayList(usize).initCapacity(gpa, g.n);
-    defer nodes.deinit(gpa);
+    return set;
+}
 
-    for (order.items) |v| {
-        if (set[v]) try nodes.append(gpa, v);
-    }
-
-    // Group AODs by connected component, keeping degree order within each.
-    // This order is final: nodes[0] is the rightmost AOD column, and the
-    // coloring only ever accepts colors that respect it.
+/// Groups AOD nodes by connected component, keeping degree order within each.
+/// This order is final: nodes[0] is the rightmost AOD column, and the
+/// coloring only ever accepts colors that respect it.
+fn groupByComponent(gpa: std.mem.Allocator, g: Graph, nodes: []const usize) ![]usize {
     const none = std.math.maxInt(usize);
 
     const comp = try gpa.alloc(usize, g.n);
@@ -295,190 +164,24 @@ fn maxIndependentSet(gpa: std.mem.Allocator, g: Graph) !Aod {
     @memset(done, false);
     defer gpa.free(done);
 
-    var grouped = try std.ArrayList(usize).initCapacity(gpa, nodes.items.len);
-    for (nodes.items) |v| {
+    var grouped = try std.ArrayList(usize).initCapacity(gpa, nodes.len);
+    errdefer grouped.deinit(gpa);
+    for (nodes) |v| {
         if (done[comp[v]]) continue;
 
         done[comp[v]] = true;
 
-        for (nodes.items) |u| {
+        for (nodes) |u| {
             if (comp[u] == comp[v]) grouped.appendAssumeCapacity(u);
         }
     }
 
-    return .{ .set = set, .nodes = grouped };
-}
-
-const ColoredEdge = struct { aod: usize, slm: usize, color: i32 };
-
-// Modified DSatur edge coloring, after arXiv:2405.08068 (and qmap's
-// NAGraphAlgorithms). Edges are colored AOD by AOD in the fixed sequence
-// order while a partial order on the SLM qubits grows alongside: an AOD
-// gates its SLM partners left to right in color order, and AODs sharing a
-// color class order their partners by AOD rank. leastAdmissible rejects
-// colors that contradict the partial order, so the AOD sequence never needs
-// reordering and the SLM layout is just a topological sort of `order`.
-fn colorEdges(gpa: std.mem.Allocator, g: *Graph, aod: Aod, order: *SlmOrder) !void {
-    // rank_of[q] = index of AOD q in the fixed sequence (0 = rightmost).
-    const rank_of = try gpa.alloc(usize, g.n);
-    @memset(rank_of, 0);
-    defer gpa.free(rank_of);
-
-    for (aod.nodes.items, 0..) |q, i| rank_of[q] = i;
-
-    // cov_degree[q] = number of AOD neighbours; edge-sort tie-break.
-    const cov_degree = try gpa.alloc(usize, g.n);
-    @memset(cov_degree, 0);
-    defer gpa.free(cov_degree);
-
-    for (0..g.n) |u| {
-        var e = g.edges[u];
-        while (e) |edge| : (e = edge.next) {
-            if (aod.set[edge.y]) cov_degree[u] += 1;
-        }
-    }
-
-    var colored: std.ArrayList(ColoredEdge) = .empty;
-    defer colored.deinit(gpa);
-
-    for (aod.nodes.items, 0..) |v, rank_v| {
-        var adj: std.ArrayList(usize) = .empty;
-        defer adj.deinit(gpa);
-
-        var e = g.edges[v];
-        while (e) |edge| : (e = edge.next) try adj.append(gpa, edge.y);
-
-        const Ctx = struct { g: *Graph, v: usize, order: *const SlmOrder, cov: []const usize };
-        std.sort.heap(usize, adj.items, Ctx{ .g = g, .v = v, .order = order, .cov = cov_degree }, struct {
-            fn less(ctx: Ctx, a: usize, b: usize) bool {
-                if (a == b) return false;
-
-                // An SLM already ordered left of another must be gated first.
-                if (ctx.order.mustPrecede(a, b)) return true;
-                if (ctx.order.mustPrecede(b, a)) return false;
-
-                const sat_a = countSaturation(ctx.g, ctx.v, a);
-                const sat_b = countSaturation(ctx.g, ctx.v, b);
-                if (sat_a != sat_b) return sat_a > sat_b;
-
-                if (ctx.cov[a] != ctx.cov[b]) return ctx.cov[a] > ctx.cov[b];
-
-                return a < b;
-            }
-        }.less);
-
-        for (adj.items) |y| {
-            const c = try leastAdmissible(v, y, rank_v, rank_of, colored.items, order);
-
-            var n = g.edges[v];
-            while (n) |edge| : (n = edge.next) {
-                if (edge.y == y) edge.color = c;
-            }
-
-            n = g.edges[y];
-            while (n) |edge| : (n = edge.next) {
-                if (edge.y == v) edge.color = c;
-            }
-
-            // Commit the constraints the color implies; leastAdmissible
-            // already verified none closes a cycle.
-            for (colored.items) |f| {
-                if (f.aod == v) {
-                    if (f.color < c) {
-                        try order.addConstraint(f.slm, y);
-                    } else {
-                        try order.addConstraint(y, f.slm);
-                    }
-                } else if (f.color == c) {
-                    if (rank_v < rank_of[f.aod]) {
-                        try order.addConstraint(f.slm, y);
-                    } else {
-                        try order.addConstraint(y, f.slm);
-                    }
-                }
-            }
-
-            try colored.append(gpa, .{ .aod = v, .slm = y, .color = c });
-        }
-    }
-}
-
-/// Smallest color for edge (v, y) - v the AOD, y the SLM - that keeps the
-/// SLM partial order acyclic. Errors when no color can: the coloring cannot
-/// complete against the fixed AOD column order.
-fn leastAdmissible(
-    v: usize,
-    y: usize,
-    rank_v: usize,
-    rank_of: []const usize,
-    colored: []const ColoredEdge,
-    order: *const SlmOrder,
-) !i32 {
-    // Colors already on y are a floor, not just forbidden: y sits at one
-    // column, so every AOD gating it must have left before v arrives.
-    var min_c: i32 = 0;
-    for (colored) |f| {
-        if (f.slm == y) min_c = @max(min_c, f.color + 1);
-    }
-
-    var k: i32 = min_c;
-    outer: while (true) : (k += 1) {
-        for (colored) |f| {
-            if (f.aod == v) {
-                // v cannot gate two partners in one class...
-                if (f.color == k) continue :outer;
-
-                if (f.color > k) {
-                    // ...and would add y -> f.slm; cycle if f.slm already reaches y.
-                    if (order.mustPrecede(f.slm, y)) continue :outer;
-                } else {
-                    // Would add f.slm -> y. f.color stays below every later
-                    // candidate too, so this cycle cannot be colored around.
-                    if (order.mustPrecede(y, f.slm)) return error.CyclicAodOrder;
-                }
-            } else if (f.color == k) {
-                // Same class: the SLM order must mirror the AOD ranks.
-                if (rank_v > rank_of[f.aod]) {
-                    if (order.mustPrecede(f.slm, y)) continue :outer;
-                } else {
-                    if (order.mustPrecede(y, f.slm)) continue :outer;
-                }
-            }
-        }
-        return k;
-    }
-}
-
-fn countSaturation(g: *Graph, u: usize, v: usize) usize {
-    var seen = std.AutoHashMap(i32, void).init(g.gpa);
-    defer seen.deinit();
-
-    var e = g.edges[u];
-    while (e) |edge| : (e = edge.next) {
-        const w = edge.y;
-        if (w != v) {
-            if (edge.color) |c| {
-                _ = seen.getOrPut(c) catch {};
-            }
-        }
-    }
-
-    e = g.edges[v];
-    while (e) |edge| : (e = edge.next) {
-        const w = edge.y;
-        if (w != u) {
-            if (edge.color) |c| {
-                _ = seen.getOrPut(c) catch {};
-            }
-        }
-    }
-
-    return seen.count();
+    return grouped.toOwnedSlice(gpa);
 }
 
 /// Left-to-right SLM layout: topological sort of the partial order built
 /// during coloring. Isolated qubits (degree 0) are not placed.
-fn topoSort(gpa: std.mem.Allocator, order: SlmOrder, aod_set: []const bool, g: Graph) ![]usize {
+fn topoSort(gpa: std.mem.Allocator, adj: []std.ArrayList(usize), aod_set: []const bool, g: Graph) ![]usize {
     var n_slm: usize = 0;
     for (0..g.n) |i| {
         if (!aod_set[i] and g.degree[i] > 0) n_slm += 1;
@@ -491,7 +194,7 @@ fn topoSort(gpa: std.mem.Allocator, order: SlmOrder, aod_set: []const bool, g: G
     @memset(in_degree, 0);
     defer gpa.free(in_degree);
 
-    for (order.adj) |list| {
+    for (adj) |list| {
         for (list.items) |j| in_degree[j] += 1;
     }
 
@@ -499,14 +202,16 @@ fn topoSort(gpa: std.mem.Allocator, order: SlmOrder, aod_set: []const bool, g: G
     defer queue.deinit(gpa);
 
     for (0..g.n) |i| {
-        if (!aod_set[i] and g.degree[i] > 0 and in_degree[i] == 0) try queue.append(gpa, i);
+        if (!aod_set[i] and g.degree[i] > 0 and in_degree[i] == 0) {
+            try queue.append(gpa, i);
+        }
     }
 
     while (queue.items.len > 0) {
         const u = queue.orderedRemove(0);
         try out.append(gpa, u);
 
-        for (order.adj[u].items) |w| {
+        for (adj[u].items) |w| {
             in_degree[w] -= 1;
             if (in_degree[w] == 0) try queue.append(gpa, w);
         }
@@ -563,24 +268,30 @@ pub fn computeSequence(gpa: std.mem.Allocator, g: *Graph) !Sequence {
     errdefer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    // AOD set. Its order is final: nodes[0] is the rightmost column.
-    var aod = try maxIndependentSet(gpa, g.*);
-    defer aod.deinit(gpa);
-    trace.print(">> AOD ordered nodes: {any}\n", .{aod.nodes.items});
+    // AOD qubits. Their order is final: aod_nodes[0] is the rightmost column.
+    const aod_nodes = try maxIndependentSet(gpa, g.*);
+    defer gpa.free(aod_nodes);
+    trace.print(">> AOD ordered nodes: {any}\n", .{aod_nodes});
+
+    // aod_set[q] = q flies; membership view of aod_nodes for topoSort.
+    const aod_set = try gpa.alloc(bool, g.n);
+    defer gpa.free(aod_set);
+    @memset(aod_set, false);
+    for (aod_nodes) |q| aod_set[q] = true;
 
     // Color edges against the fixed AOD order, accumulating the SLM
     // partial order as colors commit.
-    var order = try SlmOrder.init(gpa, g.n);
+    var order = try color.SlmOrder.init(gpa, g.n);
     defer order.deinit();
-    try colorEdges(gpa, g, aod, &order);
-    edgeColors(g.*);
+    try color.dsatur(gpa, g, aod_nodes, &order);
+    g.edgeColors();
 
-    const slm_order = try topoSort(gpa, order, aod.set, g.*);
+    const slm_order = try topoSort(gpa, order.adj, aod_set, g.*);
     defer gpa.free(slm_order);
     trace.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
 
     // Downstream stages work with the physical left-to-right order.
-    const aod_lr = try arena_alloc.dupe(usize, aod.nodes.items);
+    const aod_lr = try arena_alloc.dupe(usize, aod_nodes);
     std.mem.reverse(usize, aod_lr);
 
     const timesteps = try activePerTimestep(arena_alloc, g, aod_lr, slm_order);
@@ -876,29 +587,4 @@ pub fn buildGraph10Graph(gpa: std.mem.Allocator) !Graph {
     try g.addEdge(4, 6);
     try g.addEdge(9, 6);
     return g;
-}
-
-pub fn edgeColors(g: Graph) void {
-    if (!trace.enabled) return;
-    std.debug.print(">> Edge Colors\n", .{});
-
-    for (0..g.n) |x| {
-        var has_any = false;
-
-        var e = g.edges[x];
-        while (e) |edge| : (e = edge.next) {
-            const y = edge.y;
-            if (x < y) {
-                if (edge.color) |c| {
-                    if (!has_any) {
-                        std.debug.print("  {d} -> ", .{x});
-                        has_any = true;
-                    }
-                    std.debug.print("{d}:{d} ", .{ y, c });
-                }
-            }
-        }
-
-        if (has_any) std.debug.print("\n", .{});
-    }
 }

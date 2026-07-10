@@ -16,10 +16,9 @@ arch = "config/arch.toml"
 [benchmark]
 out_dir = "zig-out/bench"
 circuits = [
-    "example/bell-state/bell.qasm",
-    "example/bell-state/bell-serial-20.qasm",
-    "example/bell-state/bell-inter-20.qasm",
-    "example/cycle/cyclic-aod.qasm",
-    "example/ex1/mvp.qasm",
-    "testdata/graph-10-0.qasm",
+    "ex/graph/graph-10-9.qasm",
+    "ex/graph/graph-50-5.qasm",
+    "ex/graph/graph-50-9.qasm",
+    "ex/graph/graph-60-5.qasm",
+    "ex/graph/graph-90-9.qasm",
 ]

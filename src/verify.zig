@@ -1,4 +1,4 @@
-//! Legality verifier for hardware schedules (§2 in REFACTORING.md).
+//! Legality verifier for hardware schedules.
 //!
 //! Replays the frame stream against the initial placement, tracking each
 //! qubit's trap state (SLM or AOD) and position, and checks:
@@ -34,6 +34,7 @@
 const std = @import("std");
 const schedule = @import("schedule");
 const arch = @import("arch");
+const trace = @import("trace");
 
 const Point = schedule.Point;
 
@@ -69,217 +70,282 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
         @memcpy(start_trap, trap);
         moves.clearRetainingCapacity();
 
-        // Replay ops in emission order: trap-state machine and op coherence.
-        for (frame.items) |op| {
-            switch (op) {
-                .load => |ld| {
-                    const q = try qubitIndex(t, ld.qubit, n);
-                    if (trap[q] != .slm) {
-                        vfail(t, "load of qubit {d} while already in AOD", .{q});
-                        return error.LoadWhileInAod;
-                    }
-                    if (!eql(pos[q], ld.position)) {
-                        vfail(t, "load of qubit {d} at ({d},{d}) but atom is at ({d},{d})", .{
-                            q, ld.position.x, ld.position.y, pos[q].x, pos[q].y,
-                        });
-                        return error.LoadPositionMismatch;
-                    }
-                    // Single row tone: the trap must form on the atom, and
-                    // every held column rides the same tone, so the load's
-                    // row must be inline with the whole register at this
-                    // instant — not merely by end of frame.
-                    for (0..n) |r| {
-                        if (trap[r] != .aod) continue;
-                        if (pos[r].y != ld.position.y) {
-                            vfail(t, "load of qubit {d} at y={d} while held qubit {d} is at y={d}", .{
-                                q, ld.position.y, r, pos[r].y,
-                            });
-                            return error.LoadOffRegisterRow;
-                        }
-                    }
-                    trap[q] = .aod;
-                },
-                .store => |st| {
-                    const q = try qubitIndex(t, st.qubit, n);
-                    if (trap[q] != .aod) {
-                        vfail(t, "store of qubit {d} while not in AOD", .{q});
-                        return error.StoreWhileStored;
-                    }
-                    if (!eql(pos[q], st.position)) {
-                        vfail(t, "store of qubit {d} at ({d},{d}) but atom is at ({d},{d})", .{
-                            q, st.position.x, st.position.y, pos[q].x, pos[q].y,
-                        });
-                        return error.StorePositionMismatch;
-                    }
-                    trap[q] = .slm;
-                },
-                .move => |m| {
-                    const q = try qubitIndex(t, m.qubit, n);
-                    if (trap[q] != .aod) {
-                        vfail(t, "move of qubit {d} while not in AOD", .{q});
-                        return error.MoveWhileStored;
-                    }
-                    if (!eql(pos[q], m.src)) {
-                        vfail(t, "move of qubit {d} from ({d},{d}) but atom is at ({d},{d})", .{
-                            q, m.src.x, m.src.y, pos[q].x, pos[q].y,
-                        });
-                        return error.MoveSourceMismatch;
-                    }
-                    if (m.src.x != m.dest.x and m.src.y != m.dest.y) {
-                        vfail(t, "diagonal move of qubit {d}: ({d},{d}) -> ({d},{d})", .{
-                            q, m.src.x, m.src.y, m.dest.x, m.dest.y,
-                        });
-                        return error.DiagonalMove;
-                    }
-                    try moves.append(gpa, .{ .q = q, .src = m.src, .dest = m.dest });
-                    pos[q] = m.dest;
-                },
-                .raman => |r| {
-                    for (r.targets) |target| {
-                        const q = try qubitIndex(t, target.qubit, n);
-                        if (!eql(pos[q], target.pos)) {
-                            vfail(t, "raman target qubit {d} at ({d},{d}) but atom is at ({d},{d})", .{
-                                q, target.pos.x, target.pos.y, pos[q].x, pos[q].y,
-                            });
-                            return error.RamanPositionMismatch;
-                        }
-                    }
-                },
-                // Checked at end of frame, once all positions are settled.
-                .rydberg, .measure => {},
-            }
-        }
+        try replayOps(gpa, t, frame, n, pos, trap, &moves);
+        try checkPathLegality(t, n, moves.items, start_trap, trap, pos);
+        try checkSiteExclusivity(t, n, pos, &occupied);
+        try checkAodRigidity(t, n, start_pos, pos, trap);
+        try checkAodLimits(t, n, hw.cfg.aod, pos, trap);
+        try checkZones(t, n, hw.cfg, frame, pos);
+    }
 
-        // Path legality: a swept segment must not cross a trap site that is
-        // occupied for the whole frame.
-        for (moves.items) |mv| {
-            for (0..n) |r| {
-                if (r == mv.q) continue;
-                if (start_trap[r] != .slm or trap[r] != .slm) continue;
-                if (onOpenSegment(pos[r], mv.src, mv.dest)) {
-                    vfail(t, "qubit {d} moves ({d},{d}) -> ({d},{d}) through stored qubit {d} at ({d},{d})", .{
-                        mv.q, mv.src.x, mv.src.y, mv.dest.x, mv.dest.y, r, pos[r].x, pos[r].y,
+    try checkTerminalState(hw.frames.items.len, n, trap);
+}
+
+/// Replays one frame's ops in emission order: trap-state machine (load only
+/// from SLM, move/store only from AOD) and op coherence (move sources match
+/// the replayed positions, moves are axis-aligned, raman targets match).
+/// Mutates `pos`/`trap` in place and records the frame's moves.
+fn replayOps(
+    gpa: std.mem.Allocator,
+    t: usize,
+    frame: schedule.Frame,
+    n: usize,
+    pos: []Point,
+    trap: []Trap,
+    moves: *std.ArrayList(MoveRec),
+) !void {
+    for (frame.items) |op| {
+        switch (op) {
+            .load => |ld| {
+                const q = try qubitIndex(t, ld.qubit, n);
+                if (trap[q] != .slm) {
+                    vfail(t, "load of qubit {d} while already in AOD", .{q});
+                    return error.LoadWhileInAod;
+                }
+                if (!eql(pos[q], ld.position)) {
+                    vfail(t, "load of qubit {d} at ({d},{d}) but atom is at ({d},{d})", .{
+                        q, ld.position.x, ld.position.y, pos[q].x, pos[q].y,
                     });
-                    return error.MoveThroughOccupiedSite;
+                    return error.LoadPositionMismatch;
                 }
-            }
-        }
-
-        // Site exclusivity at end of frame.
-        occupied.clearRetainingCapacity();
-        for (0..n) |q| {
-            const gop = try occupied.getOrPut(pos[q]);
-            if (gop.found_existing) {
-                vfail(t, "qubits {d} and {d} both at ({d},{d})", .{
-                    gop.value_ptr.*, q, pos[q].x, pos[q].y,
-                });
-                return error.SiteConflict;
-            }
-            gop.value_ptr.* = q;
-        }
-
-        // AOD rigidity: held atoms must not invert their relative order.
-        for (0..n) |a| {
-            if (trap[a] != .aod) continue;
-            for (a + 1..n) |b| {
-                if (trap[b] != .aod) continue;
-                if (inverts(start_pos[a].x, start_pos[b].x, pos[a].x, pos[b].x) or
-                    inverts(start_pos[a].y, start_pos[b].y, pos[a].y, pos[b].y))
-                {
-                    vfail(t, "AOD order inversion between qubits {d} and {d}: ({d},{d})/({d},{d}) -> ({d},{d})/({d},{d})", .{
-                        a,              b,              start_pos[a].x, start_pos[a].y,
-                        start_pos[b].x, start_pos[b].y, pos[a].x,       pos[a].y,
-                        pos[b].x,       pos[b].y,
+                // Single row tone: the trap must form on the atom, and
+                // every held column rides the same tone, so the load's
+                // row must be inline with the whole register at this
+                // instant — not merely by end of frame.
+                for (0..n) |r| {
+                    if (trap[r] != .aod) continue;
+                    if (pos[r].y != ld.position.y) {
+                        vfail(t, "load of qubit {d} at y={d} while held qubit {d} is at y={d}", .{
+                            q, ld.position.y, r, pos[r].y,
+                        });
+                        return error.LoadOffRegisterRow;
+                    }
+                }
+                trap[q] = .aod;
+            },
+            .store => |st| {
+                const q = try qubitIndex(t, st.qubit, n);
+                if (trap[q] != .aod) {
+                    vfail(t, "store of qubit {d} while not in AOD", .{q});
+                    return error.StoreWhileStored;
+                }
+                if (!eql(pos[q], st.position)) {
+                    vfail(t, "store of qubit {d} at ({d},{d}) but atom is at ({d},{d})", .{
+                        q, st.position.x, st.position.y, pos[q].x, pos[q].y,
                     });
-                    return error.AodOrderInversion;
+                    return error.StorePositionMismatch;
                 }
-            }
-        }
-
-        // AOD grid constraints: held atoms sit on row/column intersections,
-        // so distinct x values are AOD columns and distinct y values AOD
-        // rows. Hardware limits both their count and their pitch.
-        {
-            const aod = hw.cfg.aod;
-            var cols: usize = 0;
-            var rows: usize = 0;
-            for (0..n) |a| {
-                if (trap[a] != .aod) continue;
-                var new_col = true;
-                var new_row = true;
-                for (0..a) |b| {
-                    if (trap[b] != .aod) continue;
-                    if (pos[b].x == pos[a].x) new_col = false;
-                    if (pos[b].y == pos[a].y) new_row = false;
-                    const dx = @abs(@as(i64, pos[a].x) - pos[b].x);
-                    const dy = @abs(@as(i64, pos[a].y) - pos[b].y);
-                    if ((dx != 0 and dx < aod.min_sep_nm) or (dy != 0 and dy < aod.min_sep_nm)) {
-                        vfail(t, "AOD qubits {d} and {d} at ({d},{d})/({d},{d}) closer than min_sep={d}nm", .{
-                            b, a, pos[b].x, pos[b].y, pos[a].x, pos[a].y, aod.min_sep_nm,
+                trap[q] = .slm;
+            },
+            .move => |m| {
+                const q = try qubitIndex(t, m.qubit, n);
+                if (trap[q] != .aod) {
+                    vfail(t, "move of qubit {d} while not in AOD", .{q});
+                    return error.MoveWhileStored;
+                }
+                if (!eql(pos[q], m.src)) {
+                    vfail(t, "move of qubit {d} from ({d},{d}) but atom is at ({d},{d})", .{
+                        q, m.src.x, m.src.y, pos[q].x, pos[q].y,
+                    });
+                    return error.MoveSourceMismatch;
+                }
+                if (m.src.x != m.dest.x and m.src.y != m.dest.y) {
+                    vfail(t, "diagonal move of qubit {d}: ({d},{d}) -> ({d},{d})", .{
+                        q, m.src.x, m.src.y, m.dest.x, m.dest.y,
+                    });
+                    return error.DiagonalMove;
+                }
+                try moves.append(gpa, .{ .q = q, .src = m.src, .dest = m.dest });
+                pos[q] = m.dest;
+            },
+            .raman => |r| {
+                for (r.targets) |target| {
+                    const q = try qubitIndex(t, target.qubit, n);
+                    if (!eql(pos[q], target.pos)) {
+                        vfail(t, "raman target qubit {d} at ({d},{d}) but atom is at ({d},{d})", .{
+                            q, target.pos.x, target.pos.y, pos[q].x, pos[q].y,
                         });
-                        return error.AodSeparationViolation;
+                        return error.RamanPositionMismatch;
                     }
                 }
-                if (new_col) cols += 1;
-                if (new_row) rows += 1;
-            }
-            if (cols > aod.max_num_col or rows > aod.max_num_row) {
-                vfail(t, "AOD holds {d} columns x {d} rows, hardware limit is {d}x{d}", .{
-                    cols, rows, aod.max_num_col, aod.max_num_row,
+            },
+            // Checked at end of frame, once all positions are settled.
+            .rydberg, .measure => {},
+        }
+    }
+}
+
+/// No move sweeps through a trap site that is occupied for the whole frame
+/// (ops within a frame execute in parallel, so an atom loaded in the same
+/// frame lifts with the sweep and is no obstacle).
+fn checkPathLegality(
+    t: usize,
+    n: usize,
+    moves: []const MoveRec,
+    start_trap: []const Trap,
+    trap: []const Trap,
+    pos: []const Point,
+) !void {
+    for (moves) |mv| {
+        for (0..n) |r| {
+            if (r == mv.q) continue;
+            if (start_trap[r] != .slm or trap[r] != .slm) continue;
+            if (onOpenSegment(pos[r], mv.src, mv.dest)) {
+                vfail(t, "qubit {d} moves ({d},{d}) -> ({d},{d}) through stored qubit {d} at ({d},{d})", .{
+                    mv.q, mv.src.x, mv.src.y, mv.dest.x, mv.dest.y, r, pos[r].x, pos[r].y,
                 });
-                return error.AodCapacityExceeded;
-            }
-
-            // Single row tone: every held atom shares one y once the frame
-            // settles (the pickup choreography rides the register between
-            // storage rows as a unit).
-            if (rows > 1) {
-                var first: ?usize = null;
-                for (0..n) |a| {
-                    if (trap[a] != .aod) continue;
-                    const f = first orelse {
-                        first = a;
-                        continue;
-                    };
-                    if (pos[a].y != pos[f].y) {
-                        vfail(t, "AOD register split across rows: qubits {d} (y={d}) and {d} (y={d})", .{
-                            f, pos[f].y, a, pos[a].y,
-                        });
-                        break;
-                    }
-                }
-                return error.AodRowSplit;
-            }
-        }
-
-        // Zone checks at settled positions.
-        for (frame.items) |op| {
-            switch (op) {
-                .rydberg => |r| {
-                    try checkPairs(t, hw.cfg, pos, r.pairs, n);
-                    try checkBlockade(t, hw.cfg, pos, r.zone);
-                },
-                .measure => |m| {
-                    const bounds = zoneBounds(hw.cfg, m.zone);
-                    for (m.qubits) |raw| {
-                        const q = try qubitIndex(t, raw, n);
-                        if (!contains(bounds, pos[q])) {
-                            vfail(t, "measured qubit {d} at ({d},{d}) outside its zone", .{
-                                q, pos[q].x, pos[q].y,
-                            });
-                            return error.MeasureOutsideZone;
-                        }
-                    }
-                },
-                else => {},
+                return error.MoveThroughOccupiedSite;
             }
         }
     }
+}
 
-    // Terminal state: every atom deposited back into an SLM trap.
+/// No two atoms on the same site at the end of a frame.
+fn checkSiteExclusivity(
+    t: usize,
+    n: usize,
+    pos: []const Point,
+    occupied: *std.AutoHashMap(Point, usize),
+) !void {
+    occupied.clearRetainingCapacity();
+    for (0..n) |q| {
+        const gop = try occupied.getOrPut(pos[q]);
+        if (gop.found_existing) {
+            vfail(t, "qubits {d} and {d} both at ({d},{d})", .{
+                gop.value_ptr.*, q, pos[q].x, pos[q].y,
+            });
+            return error.SiteConflict;
+        }
+        gop.value_ptr.* = q;
+    }
+}
+
+/// Two atoms held in the AOD never invert their relative x or y order within
+/// a frame (AOD rows/columns cannot cross).
+fn checkAodRigidity(
+    t: usize,
+    n: usize,
+    start_pos: []const Point,
+    pos: []const Point,
+    trap: []const Trap,
+) !void {
+    for (0..n) |a| {
+        if (trap[a] != .aod) continue;
+        for (a + 1..n) |b| {
+            if (trap[b] != .aod) continue;
+            if (inverts(start_pos[a].x, start_pos[b].x, pos[a].x, pos[b].x) or
+                inverts(start_pos[a].y, start_pos[b].y, pos[a].y, pos[b].y))
+            {
+                vfail(t, "AOD order inversion between qubits {d} and {d}: ({d},{d})/({d},{d}) -> ({d},{d})/({d},{d})", .{
+                    a,              b,              start_pos[a].x, start_pos[a].y,
+                    start_pos[b].x, start_pos[b].y, pos[a].x,       pos[a].y,
+                    pos[b].x,       pos[b].y,
+                });
+                return error.AodOrderInversion;
+            }
+        }
+    }
+}
+
+/// Held atoms sit on row/column intersections, so distinct x values are AOD
+/// columns and distinct y values AOD rows. Hardware limits both their count
+/// and their pitch. Also enforces the single physical row tone: every held
+/// atom shares one y once the frame settles (the pickup choreography rides
+/// the register between storage rows as a unit).
+fn checkAodLimits(
+    t: usize,
+    n: usize,
+    aod: arch.HardwareAod,
+    pos: []const Point,
+    trap: []const Trap,
+) !void {
+    var cols: usize = 0;
+    var rows: usize = 0;
+    for (0..n) |a| {
+        if (trap[a] != .aod) continue;
+        var new_col = true;
+        var new_row = true;
+        for (0..a) |b| {
+            if (trap[b] != .aod) continue;
+            if (pos[b].x == pos[a].x) new_col = false;
+            if (pos[b].y == pos[a].y) new_row = false;
+            const dx = @abs(@as(i64, pos[a].x) - pos[b].x);
+            const dy = @abs(@as(i64, pos[a].y) - pos[b].y);
+            if ((dx != 0 and dx < aod.min_sep_nm) or (dy != 0 and dy < aod.min_sep_nm)) {
+                vfail(t, "AOD qubits {d} and {d} at ({d},{d})/({d},{d}) closer than min_sep={d}nm", .{
+                    b, a, pos[b].x, pos[b].y, pos[a].x, pos[a].y, aod.min_sep_nm,
+                });
+                return error.AodSeparationViolation;
+            }
+        }
+        if (new_col) cols += 1;
+        if (new_row) rows += 1;
+    }
+    if (cols > aod.max_num_col or rows > aod.max_num_row) {
+        vfail(t, "AOD holds {d} columns x {d} rows, hardware limit is {d}x{d}", .{
+            cols, rows, aod.max_num_col, aod.max_num_row,
+        });
+        return error.AodCapacityExceeded;
+    }
+
+    if (rows > 1) {
+        var first: ?usize = null;
+        for (0..n) |a| {
+            if (trap[a] != .aod) continue;
+            const f = first orelse {
+                first = a;
+                continue;
+            };
+            if (pos[a].y != pos[f].y) {
+                vfail(t, "AOD register split across rows: qubits {d} (y={d}) and {d} (y={d})", .{
+                    f, pos[f].y, a, pos[a].y,
+                });
+                break;
+            }
+        }
+        return error.AodRowSplit;
+    }
+}
+
+/// Rydberg pulses stay within the blockade radius and reach the pairs the
+/// router intended; measured qubits lie inside their zone. Checked once per
+/// frame, at settled positions.
+fn checkZones(
+    t: usize,
+    n: usize,
+    cfg: arch.ArchConfig,
+    frame: schedule.Frame,
+    pos: []const Point,
+) !void {
+    for (frame.items) |op| {
+        switch (op) {
+            .rydberg => |r| {
+                try checkPairs(t, cfg, pos, r.pairs, n);
+                try checkBlockade(t, cfg, pos, r.zone);
+            },
+            .measure => |m| {
+                const bounds = zoneBounds(cfg, m.zone);
+                for (m.qubits) |raw| {
+                    const q = try qubitIndex(t, raw, n);
+                    if (!contains(bounds, pos[q])) {
+                        vfail(t, "measured qubit {d} at ({d},{d}) outside its zone", .{
+                            q, pos[q].x, pos[q].y,
+                        });
+                        return error.MeasureOutsideZone;
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+}
+
+/// Every atom must be deposited back into an SLM trap by the end of the
+/// schedule.
+fn checkTerminalState(t: usize, n: usize, trap: []const Trap) !void {
     for (0..n) |q| {
         if (trap[q] != .slm) {
-            vfail(hw.frames.items.len, "qubit {d} still in AOD at end of schedule", .{q});
+            vfail(t, "qubit {d} still in AOD at end of schedule", .{q});
             return error.AtomLeftInAod;
         }
     }
@@ -291,8 +357,7 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
 pub var quiet: bool = false;
 
 fn vfail(t: usize, comptime fmt: []const u8, args: anytype) void {
-    if (quiet) return;
-    std.debug.print("schedule verify: frame {d}: " ++ fmt ++ "\n", .{t} ++ args);
+    trace.diag(quiet, "schedule verify: frame {d}: " ++ fmt, .{t} ++ args);
 }
 
 fn qubitIndex(t: usize, raw: u32, n: usize) !usize {

@@ -33,7 +33,96 @@ pub fn main(init: std.process.Init) !void {
 
     if (opts.out_dir) |dir| try std.Io.Dir.cwd().createDirPath(init.io, dir);
 
-    for (opts.jobs) |job| try compileOne(init, opts, cfg, asm_doc, job);
+    if (opts.benchmark) printBenchHeader(opts.jobs);
+
+    var sum = BenchTotals{};
+    for (opts.jobs) |job| {
+        const metrics = try compileOne(init, opts, cfg, asm_doc, job);
+        if (opts.benchmark) {
+            printBenchRow(opts.jobs, job, metrics);
+            sum.add(metrics);
+        }
+    }
+
+    if (opts.benchmark) printBenchTotals(opts.jobs, sum);
+}
+
+// --- Benchmark table -------------------------------------------------------
+//
+// circuit                   qubits  frames  cz/pulse  shuttle_us  loading_us  ...
+// -------------------------------------------------------------------------
+// ex/graph/graph-10-9.qasm      10      49      2.33       235.2      1560.0  ...
+
+/// Combined width of every column after `circuit`, including separators.
+/// Keep in sync with the format strings below.
+const bench_cols_width = 2 + 6 + 2 + 6 + 2 + 8 + 2 + 10 + 2 + 10 + 2 + 8 + 2 + 10;
+
+const BenchTotals = struct {
+    shuttling_us: f64 = 0,
+    loading_us: f64 = 0,
+    total_us: f64 = 0,
+    compile_ns: u64 = 0,
+
+    fn add(t: *BenchTotals, m: bench.Metrics) void {
+        t.shuttling_us += m.shuttling_us;
+        t.loading_us += m.loading_us;
+        t.total_us += m.totalUs();
+        t.compile_ns += m.compile_ns orelse 0;
+    }
+};
+
+/// Widest circuit path, floored by the header label.
+fn benchNameWidth(jobs: []const cli.Job) usize {
+    var w: usize = "circuit".len;
+    for (jobs) |j| w = @max(w, j.qasm.len);
+    return w;
+}
+
+fn printBenchPadded(text: []const u8, width: usize) void {
+    std.debug.print("{s}", .{text});
+    for (text.len..width) |_| std.debug.print(" ", .{});
+}
+
+fn printBenchRule(jobs: []const cli.Job) void {
+    for (0..benchNameWidth(jobs) + bench_cols_width) |_| std.debug.print("-", .{});
+    std.debug.print("\n", .{});
+}
+
+fn printBenchHeader(jobs: []const cli.Job) void {
+    printBenchPadded("circuit", benchNameWidth(jobs));
+    std.debug.print("  {s:>6}  {s:>6}  {s:>8}  {s:>10}  {s:>10}  {s:>8}  {s:>10}\n", .{
+        "qubits", "frames", "cz/pulse", "shuttle_us", "loading_us", "total_us", "compile_ms",
+    });
+    printBenchRule(jobs);
+}
+
+fn printBenchRow(jobs: []const cli.Job, job: cli.Job, m: bench.Metrics) void {
+    printBenchPadded(job.qasm, benchNameWidth(jobs));
+    std.debug.print("  {d:>6}  {d:>6}  {d:>8.2}  {d:>10.1}  {d:>10.1}  {d:>8.1}  {d:>10.2}\n", .{
+        m.num_qubits,
+        m.frames,
+        m.avgCzPerPulse(),
+        m.shuttling_us,
+        m.loading_us,
+        m.totalUs(),
+        @as(f64, @floatFromInt(m.compile_ns orelse 0)) / std.time.ns_per_ms,
+    });
+}
+
+fn printBenchTotals(jobs: []const cli.Job, sum: BenchTotals) void {
+    printBenchRule(jobs);
+    var buf: [32]u8 = undefined;
+    const label = std.fmt.bufPrint(&buf, "{d} circuits", .{jobs.len}) catch "total";
+    printBenchPadded(label, benchNameWidth(jobs));
+    std.debug.print("  {s:>6}  {s:>6}  {s:>8}  {d:>10.1}  {d:>10.1}  {d:>8.1}  {d:>10.2}\n", .{
+        "",
+        "",
+        "",
+        sum.shuttling_us,
+        sum.loading_us,
+        sum.total_us,
+        @as(f64, @floatFromInt(sum.compile_ns)) / std.time.ns_per_ms,
+    });
 }
 
 fn compileOne(
@@ -42,7 +131,7 @@ fn compileOne(
     cfg: arch.ArchConfig,
     asm_doc: ?assembly.Assembly,
     job: cli.Job,
-) !void {
+) !bench.Metrics {
     var diag: ?qasm.Diagnostic = null;
     var warnings: std.ArrayList(qasm.Diagnostic) = .empty;
     defer warnings.deinit(init.gpa);
@@ -84,16 +173,6 @@ fn compileOne(
             cli.fatal("cannot write bench '{s}': {t}", .{ path, err });
     }
 
-    if (opts.benchmark) {
-        std.debug.print("gatecomp: {s}: {d} qubits, {d} frames, schedule {d:.1}us, compile {d:.2}ms\n", .{
-            job.qasm,
-            metrics.num_qubits,
-            metrics.frames,
-            metrics.totalUs(),
-            @as(f64, @floatFromInt(compile_ns)) / std.time.ns_per_ms,
-        });
-    }
-
     if (opts.draw) {
         switch (opts.viz) {
             // Three windows in sequence: original circuit, staged circuit,
@@ -107,4 +186,6 @@ fn compileOne(
             .gui => try viz.run(init.gpa, cfg, sch, asm_doc, circ, pipeline),
         }
     }
+
+    return metrics;
 }
