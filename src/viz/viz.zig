@@ -27,6 +27,8 @@ const logical_view = @import("logical.zig");
 const palette = common.palette;
 const styleGui = common.styleGui;
 const Camera = common.Camera;
+const FONT = common.FONT;
+const FONT_LG = common.FONT_LG;
 const PAD = common.PAD;
 const TAB_H = common.TAB_H;
 const TAB_W = common.TAB_W;
@@ -40,6 +42,10 @@ const SpecSheet = schedule_view.SpecSheet;
 const LogicalView = logical_view.LogicalView;
 
 const Point = schedule.Point;
+
+// The UI font ships inside the binary, so the visualizer renders the
+// same no matter what directory gatecomp runs from.
+const font_ttf = @embedFile("JetBrainsMonoNerdFont-Regular.ttf");
 
 const View = enum(i32) {
     circuit,
@@ -74,10 +80,10 @@ const shortcuts = [_]struct { key: [:0]const u8, desc: [:0]const u8 }{
 
 /// Centered overlay listing every key binding, toggled with `?`.
 fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
-    const row_h: f32 = 26;
-    const key_w: f32 = 110;
+    const row_h: f32 = FONT + 6;
+    const key_w: f32 = 130;
     var desc_w: f32 = 0;
-    for (shortcuts) |sc| desc_w = @max(desc_w, rl.measureTextEx(font, sc.desc, 18, 0.5).x);
+    for (shortcuts) |sc| desc_w = @max(desc_w, rl.measureTextEx(font, sc.desc, FONT, 0.5).x);
     const w = key_w + desc_w + 3 * PAD;
     const h = @as(f32, shortcuts.len) * row_h + row_h + 3 * PAD;
 
@@ -101,18 +107,18 @@ fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
         font,
         "shortcuts",
         .{ .x = rec.x + PAD, .y = y },
-        20,
+        FONT_LG,
         0.5,
         palette.accent,
     );
     y += row_h + PAD;
     for (shortcuts) |sc| {
-        const kw = rl.measureTextEx(font, sc.key, 18, 0.5).x;
+        const kw = rl.measureTextEx(font, sc.key, FONT, 0.5).x;
         rl.drawTextEx(
             font,
             sc.key,
             .{ .x = rec.x + key_w - kw, .y = y },
-            18,
+            FONT,
             0.5,
             palette.accent,
         );
@@ -120,7 +126,7 @@ fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
             font,
             sc.desc,
             .{ .x = rec.x + key_w + PAD, .y = y },
-            18,
+            FONT,
             0.5,
             palette.text,
         );
@@ -158,12 +164,12 @@ fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
     view.* = @enumFromInt(std.math.clamp(idx, 0, 3));
 
     const hint = "1-4 view   r fit   ? shortcuts";
-    const tw = rl.measureTextEx(font, hint, 16, 0.5).x;
+    const tw = rl.measureTextEx(font, hint, FONT, 0.5).x;
     rl.drawTextEx(
         font,
         hint,
-        .{ .x = sw - tw - PAD, .y = (TAB_H - 16) / 2 },
-        16,
+        .{ .x = sw - tw - PAD, .y = (TAB_H - FONT) / 2 },
+        FONT,
         0.5,
         palette.text_sub,
     );
@@ -220,8 +226,9 @@ pub fn run(
     // and only quits when nothing is being edited.
     rl.setExitKey(.null);
 
-    const font = rl.loadFontEx(
-        "./asset/JetBrainsMonoNerdFont-Regular.ttf",
+    const font = rl.loadFontFromMemory(
+        ".ttf",
+        font_ttf,
         64,
         null,
     ) catch try rl.getFontDefault();

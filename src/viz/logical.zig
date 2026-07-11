@@ -10,6 +10,8 @@ const palette = common.palette;
 const withAlpha = common.withAlpha;
 const Camera = common.Camera;
 const BBox = common.BBox;
+const FONT = common.FONT;
+const FONT_LG = common.FONT_LG;
 const PAD = common.PAD;
 const TAB_H = common.TAB_H;
 
@@ -74,7 +76,7 @@ pub const LogicalView = struct {
                 font,
                 "nothing routed (no CZ stages)",
                 .{ .x = PAD, .y = TAB_H + PAD },
-                20,
+                FONT,
                 1,
                 palette.text_sub,
             );
@@ -111,7 +113,7 @@ pub const LogicalView = struct {
         ty: f32,
     ) void {
         const s = v.cam.worldToScreen(.{ .x = 0, .y = ty });
-        const fs = std.math.clamp(24.0 * v.cam.zoom, 12, 26);
+        const fs = std.math.clamp(FONT_LG * v.cam.zoom, 14, FONT_LG);
         var buf: [48]u8 = undefined;
         const txt = std.fmt.bufPrintSentinel(
             &buf,
@@ -141,7 +143,7 @@ pub const LogicalView = struct {
         const n_slots = round.fixed.len;
         const n_rows = 1 + round.moveable.len;
         const cell_h = CELL_H * cam.zoom;
-        const fs = std.math.clamp(20.0 * cam.zoom, 0, 24);
+        const fs = std.math.clamp(FONT * cam.zoom, 0, FONT_LG);
         const show_text = cell_h >= 13;
         const table_w = @as(f32, @floatFromInt(n_slots)) * CELL_W;
 
@@ -230,7 +232,7 @@ pub const LogicalView = struct {
 
         // Row labels in the left margin: SLM, then t0..tN.
         if (cell_h >= 10) {
-            const lfs = std.math.clamp(18.0 * cam.zoom, 10, 22);
+            const lfs = std.math.clamp(FONT * cam.zoom, 12, FONT_LG);
             for (0..n_rows) |r| {
                 var buf: [12]u8 = undefined;
                 const txt = if (r == 0)
@@ -310,10 +312,10 @@ fn legendChip(font: rl.Font, x: f32, region_y: f32, fill: rl.Color, txt: [:0]con
     rl.drawTextEx(
         font,
         txt,
-        .{ .x = x + 18, .y = region_y + 8 },
-        18,
+        .{ .x = x + 18, .y = region_y + 6 },
+        FONT,
         0.5,
         palette.text_sub,
     );
-    return x + 18 + rl.measureTextEx(font, txt, 18, 0.5).x + PAD;
+    return x + 18 + rl.measureTextEx(font, txt, FONT, 0.5).x + PAD;
 }

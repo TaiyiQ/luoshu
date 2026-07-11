@@ -44,9 +44,15 @@ pub fn withAlpha(c: rl.Color, a: u8) rl.Color {
     };
 }
 
+// UI font sizes. Every piece of text uses one of these two, and the
+// row heights / offsets around text derive from them, so a bump here
+// rescales the whole visualizer. Untyped so they coerce to f32 or i32.
+pub const FONT = 24;
+pub const FONT_LG = 28;
+
 // Tab bar layout.
 pub const TAB_H: f32 = 46;
-pub const TAB_W: f32 = 110;
+pub const TAB_W: f32 = 130;
 
 // Transport bar layout.
 pub const BAR_H: f32 = 90;
@@ -127,7 +133,7 @@ pub const Camera = struct {
 pub fn styleGui(font: rl.Font) void {
     const int = rl.colorToInt;
     rg.setFont(font);
-    rg.setStyle(.default, .{ .default = .text_size }, 20);
+    rg.setStyle(.default, .{ .default = .text_size }, FONT);
     rg.setStyle(.default, .{ .default = .text_spacing }, 1);
     rg.setStyle(.default, .{ .default = .background_color }, int(palette.panel_bg));
     rg.setStyle(.default, .{ .default = .line_color }, int(palette.divider));

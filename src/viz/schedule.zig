@@ -16,6 +16,8 @@ const toVec = common.toVec;
 const Camera = common.Camera;
 const BBox = common.BBox;
 
+const FONT = common.FONT;
+const FONT_LG = common.FONT_LG;
 const PAD = common.PAD;
 const TAB_H = common.TAB_H;
 const BAR_H = common.BAR_H;
@@ -181,9 +183,9 @@ fn drawQubit(
             label,
             .{
                 .x = screen.x + radius + 10,
-                .y = screen.y - 12,
+                .y = screen.y - FONT_LG / 2,
             },
-            24,
+            FONT_LG,
             0.5,
             palette.text,
         );
@@ -270,7 +272,7 @@ pub const ScheduleView = struct {
                 font,
                 "empty schedule",
                 .{ .x = PAD, .y = TAB_H + PAD },
-                20,
+                FONT,
                 1,
                 palette.text_sub,
             );
@@ -495,13 +497,13 @@ pub const ScheduleView = struct {
             font,
             "speed",
             .{ .x = PAD, .y = row2_y + 2 },
-            20,
+            FONT,
             1,
             palette.text_sub,
         );
         _ = rg.sliderBar(
             .{
-                .x = PAD + 70,
+                .x = PAD + 90,
                 .y = row2_y,
                 .width = 160,
                 .height = ROW2_H,
@@ -515,8 +517,8 @@ pub const ScheduleView = struct {
         rl.drawTextEx(
             font,
             spd_txt,
-            .{ .x = PAD + 240, .y = row2_y + 2 },
-            20,
+            .{ .x = PAD + 260, .y = row2_y + 2 },
+            FONT,
             1,
             palette.text_sub,
         );
@@ -537,7 +539,7 @@ pub const ScheduleView = struct {
             .{ @tagName(primary_op), zone_txt },
             0,
         ) catch "?";
-        const op_w = rl.measureTextEx(font, op_txt, 20, 1).x;
+        const op_w = rl.measureTextEx(font, op_txt, FONT, 1).x;
 
         var counts_buf: [160]u8 = undefined;
         const counts_txt = std.fmt.bufPrintSentinel(
@@ -554,13 +556,13 @@ pub const ScheduleView = struct {
             0,
         ) catch "?";
 
-        const status_x = PAD + 330;
+        const status_x = PAD + 400;
 
         rl.drawTextEx(
             font,
             op_txt,
             .{ .x = status_x, .y = row2_y + 2 },
-            20,
+            FONT,
             1,
             accent,
         );
@@ -569,7 +571,7 @@ pub const ScheduleView = struct {
             font,
             counts_txt,
             .{ .x = status_x + op_w, .y = row2_y + 2 },
-            20,
+            FONT,
             1,
             palette.text_sub,
         );
@@ -581,7 +583,7 @@ pub const ScheduleView = struct {
     /// region starts past it, so neither the text nor the grid ever sits
     /// under it.
     pub fn drawSpecs(v: ScheduleView, font: rl.Font) void {
-        const row_h: f32 = 24;
+        const row_h: f32 = FONT + 4;
         const h = @as(f32, spec_keys.len) * row_h + 2 * PAD + row_h + 8;
 
         const rec = rl.Rectangle{
@@ -611,7 +613,7 @@ pub const ScheduleView = struct {
             font,
             v.specs.title,
             .{ .x = 2 * PAD, .y = y },
-            20,
+            FONT_LG,
             0.5,
             palette.accent,
         );
@@ -622,7 +624,7 @@ pub const ScheduleView = struct {
                 font,
                 key,
                 .{ .x = 2 * PAD, .y = y },
-                18,
+                FONT,
                 0.5,
                 palette.text_sub,
             );
@@ -631,7 +633,7 @@ pub const ScheduleView = struct {
                 font,
                 val,
                 .{ .x = PAD + SPEC_VAL_X, .y = y },
-                18,
+                FONT,
                 0.5,
                 palette.text,
             );
@@ -643,7 +645,7 @@ pub const ScheduleView = struct {
 
 // ── Arch spec sheet ──────────────────────────────────────────────────────────
 
-const SPEC_VAL_X: f32 = 180; // value column offset from the panel's left edge
+const SPEC_VAL_X: f32 = 210; // value column offset from the panel's left edge
 
 const spec_keys = [_][:0]const u8{
     "aod grid",
@@ -702,9 +704,9 @@ pub const SpecSheet = struct {
 
     /// Panel width covering the widest line, plus padding.
     pub fn width(s: SpecSheet, font: rl.Font) f32 {
-        var w = PAD + rl.measureTextEx(font, s.title, 20, 0.5).x;
+        var w = PAD + rl.measureTextEx(font, s.title, FONT_LG, 0.5).x;
         for (s.vals) |v| {
-            w = @max(w, SPEC_VAL_X + rl.measureTextEx(font, v, 18, 0.5).x);
+            w = @max(w, SPEC_VAL_X + rl.measureTextEx(font, v, FONT, 0.5).x);
         }
         return w + PAD;
     }

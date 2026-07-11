@@ -11,6 +11,8 @@ const common = @import("common.zig");
 const palette = common.palette;
 const Camera = common.Camera;
 const BBox = common.BBox;
+const FONT = common.FONT;
+const FONT_LG = common.FONT_LG;
 
 // Circuit diagram geometry, in world units (the camera maps them to pixels).
 const COL_W: f32 = 60;
@@ -19,7 +21,7 @@ const GATE_BOX: f32 = 40;
 const CZ_R: f32 = 8;
 /// Width of the pinned qubit-label gutter; run() starts the circuit
 /// regions past it.
-pub const GUTTER_W: f32 = 70;
+pub const GUTTER_W: f32 = 80;
 
 pub const CircuitView = struct {
     lay: viewmodel.CircuitLayout,
@@ -109,7 +111,7 @@ pub const CircuitView = struct {
         // Gates. Labels drop out once boxes shrink below legibility, so a
         // zoomed-out overview reads as a clean gate map.
         const box = GATE_BOX * cam.zoom;
-        const fs = 22.0 * cam.zoom;
+        const fs = FONT_LG * cam.zoom;
         for (v.lay.laid) |lg| {
             switch (lg.gate) {
                 .u => |g| v.drawGateBox(
@@ -207,7 +209,7 @@ pub const CircuitView = struct {
 
         if (spacing < 1) return;
 
-        const fs = std.math.clamp(20.0 * v.cam.zoom, 10.0, 24.0);
+        const fs = std.math.clamp(FONT * v.cam.zoom, 12.0, FONT_LG);
         const step: usize = if (spacing >= fs + 2)
             1
         else
@@ -245,7 +247,7 @@ pub const CircuitView = struct {
                 font,
                 label,
                 .{ .x = sx + 4, .y = region.y + 6 },
-                18,
+                FONT,
                 0.5,
                 palette.accent,
             );
