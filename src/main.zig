@@ -6,7 +6,6 @@ const circuit = @import("circuit");
 const qasm = @import("qasm");
 const compiler = @import("compiler");
 const bench = @import("bench");
-const draw = @import("draw");
 const viz = @import("viz");
 const serialize = @import("serialize");
 const trace = @import("trace");
@@ -204,19 +203,8 @@ fn compileOne(
             cli.fatal("cannot write bench '{s}': {t}", .{ path, err });
     }
 
-    if (opts.draw) {
-        switch (opts.viz) {
-            // Three windows in sequence: original circuit, staged circuit,
-            // then the arch layout with the compiled schedule.
-            .classic => {
-                try draw.pipeline(init.gpa, circ, null);
-                try draw.pipeline(init.gpa, circ, pipeline);
-                try draw.physical(init.gpa, cfg, sch, asm_doc);
-            },
-            // The same three views as tabs in one window.
-            .gui => try viz.run(init.gpa, cfg, sch, asm_doc, circ, pipeline),
-        }
-    }
+    // Circuit, stages, logical, and schedule views as tabs in one window.
+    if (opts.draw) try viz.run(init.gpa, cfg, sch, asm_doc, circ, pipeline);
 
     return metrics;
 }

@@ -17,7 +17,6 @@ pub const Options = struct {
     out: ?[]const u8 = null,
     bench: ?[]const u8 = null,
     draw: ?bool = null,
-    viz: ?[]const u8 = null,
     verbose: ?bool = null,
 };
 
@@ -42,7 +41,6 @@ pub const Resolved = struct {
     out: ?[]const u8 = null,
     bench: ?[]const u8 = null,
     draw: bool = true,
-    viz: []const u8 = "classic",
     verbose: bool = false,
     benchmark: Benchmark = .{},
 };
@@ -73,7 +71,6 @@ fn apply(r: *Resolved, o: Options) void {
     if (o.out) |v| r.out = v;
     if (o.bench) |v| r.bench = v;
     if (o.draw) |v| r.draw = v;
-    if (o.viz) |v| r.viz = v;
     if (o.verbose) |v| r.verbose = v;
 }
 
@@ -95,7 +92,6 @@ fn dupe(arena: std.mem.Allocator, s: Settings) !Settings {
     if (s.options.assembly) |v| out.options.assembly = try arena.dupe(u8, v);
     if (s.options.out) |v| out.options.out = try arena.dupe(u8, v);
     if (s.options.bench) |v| out.options.bench = try arena.dupe(u8, v);
-    if (s.options.viz) |v| out.options.viz = try arena.dupe(u8, v);
     if (s.benchmark.out_dir) |v| out.benchmark.out_dir = try arena.dupe(u8, v);
 
     const circuits = try arena.alloc([]const u8, s.benchmark.circuits.len);
