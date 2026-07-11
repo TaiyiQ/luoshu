@@ -992,6 +992,48 @@ fn legendChip(font: rl.Font, x: f32, region_y: f32, fill: rl.Color, txt: [:0]con
     return x + 18 + rl.measureTextEx(font, txt, 18, 0.5).x + PAD;
 }
 
+// ── Shortcut help ────────────────────────────────────────────────────────────
+
+const shortcuts = [_]struct { key: [:0]const u8, desc: [:0]const u8 }{
+    .{ .key = "1-4", .desc = "switch view" },
+    .{ .key = "tab", .desc = "next view" },
+    .{ .key = "r", .desc = "refit view (schedule: also rewind)" },
+    .{ .key = "wheel", .desc = "zoom at the cursor" },
+    .{ .key = "drag", .desc = "pan (schedule: right/middle button only)" },
+    .{ .key = "space", .desc = "schedule: play / pause" },
+    .{ .key = "j / k", .desc = "schedule: step a frame back / forward" },
+    .{ .key = "h", .desc = "schedule: toggle the arch specs" },
+    .{ .key = "esc", .desc = "close edit or help, else quit" },
+    .{ .key = "?", .desc = "toggle this help" },
+};
+
+/// Centered overlay listing every key binding, toggled with `?`.
+fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
+    const row_h: f32 = 26;
+    const key_w: f32 = 110;
+    var desc_w: f32 = 0;
+    for (shortcuts) |sc| desc_w = @max(desc_w, rl.measureTextEx(font, sc.desc, 18, 0.5).x);
+    const w = key_w + desc_w + 3 * PAD;
+    const h = @as(f32, shortcuts.len) * row_h + row_h + 3 * PAD;
+
+    // Dim the world so the panel owns the eye.
+    rl.drawRectangleRec(.{ .x = 0, .y = 0, .width = sw, .height = sh }, rl.Color{ .r = 0, .g = 0, .b = 0, .a = 120 });
+
+    const rec = rl.Rectangle{ .x = (sw - w) / 2, .y = (sh - h) / 2, .width = w, .height = h };
+    rl.drawRectangleRounded(rec, 0.04, 6, palette.panel_bg);
+    rl.drawRectangleRoundedLinesEx(rec, 0.04, 6, 1.0, palette.divider);
+
+    var y = rec.y + PAD;
+    rl.drawTextEx(font, "shortcuts", .{ .x = rec.x + PAD, .y = y }, 20, 0.5, palette.accent);
+    y += row_h + PAD;
+    for (shortcuts) |sc| {
+        const kw = rl.measureTextEx(font, sc.key, 18, 0.5).x;
+        rl.drawTextEx(font, sc.key, .{ .x = rec.x + key_w - kw, .y = y }, 18, 0.5, palette.accent);
+        rl.drawTextEx(font, sc.desc, .{ .x = rec.x + key_w + PAD, .y = y }, 18, 0.5, palette.text);
+        y += row_h;
+    }
+}
+
 // ── Tab bar + entry point ────────────────────────────────────────────────────
 
 fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
@@ -1006,7 +1048,7 @@ fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
     );
     view.* = @enumFromInt(std.math.clamp(idx, 0, 3));
 
-    const hint = "1-4 view   wheel zoom   drag pan   r fit   h specs";
+    const hint = "1-4 view   r fit   ? shortcuts";
     const tw = rl.measureTextEx(font, hint, 16, 0.5).x;
     rl.drawTextEx(font, hint, .{ .x = sw - tw - PAD, .y = (TAB_H - 16) / 2 }, 16, 0.5, palette.text_sub);
 }
@@ -1110,6 +1152,7 @@ pub fn run(
     };
 
     var view: View = .circuit;
+    var show_help = false;
     var panning = false;
     var last_mouse: rl.Vector2 = undefined;
     // The initial fit happens inside the loop, once the window reports its
@@ -1150,6 +1193,7 @@ pub fn run(
             if (rl.isKeyPressed(.three)) view = .schedule;
             if (rl.isKeyPressed(.four)) view = .logical;
             if (rl.isKeyPressed(.tab)) view = view.next();
+            if (rl.isKeyPressed(.slash)) show_help = !show_help;
 
             if (rl.isKeyPressed(.r)) switch (view) {
                 .circuit => flat.fit(circuit_region),
@@ -1183,7 +1227,11 @@ pub fn run(
             }
         }
         if (rl.isKeyPressed(.escape)) {
-            if (sched.editing) sched.editing = false else break;
+            if (sched.editing) {
+                sched.editing = false;
+            } else if (show_help) {
+                show_help = false;
+            } else break;
         }
 
         const cam: *Camera, const touched: *bool = switch (view) {
@@ -1243,6 +1291,7 @@ pub fn run(
         }
 
         drawTabs(font, &view, sw);
+        if (show_help) drawHelp(font, sw, sh);
         // A click on another tab leaves the frame box mid-edit; drop the
         // edit so 1/2/3 and j/k aren't dead on return.
         if (view != .schedule) sched.editing = false;
