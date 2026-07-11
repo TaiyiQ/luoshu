@@ -1,7 +1,8 @@
 //! Single-window raygui visualizer, selected with `--viz gui`. One window
-//! hosts all three views as tabs — the flat circuit, the staged circuit,
-//! and the hardware schedule — instead of the classic flow of closing one
-//! window to reach the next. Every view has its own camera: wheel zooms at
+//! hosts every view as a tab — the flat circuit, the staged circuit, the
+//! hardware schedule, and the logical routing tables — instead of the
+//! classic flow of closing one window to reach the next. Every view has
+//! its own camera: wheel zooms at
 //! the cursor, dragging pans, `r` refits, and the window is resizable.
 //! Playback controls for the schedule live in a transport bar along the
 //! bottom: scrub slider, exact-frame box, play/pause, and playback speed.
@@ -140,12 +141,14 @@ const View = enum(i32) {
     circuit = 0,
     stages = 1,
     schedule = 2,
+    logical = 3,
 
     fn next(v: View) View {
         return switch (v) {
             .circuit => .stages,
             .stages => .schedule,
-            .schedule => .circuit,
+            .schedule => .logical,
+            .logical => .circuit,
         };
     }
 };
@@ -650,6 +653,173 @@ const ScheduleView = struct {
     }
 };
 
+// ── Logical view ─────────────────────────────────────────────────────────────
+
+// Slot-table geometry, world units.
+const CELL_W: f32 = 64;
+const CELL_H: f32 = 44;
+const TBL_LABEL_H: f32 = 36;
+const TBL_GAP: f32 = 70;
+const ROW_LABEL_W: f32 = 70;
+
+/// The logical routing tables (viewmodel.SlotTables) as a zoomable grid —
+/// the scalable version of route.Sequence.print()'s ASCII: per round, the
+/// SLM row of fixed qubits, then one row per timestep showing which qubit
+/// each AOD column holds. An AOD entry over an occupied SLM column is a CZ
+/// firing at that timestep, so those cells get the rydberg highlight. All
+/// rounds stack vertically, labeled by stage and round.
+const LogicalView = struct {
+    tables: *const viewmodel.SlotTables,
+    cam: Camera = .{},
+    touched: bool = false,
+
+    const slm_fill = rl.Color{ .r = palette.op_load.r, .g = palette.op_load.g, .b = palette.op_load.b, .a = 70 };
+    const ride_fill = rl.Color{ .r = palette.accent.r, .g = palette.accent.g, .b = palette.accent.b, .a = 45 };
+    const fire_fill = rl.Color{ .r = palette.op_rydberg.r, .g = palette.op_rydberg.g, .b = palette.op_rydberg.b, .a = 120 };
+
+    fn empty(v: LogicalView) bool {
+        return v.tables.rounds.len == 0;
+    }
+
+    fn tableHeight(round: viewmodel.SlotTables.Round) f32 {
+        return @as(f32, @floatFromInt(1 + round.moveable.len)) * CELL_H;
+    }
+
+    fn bbox(v: LogicalView) BBox {
+        if (v.empty()) return .{ .min_x = -10, .min_y = -10, .max_x = 10, .max_y = 10 };
+        var w: f32 = 1;
+        var y: f32 = 0;
+        for (v.tables.rounds) |round| {
+            w = @max(w, @as(f32, @floatFromInt(round.fixed.len)) * CELL_W);
+            y += TBL_LABEL_H + tableHeight(round) + TBL_GAP;
+        }
+        return .{ .min_x = -ROW_LABEL_W, .min_y = 0, .max_x = w, .max_y = y - TBL_GAP };
+    }
+
+    fn fit(v: *LogicalView, region: rl.Rectangle) void {
+        v.cam.fitToRegion(v.bbox(), region);
+        v.touched = false;
+    }
+
+    fn draw(v: LogicalView, font: rl.Font, region: rl.Rectangle) void {
+        if (v.empty()) {
+            rl.drawTextEx(font, "nothing routed (no CZ stages)", .{ .x = PAD, .y = TAB_H + PAD }, 20, 1, palette.text_sub);
+            return;
+        }
+
+        var ty: f32 = 0;
+        for (v.tables.rounds) |round| {
+            v.drawLabel(font, round, ty);
+            v.drawRound(font, round, ty + TBL_LABEL_H);
+            ty += TBL_LABEL_H + tableHeight(round) + TBL_GAP;
+        }
+
+        // Cell-color legend pinned under the tab bar.
+        var lx: f32 = PAD;
+        lx = legendChip(font, lx, region.y, slm_fill, "SLM");
+        lx = legendChip(font, lx, region.y, ride_fill, "AOD");
+        _ = legendChip(font, lx, region.y, fire_fill, "CZ fires");
+    }
+
+    // A table's stage/round landmark; clamped readable at any zoom.
+    fn drawLabel(v: LogicalView, font: rl.Font, round: viewmodel.SlotTables.Round, ty: f32) void {
+        const s = v.cam.worldToScreen(.{ .x = 0, .y = ty });
+        const fs = std.math.clamp(24.0 * v.cam.zoom, 12, 26);
+        var buf: [48]u8 = undefined;
+        const txt = std.fmt.bufPrintSentinel(
+            &buf,
+            "S{d}  round {d}/{d}",
+            .{ round.stage, round.ri, round.n_in_stage - 1 },
+            0,
+        ) catch "?";
+        rl.drawTextEx(font, txt, .{ .x = s.x, .y = s.y }, fs, 0.5, palette.text);
+    }
+
+    fn drawRound(v: LogicalView, font: rl.Font, round: viewmodel.SlotTables.Round, ty: f32) void {
+        const cam = v.cam;
+        const n_slots = round.fixed.len;
+        const n_rows = 1 + round.moveable.len;
+        const cell_h = CELL_H * cam.zoom;
+        const fs = std.math.clamp(20.0 * cam.zoom, 0, 24);
+        const show_text = cell_h >= 13;
+
+        // Cells: the SLM row, then one row per timestep.
+        for (0..n_slots) |i| {
+            const wx = @as(f32, @floatFromInt(i)) * CELL_W;
+
+            if (round.fixed[i]) |q| {
+                v.drawCell(font, wx, ty, slm_fill, q, show_text, fs);
+            } else if (show_text) {
+                v.drawDot(wx, ty);
+            }
+
+            for (round.moveable, 0..) |row, t| {
+                const wy = ty + @as(f32, @floatFromInt(1 + t)) * CELL_H;
+                if (row[i]) |q| {
+                    const fill = if (round.fixed[i] != null) fire_fill else ride_fill;
+                    v.drawCell(font, wx, wy, fill, q, show_text, fs);
+                } else if (show_text) {
+                    v.drawDot(wx, wy);
+                }
+            }
+        }
+
+        // Grid lines, with a heavier rule setting the SLM row apart.
+        const x1 = @as(f32, @floatFromInt(n_slots)) * CELL_W;
+        const y1 = ty + @as(f32, @floatFromInt(n_rows)) * CELL_H;
+        for (0..n_slots + 1) |i| {
+            const x = @as(f32, @floatFromInt(i)) * CELL_W;
+            rl.drawLineEx(cam.worldToScreen(.{ .x = x, .y = ty }), cam.worldToScreen(.{ .x = x, .y = y1 }), 1.0, palette.divider);
+        }
+        for (0..n_rows + 1) |r| {
+            const y = ty + @as(f32, @floatFromInt(r)) * CELL_H;
+            const thick: f32 = if (r == 1) 2.5 else 1.0;
+            rl.drawLineEx(cam.worldToScreen(.{ .x = 0, .y = y }), cam.worldToScreen(.{ .x = x1, .y = y }), thick, palette.divider);
+        }
+
+        // Row labels in the left margin: SLM, then t0..tN.
+        if (cell_h >= 10) {
+            const lfs = std.math.clamp(18.0 * cam.zoom, 10, 22);
+            for (0..n_rows) |r| {
+                var buf: [12]u8 = undefined;
+                const txt = if (r == 0)
+                    "SLM"
+                else
+                    std.fmt.bufPrintSentinel(&buf, "t{d}", .{r - 1}, 0) catch "?";
+                const tw = rl.measureTextEx(font, txt, lfs, 0.5).x;
+                const s = cam.worldToScreen(.{ .x = 0, .y = ty + (@as(f32, @floatFromInt(r)) + 0.5) * CELL_H });
+                rl.drawTextEx(font, txt, .{ .x = s.x - tw - 10, .y = s.y - lfs / 2 }, lfs, 0.5, palette.text_sub);
+            }
+        }
+    }
+
+    fn drawCell(v: LogicalView, font: rl.Font, wx: f32, wy: f32, fill: rl.Color, q: usize, show_text: bool, fs: f32) void {
+        const tl = v.cam.worldToScreen(.{ .x = wx, .y = wy });
+        rl.drawRectangleRec(
+            .{ .x = tl.x, .y = tl.y, .width = CELL_W * v.cam.zoom, .height = CELL_H * v.cam.zoom },
+            fill,
+        );
+        if (!show_text) return;
+        var buf: [12]u8 = undefined;
+        const txt = std.fmt.bufPrintSentinel(&buf, "{d}", .{q}, 0) catch "?";
+        const tw = rl.measureTextEx(font, txt, fs, 0.5).x;
+        const c = v.cam.worldToScreen(.{ .x = wx + CELL_W / 2, .y = wy + CELL_H / 2 });
+        rl.drawTextEx(font, txt, .{ .x = c.x - tw / 2, .y = c.y - fs / 2 }, fs, 0.5, palette.text);
+    }
+
+    // The ASCII table's `·`: an empty slot.
+    fn drawDot(v: LogicalView, wx: f32, wy: f32) void {
+        const c = v.cam.worldToScreen(.{ .x = wx + CELL_W / 2, .y = wy + CELL_H / 2 });
+        rl.drawCircleV(c, @max(1.0, 2.5 * v.cam.zoom), palette.qdot);
+    }
+};
+
+fn legendChip(font: rl.Font, x: f32, region_y: f32, fill: rl.Color, txt: [:0]const u8) f32 {
+    rl.drawRectangleRounded(.{ .x = x, .y = region_y + 10, .width = 14, .height = 14 }, 0.3, 4, fill);
+    rl.drawTextEx(font, txt, .{ .x = x + 18, .y = region_y + 8 }, 18, 0.5, palette.text_sub);
+    return x + 18 + rl.measureTextEx(font, txt, 18, 0.5).x + PAD;
+}
+
 // ── Tab bar + entry point ────────────────────────────────────────────────────
 
 fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
@@ -659,12 +829,12 @@ fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
     var idx: i32 = @intFromEnum(view.*);
     _ = rg.toggleGroup(
         .{ .x = PAD, .y = (TAB_H - BTN_H) / 2, .width = TAB_W, .height = BTN_H },
-        "circuit;stages;schedule",
+        "circuit;stages;schedule;logical",
         &idx,
     );
-    view.* = @enumFromInt(std.math.clamp(idx, 0, 2));
+    view.* = @enumFromInt(std.math.clamp(idx, 0, 3));
 
-    const hint = "1/2/3 view   wheel zoom   drag pan   r fit";
+    const hint = "1-4 view   wheel zoom   drag pan   r fit";
     const tw = rl.measureTextEx(font, hint, 16, 0.5).x;
     rl.drawTextEx(font, hint, .{ .x = sw - tw - PAD, .y = (TAB_H - 16) / 2 }, 16, 0.5, palette.text_sub);
 }
@@ -684,6 +854,9 @@ pub fn run(
     defer flat_lay.deinit();
     var staged_lay = try viewmodel.CircuitLayout.init(gpa, circ, pipe);
     defer staged_lay.deinit();
+
+    var tables = try viewmodel.SlotTables.init(gpa, &pipe);
+    defer tables.deinit();
 
     // Zone rects in world-space (nm).
     const sz = layout.storage_zone;
@@ -746,6 +919,7 @@ pub fn run(
 
     var flat = CircuitView{ .lay = flat_lay, .show_stages = false };
     var staged = CircuitView{ .lay = staged_lay, .show_stages = true };
+    var logical = LogicalView{ .tables = &tables };
     var sched = ScheduleView{
         .s = &s,
         .vm = &vm,
@@ -776,12 +950,18 @@ pub fn run(
         // transport bar owns the bottom; each view's world fills the rest.
         const circuit_region = rl.Rectangle{ .x = GUTTER_W, .y = TAB_H, .width = @max(1, sw - GUTTER_W), .height = @max(1, sh - TAB_H) };
         const sched_region = rl.Rectangle{ .x = 0, .y = TAB_H, .width = sw, .height = @max(1, sh - TAB_H - BAR_H) };
-        const region = if (view == .schedule) sched_region else circuit_region;
+        const logical_region = rl.Rectangle{ .x = 0, .y = TAB_H, .width = sw, .height = @max(1, sh - TAB_H) };
+        const region = switch (view) {
+            .circuit, .stages => circuit_region,
+            .schedule => sched_region,
+            .logical => logical_region,
+        };
 
         if (!fitted or rl.isWindowResized()) {
             if (!flat.touched) flat.fit(circuit_region);
             if (!staged.touched) staged.fit(circuit_region);
             if (!sched.touched) sched.cam.fitToRegion(sched_bbox, sched_region);
+            if (!logical.touched) logical.fit(logical_region);
             fitted = true;
         }
 
@@ -790,6 +970,7 @@ pub fn run(
             if (rl.isKeyPressed(.one)) view = .circuit;
             if (rl.isKeyPressed(.two)) view = .stages;
             if (rl.isKeyPressed(.three)) view = .schedule;
+            if (rl.isKeyPressed(.four)) view = .logical;
             if (rl.isKeyPressed(.tab)) view = view.next();
 
             if (rl.isKeyPressed(.r)) switch (view) {
@@ -802,6 +983,7 @@ pub fn run(
                     sched.playing = false;
                     sched.clock = 0;
                 },
+                .logical => logical.fit(logical_region),
             };
 
             if (view == .schedule) sched.input();
@@ -814,6 +996,7 @@ pub fn run(
             .circuit => .{ &flat.cam, &flat.touched },
             .stages => .{ &staged.cam, &staged.touched },
             .schedule => .{ &sched.cam, &sched.touched },
+            .logical => .{ &logical.cam, &logical.touched },
         };
 
         // Pan: right- or middle-drag everywhere; the circuit views take
@@ -861,6 +1044,7 @@ pub fn run(
                 sched.drawWorld(font);
                 if (!sched.empty()) sched.drawBar(font, sw, sh);
             },
+            .logical => logical.draw(font, logical_region),
         }
 
         drawTabs(font, &view, sw);

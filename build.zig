@@ -164,6 +164,9 @@ pub fn build(b: *std.Build) void {
     viewmodel_mod.addImport("schedule", schedule_mod);
     viewmodel_mod.addImport("arch", arch_mod);
     viewmodel_mod.addImport("circuit", circuit_mod);
+    // For SlotTables: the logical view re-runs routing (deterministic)
+    // rather than threading capture through the compile.
+    viewmodel_mod.addImport("compiler", compiler_mod);
 
     const draw_mod = b.addModule("draw", .{
         .root_source_file = b.path("src/draw.zig"),

@@ -20,8 +20,8 @@ const usage =
     \\  --no-draw           skip the schedule visualization
     \\  --viz <mode>        visualizer: classic (default) opens the circuit,
     \\                      stage, and schedule windows in sequence; gui, the
-    \\                      raygui-based rewrite, hosts all three as tabs in
-    \\                      one window
+    \\                      raygui-based rewrite, hosts them as tabs in one
+    \\                      window plus the logical routing tables
     \\  -v, --verbose       trace the compiler passes to stderr
     \\  -h, --help          show this help
     \\
