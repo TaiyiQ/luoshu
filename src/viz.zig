@@ -42,6 +42,9 @@ const palette = struct {
     pub const op_rydberg = rl.Color{ .r = 239, .g = 159, .b = 118, .a = 255 };
     pub const op_load = rl.Color{ .r = 147, .g = 154, .b = 183, .a = 255 };
     pub const op_store = rl.Color{ .r = 231, .g = 130, .b = 132, .a = 255 };
+    /// Faint wash behind every other stage, so stage extents read at a
+    /// glance; content draws over it.
+    pub const stage_band = rl.Color{ .r = 198, .g = 208, .b = 245, .a = 10 };
 };
 
 fn opFill(op: OpKind) rl.Color {
@@ -296,6 +299,22 @@ const CircuitView = struct {
         const nq = v.lay.num_qubits;
         const content_w: f32 = @as(f32, @floatFromInt(v.lay.n_cols)) * COL_W;
 
+        // Alternating stage bands under everything else.
+        if (v.show_stages) {
+            const top = cam.worldToScreen(.{ .x = 0, .y = -WIRE_DY }).y;
+            const bot = cam.worldToScreen(.{ .x = 0, .y = wireY(nq -| 1) + WIRE_DY }).y;
+            for (v.lay.stage_cols, 0..) |sc, s| {
+                if (s % 2 == 0) continue;
+                const x0 = cam.worldToScreen(.{ .x = @as(f32, @floatFromInt(sc)) * COL_W, .y = 0 }).x;
+                const end_col: f32 = if (s + 1 < v.lay.stage_cols.len)
+                    @floatFromInt(v.lay.stage_cols[s + 1])
+                else
+                    @floatFromInt(v.lay.n_cols);
+                const x1 = cam.worldToScreen(.{ .x = end_col * COL_W, .y = 0 }).x;
+                rl.drawRectangleRec(.{ .x = x0, .y = top, .width = x1 - x0, .height = bot - top }, palette.stage_band);
+            }
+        }
+
         for (0..nq) |q| {
             const y = wireY(q);
             const a = cam.worldToScreen(.{ .x = -COL_W * 0.5, .y = y });
@@ -376,7 +395,7 @@ const CircuitView = struct {
             if (sx < GUTTER_W or sx > region.x + region.width) continue;
             var buf: [16]u8 = undefined;
             const label = std.fmt.bufPrintSentinel(&buf, "S{d}", .{s}, 0) catch "?";
-            rl.drawTextEx(font, label, .{ .x = sx + 4, .y = region.y + 6 }, 18, 0.5, palette.text_sub);
+            rl.drawTextEx(font, label, .{ .x = sx + 4, .y = region.y + 6 }, 18, 0.5, palette.accent);
         }
     }
 };
@@ -854,7 +873,7 @@ const LogicalView = struct {
             .{ round.stage, round.ri, round.n_in_stage - 1 },
             0,
         ) catch "?";
-        rl.drawTextEx(font, txt, .{ .x = s.x, .y = s.y }, fs, 0.5, palette.text);
+        rl.drawTextEx(font, txt, .{ .x = s.x, .y = s.y }, fs, 0.5, palette.accent);
     }
 
     fn drawRound(v: LogicalView, font: rl.Font, round: viewmodel.SlotTables.Round, ty: f32, mw: ?rl.Vector2) void {
