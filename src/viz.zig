@@ -389,6 +389,8 @@ const CircuitView = struct {
 const ScheduleView = struct {
     s: *const schedule.Hardware,
     vm: *const viewmodel.ViewModel,
+    specs: SpecSheet,
+    specs_w: f32,
     storage_rect: ZoneRect,
     compute_rect: ZoneRect,
     readout_rect: ZoneRect,
@@ -398,6 +400,7 @@ const ScheduleView = struct {
     draw_positions: []Point,
     last_frame: usize,
     db_nm: u32,
+    show_specs: bool = true,
 
     frame: usize = 0,
     playing: bool = false,
@@ -651,7 +654,118 @@ const ScheduleView = struct {
         rl.drawTextEx(font, op_txt, .{ .x = status_x, .y = row2_y + 2 }, 20, 1, accent);
         rl.drawTextEx(font, counts_txt, .{ .x = status_x + op_w, .y = row2_y + 2 }, 20, 1, palette.text_sub);
     }
+
+    /// Architecture spec sheet, toggled with `h`: the geometry and
+    /// constraint numbers behind the picture, pinned top-left. The panel
+    /// is sized from the measured text (specs_w), and the schedule's fit
+    /// region starts past it, so neither the text nor the grid ever sits
+    /// under it.
+    fn drawSpecs(v: ScheduleView, font: rl.Font) void {
+        const row_h: f32 = 24;
+        const h = @as(f32, spec_keys.len) * row_h + 2 * PAD + row_h + 8;
+
+        const rec = rl.Rectangle{ .x = PAD, .y = TAB_H + PAD, .width = v.specs_w, .height = h };
+        rl.drawRectangleRounded(rec, 0.06, 6, rl.Color{
+            .r = palette.panel_bg.r,
+            .g = palette.panel_bg.g,
+            .b = palette.panel_bg.b,
+            .a = 235,
+        });
+        rl.drawRectangleRoundedLinesEx(rec, 0.06, 6, 1.0, palette.divider);
+
+        var y = TAB_H + 2 * PAD;
+        rl.drawTextEx(font, v.specs.title(), .{ .x = 2 * PAD, .y = y }, 20, 0.5, palette.accent);
+        y += row_h + 8;
+
+        for (spec_keys, 0..) |key, i| {
+            rl.drawTextEx(font, key, .{ .x = 2 * PAD, .y = y }, 18, 0.5, palette.text_sub);
+            rl.drawTextEx(font, v.specs.val(i), .{ .x = PAD + SPEC_VAL_X, .y = y }, 18, 0.5, palette.text);
+            y += row_h;
+        }
+    }
 };
+
+// ── Arch spec sheet ──────────────────────────────────────────────────────────
+
+const SPEC_VAL_X: f32 = 180; // value column offset from the panel's left edge
+
+const spec_keys = [_][:0]const u8{
+    "aod grid",
+    "aod sep",
+    "storage slm",
+    "compute slm",
+    "compute dr/dw",
+    "readout slm",
+    "blockade db",
+    "zone gap dz",
+    "fidelity 1q/2q",
+    "fidelity readout",
+};
+
+/// The spec sheet's text, formatted once at startup (the arch config never
+/// changes mid-run) so the panel can be sized to the measured strings.
+/// Values live in fixed buffers with recorded lengths — no slices — so the
+/// struct copies safely into ScheduleView.
+const SpecSheet = struct {
+    title_buf: [64]u8,
+    title_len: usize,
+    bufs: [spec_keys.len][96]u8,
+    lens: [spec_keys.len]usize,
+
+    fn build(cfg: arch_mod.ArchConfig) SpecSheet {
+        var s: SpecSheet = undefined;
+        s.title_len = fmtInto(&s.title_buf, "{s}  v{s}", .{ cfg.platform.name, cfg.platform.version });
+
+        const aod = cfg.aod;
+        const st = cfg.storage_zone.slm;
+        const cz = cfg.compute_zone;
+        const c0 = cz.slms[0];
+        const ro = cfg.readout_zone.slm;
+        const con = cfg.constraints;
+
+        s.lens[0] = fmtInto(&s.bufs[0], "{d} x {d} max", .{ aod.max_num_row, aod.max_num_col });
+        s.lens[1] = fmtInto(&s.bufs[1], ">= {d:.1} um", .{um(aod.min_sep_nm)});
+        s.lens[2] = fmtInto(&s.bufs[2], "{d} x {d}  @ {d:.1} x {d:.1} um", .{ st.num_row, st.num_col, um(st.sep_nm[0]), um(st.sep_nm[1]) });
+        s.lens[3] = fmtInto(&s.bufs[3], "{d} x ({d} x {d})  @ {d:.1} x {d:.1} um", .{ cz.slms.len, c0.num_row, c0.num_col, um(c0.sep_nm[0]), um(c0.sep_nm[1]) });
+        s.lens[4] = fmtInto(&s.bufs[4], "{d:.1} / {d:.1} um", .{ um(cz.dr_nm), um(cz.dw_nm) });
+        s.lens[5] = fmtInto(&s.bufs[5], "{d} x {d}", .{ ro.num_row, ro.num_col });
+        s.lens[6] = fmtInto(&s.bufs[6], "{d:.1} um", .{um(con.db_nm)});
+        s.lens[7] = fmtInto(&s.bufs[7], "{d:.1} um", .{um(con.dz_nm)});
+        s.lens[8] = fmtInto(&s.bufs[8], "{d} / {d}", .{ con.one_qubit_gate_fidelity, con.two_qubit_gate_fidelity });
+        s.lens[9] = fmtInto(&s.bufs[9], "{d}", .{con.readout_fidelity});
+        return s;
+    }
+
+    fn title(s: *const SpecSheet) [:0]const u8 {
+        return s.title_buf[0..s.title_len :0];
+    }
+
+    fn val(s: *const SpecSheet, i: usize) [:0]const u8 {
+        return s.bufs[i][0..s.lens[i] :0];
+    }
+
+    /// Panel width covering the widest line, plus padding.
+    fn width(s: *const SpecSheet, font: rl.Font) f32 {
+        var w = PAD + rl.measureTextEx(font, s.title(), 20, 0.5).x;
+        for (0..spec_keys.len) |i| {
+            w = @max(w, SPEC_VAL_X + rl.measureTextEx(font, s.val(i), 18, 0.5).x);
+        }
+        return w + PAD;
+    }
+};
+
+fn fmtInto(buf: []u8, comptime fmt: []const u8, args: anytype) usize {
+    const r = std.fmt.bufPrintSentinel(buf, fmt, args, 0) catch {
+        buf[0] = '?';
+        buf[1] = 0;
+        return 1;
+    };
+    return r.len;
+}
+
+fn um(nm: u32) f64 {
+    return @as(f64, @floatFromInt(nm)) / 1000.0;
+}
 
 // ── Logical view ─────────────────────────────────────────────────────────────
 
@@ -873,7 +987,7 @@ fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
     );
     view.* = @enumFromInt(std.math.clamp(idx, 0, 3));
 
-    const hint = "1-4 view   wheel zoom   drag pan   r fit";
+    const hint = "1-4 view   wheel zoom   drag pan   r fit   h specs";
     const tw = rl.measureTextEx(font, hint, 16, 0.5).x;
     rl.drawTextEx(font, hint, .{ .x = sw - tw - PAD, .y = (TAB_H - 16) / 2 }, 16, 0.5, palette.text_sub);
 }
@@ -959,9 +1073,12 @@ pub fn run(
     var flat = CircuitView{ .lay = flat_lay, .show_stages = false };
     var staged = CircuitView{ .lay = staged_lay, .show_stages = true };
     var logical = LogicalView{ .tables = &tables };
+    const specs = SpecSheet.build(layout);
     var sched = ScheduleView{
         .s = &s,
         .vm = &vm,
+        .specs = specs,
+        .specs_w = specs.width(font),
         .storage_rect = storage_rect,
         .compute_rect = compute_rect,
         .readout_rect = readout_rect,
@@ -988,7 +1105,10 @@ pub fn run(
         // Screen regions: the tab bar owns the top; the schedule's
         // transport bar owns the bottom; each view's world fills the rest.
         const circuit_region = rl.Rectangle{ .x = GUTTER_W, .y = TAB_H, .width = @max(1, sw - GUTTER_W), .height = @max(1, sh - TAB_H) };
-        const sched_region = rl.Rectangle{ .x = 0, .y = TAB_H, .width = sw, .height = @max(1, sh - TAB_H - BAR_H) };
+        // The spec panel owns the schedule's left edge while shown, so
+        // fits (initial, resize, `r`) never put the grid under it.
+        const specs_pad: f32 = if (sched.show_specs) sched.specs_w + 2 * PAD else 0;
+        const sched_region = rl.Rectangle{ .x = specs_pad, .y = TAB_H, .width = @max(1, sw - specs_pad), .height = @max(1, sh - TAB_H - BAR_H) };
         const logical_region = rl.Rectangle{ .x = 0, .y = TAB_H, .width = sw, .height = @max(1, sh - TAB_H) };
         const region = switch (view) {
             .circuit, .stages => circuit_region,
@@ -1025,7 +1145,23 @@ pub fn run(
                 .logical => logical.fit(logical_region),
             };
 
-            if (view == .schedule) sched.input();
+            if (view == .schedule) {
+                sched.input();
+                // Toggling the panel resizes the world's region; follow
+                // with a refit unless the user has taken the camera.
+                if (rl.isKeyPressed(.h)) {
+                    sched.show_specs = !sched.show_specs;
+                    if (!sched.touched) {
+                        const sp: f32 = if (sched.show_specs) sched.specs_w + 2 * PAD else 0;
+                        sched.cam.fitToRegion(sched_bbox, .{
+                            .x = sp,
+                            .y = TAB_H,
+                            .width = @max(1, sw - sp),
+                            .height = @max(1, sh - TAB_H - BAR_H),
+                        });
+                    }
+                }
+            }
         }
         if (rl.isKeyPressed(.escape)) {
             if (sched.editing) sched.editing = false else break;
@@ -1082,6 +1218,7 @@ pub fn run(
             .schedule => {
                 sched.drawWorld(font);
                 if (!sched.empty()) sched.drawBar(font, sw, sh);
+                if (sched.show_specs) sched.drawSpecs(font);
             },
             .logical => logical.draw(font, logical_region),
         }
