@@ -62,7 +62,10 @@ pub const CircuitView = struct {
             const bot = cam.worldToScreen(.{ .x = 0, .y = wireY(nq -| 1) + WIRE_DY }).y;
             for (v.lay.stage_cols, 0..) |sc, s| {
                 if (s % 2 == 0) continue;
-                const x0 = cam.worldToScreen(.{ .x = @as(f32, @floatFromInt(sc)) * COL_W, .y = 0 }).x;
+                const x0 = cam.worldToScreen(.{
+                    .x = @as(f32, @floatFromInt(sc)) * COL_W,
+                    .y = 0,
+                }).x;
                 const end_col: f32 = if (s + 1 < v.lay.stage_cols.len)
                     @floatFromInt(v.lay.stage_cols[s + 1])
                 else
@@ -109,8 +112,24 @@ pub const CircuitView = struct {
         const fs = 22.0 * cam.zoom;
         for (v.lay.laid) |lg| {
             switch (lg.gate) {
-                .u => |g| v.drawGateBox(font, lg.col, g.qubit, "U", palette.accent, box, fs),
-                .reset => |g| v.drawGateBox(font, lg.col, g.qubit, "R", palette.op_store, box, fs),
+                .u => |g| v.drawGateBox(
+                    font,
+                    lg.col,
+                    g.qubit,
+                    "U",
+                    palette.accent,
+                    box,
+                    fs,
+                ),
+                .reset => |g| v.drawGateBox(
+                    font,
+                    lg.col,
+                    g.qubit,
+                    "R",
+                    palette.op_store,
+                    box,
+                    fs,
+                ),
                 // CZ is symmetric, so both qubits get the filled control dot
                 // (dot-and-⊕ would read as a CX).
                 .cz => |g| {
@@ -189,7 +208,10 @@ pub const CircuitView = struct {
         if (spacing < 1) return;
 
         const fs = std.math.clamp(20.0 * v.cam.zoom, 10.0, 24.0);
-        const step: usize = if (spacing >= fs + 2) 1 else @intFromFloat(@ceil((fs + 2) / spacing));
+        const step: usize = if (spacing >= fs + 2)
+            1
+        else
+            @intFromFloat(@ceil((fs + 2) / spacing));
 
         var q: usize = 0;
         while (q < v.lay.num_qubits) : (q += step) {

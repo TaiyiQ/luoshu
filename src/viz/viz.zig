@@ -19,10 +19,10 @@ const assembly_mod = @import("assembly");
 const circuit_mod = @import("circuit");
 const viewmodel = @import("viewmodel");
 
-const common = @import("viz/common.zig");
-const circuit_view = @import("viz/circuit_view.zig");
-const schedule_view = @import("viz/schedule_view.zig");
-const logical_view = @import("viz/logical_view.zig");
+const common = @import("common.zig");
+const circuit_view = @import("circuit.zig");
+const schedule_view = @import("schedule.zig");
+const logical_view = @import("logical.zig");
 
 const palette = common.palette;
 const styleGui = common.styleGui;
@@ -82,19 +82,48 @@ fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
     const h = @as(f32, shortcuts.len) * row_h + row_h + 3 * PAD;
 
     // Dim the world so the panel owns the eye.
-    rl.drawRectangleRec(.{ .x = 0, .y = 0, .width = sw, .height = sh }, rl.Color{ .r = 0, .g = 0, .b = 0, .a = 120 });
+    rl.drawRectangleRec(
+        .{ .x = 0, .y = 0, .width = sw, .height = sh },
+        rl.Color{ .r = 0, .g = 0, .b = 0, .a = 120 },
+    );
 
-    const rec = rl.Rectangle{ .x = (sw - w) / 2, .y = (sh - h) / 2, .width = w, .height = h };
+    const rec = rl.Rectangle{
+        .x = (sw - w) / 2,
+        .y = (sh - h) / 2,
+        .width = w,
+        .height = h,
+    };
     rl.drawRectangleRounded(rec, 0.04, 6, palette.panel_bg);
     rl.drawRectangleRoundedLinesEx(rec, 0.04, 6, 1.0, palette.divider);
 
     var y = rec.y + PAD;
-    rl.drawTextEx(font, "shortcuts", .{ .x = rec.x + PAD, .y = y }, 20, 0.5, palette.accent);
+    rl.drawTextEx(
+        font,
+        "shortcuts",
+        .{ .x = rec.x + PAD, .y = y },
+        20,
+        0.5,
+        palette.accent,
+    );
     y += row_h + PAD;
     for (shortcuts) |sc| {
         const kw = rl.measureTextEx(font, sc.key, 18, 0.5).x;
-        rl.drawTextEx(font, sc.key, .{ .x = rec.x + key_w - kw, .y = y }, 18, 0.5, palette.accent);
-        rl.drawTextEx(font, sc.desc, .{ .x = rec.x + key_w + PAD, .y = y }, 18, 0.5, palette.text);
+        rl.drawTextEx(
+            font,
+            sc.key,
+            .{ .x = rec.x + key_w - kw, .y = y },
+            18,
+            0.5,
+            palette.accent,
+        );
+        rl.drawTextEx(
+            font,
+            sc.desc,
+            .{ .x = rec.x + key_w + PAD, .y = y },
+            18,
+            0.5,
+            palette.text,
+        );
         y += row_h;
     }
 }
@@ -102,12 +131,27 @@ fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
 // ── Tab bar + entry point ────────────────────────────────────────────────────
 
 fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
-    rl.drawRectangleRec(.{ .x = 0, .y = 0, .width = sw, .height = TAB_H }, palette.panel_bg);
-    rl.drawLineEx(.{ .x = 0, .y = TAB_H }, .{ .x = sw, .y = TAB_H }, 1.0, palette.divider);
+    rl.drawRectangleRec(.{
+        .x = 0,
+        .y = 0,
+        .width = sw,
+        .height = TAB_H,
+    }, palette.panel_bg);
+    rl.drawLineEx(
+        .{ .x = 0, .y = TAB_H },
+        .{ .x = sw, .y = TAB_H },
+        1.0,
+        palette.divider,
+    );
 
     var idx: i32 = @intFromEnum(view.*);
     _ = rg.toggleGroup(
-        .{ .x = PAD, .y = (TAB_H - BTN_H) / 2, .width = TAB_W, .height = BTN_H },
+        .{
+            .x = PAD,
+            .y = (TAB_H - BTN_H) / 2,
+            .width = TAB_W,
+            .height = BTN_H,
+        },
         "circuit;stages;logical;schedule",
         &idx,
     );
@@ -115,7 +159,14 @@ fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
 
     const hint = "1-4 view   r fit   ? shortcuts";
     const tw = rl.measureTextEx(font, hint, 16, 0.5).x;
-    rl.drawTextEx(font, hint, .{ .x = sw - tw - PAD, .y = (TAB_H - 16) / 2 }, 16, 0.5, palette.text_sub);
+    rl.drawTextEx(
+        font,
+        hint,
+        .{ .x = sw - tw - PAD, .y = (TAB_H - 16) / 2 },
+        16,
+        0.5,
+        palette.text_sub,
+    );
 }
 
 pub fn run(
@@ -234,12 +285,27 @@ pub fn run(
 
         // Screen regions: the tab bar owns the top; the schedule's
         // transport bar owns the bottom; each view's world fills the rest.
-        const circuit_region = rl.Rectangle{ .x = GUTTER_W, .y = TAB_H, .width = @max(1, sw - GUTTER_W), .height = @max(1, sh - TAB_H) };
+        const circuit_region = rl.Rectangle{
+            .x = GUTTER_W,
+            .y = TAB_H,
+            .width = @max(1, sw - GUTTER_W),
+            .height = @max(1, sh - TAB_H),
+        };
         // The spec panel owns the schedule's left edge while shown, so
         // fits (initial, resize, `r`) never put the grid under it.
         const specs_pad: f32 = if (sched.show_specs) sched.specs_w + 2 * PAD else 0;
-        const sched_region = rl.Rectangle{ .x = specs_pad, .y = TAB_H, .width = @max(1, sw - specs_pad), .height = @max(1, sh - TAB_H - BAR_H) };
-        const logical_region = rl.Rectangle{ .x = 0, .y = TAB_H, .width = sw, .height = @max(1, sh - TAB_H) };
+        const sched_region = rl.Rectangle{
+            .x = specs_pad,
+            .y = TAB_H,
+            .width = @max(1, sw - specs_pad),
+            .height = @max(1, sh - TAB_H - BAR_H),
+        };
+        const logical_region = rl.Rectangle{
+            .x = 0,
+            .y = TAB_H,
+            .width = sw,
+            .height = @max(1, sh - TAB_H),
+        };
         const region = switch (view) {
             .circuit, .stages => circuit_region,
             .schedule => sched_region,
@@ -303,9 +369,11 @@ pub fn run(
         // left-drag too (the schedule reserves left for the transport bar).
         const mouse = rl.getMousePosition();
         const in_region = rl.checkCollisionPointRec(mouse, region);
-        const pan_press = rl.isMouseButtonPressed(.right) or rl.isMouseButtonPressed(.middle) or
+        const pan_press = rl.isMouseButtonPressed(.right) or
+            rl.isMouseButtonPressed(.middle) or
             (view != .schedule and rl.isMouseButtonPressed(.left));
-        const pan_down = rl.isMouseButtonDown(.right) or rl.isMouseButtonDown(.middle) or
+        const pan_down = rl.isMouseButtonDown(.right) or
+            rl.isMouseButtonDown(.middle) or
             (view != .schedule and rl.isMouseButtonDown(.left));
         if (pan_press and in_region) {
             panning = true;

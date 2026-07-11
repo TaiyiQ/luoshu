@@ -60,7 +60,13 @@ fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
     rl.drawRectangleRoundedLinesEx(rec, 0.06, 8, 1.0, palette.zone_border);
 }
 
-fn drawSlot(cam: Camera, slot: Point, positions: []const Point, loaded: []const bool, idle: []const Point) void {
+fn drawSlot(
+    cam: Camera,
+    slot: Point,
+    positions: []const Point,
+    loaded: []const bool,
+    idle: []const Point,
+) void {
     const screen = cam.worldToScreen(toVec(slot));
     const radius = ATOM_R * cam.zoom;
 
@@ -151,7 +157,15 @@ fn drawPairHalo(cam: Camera, a: Point, b: Point, color: rl.Color) void {
     rl.drawCircleLinesV(center, r + 4.0, withAlpha(color, 15));
 }
 
-fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, is_active: bool, is_loaded: bool, fill: rl.Color) void {
+fn drawQubit(
+    cam: Camera,
+    font: rl.Font,
+    pos: Point,
+    id: usize,
+    is_active: bool,
+    is_loaded: bool,
+    fill: rl.Color,
+) void {
     const screen = cam.worldToScreen(toVec(pos));
     const radius = (if (is_loaded) ATOM_R_LOADED else ATOM_R) * cam.zoom;
 
@@ -317,9 +331,21 @@ pub const ScheduleView = struct {
             }
         }
 
-        drawZone(v.cam, v.storage_rect, if (rydberg_zone == .storage) palette.zone_active else palette.zone_storage);
-        drawZone(v.cam, v.compute_rect, if (rydberg_zone == .compute) palette.zone_active else palette.zone_compute);
-        drawZone(v.cam, v.readout_rect, if (rydberg_zone == .readout) palette.zone_active else palette.zone_readout);
+        drawZone(
+            v.cam,
+            v.storage_rect,
+            if (rydberg_zone == .storage) palette.zone_active else palette.zone_storage,
+        );
+        drawZone(
+            v.cam,
+            v.compute_rect,
+            if (rydberg_zone == .compute) palette.zone_active else palette.zone_compute,
+        );
+        drawZone(
+            v.cam,
+            v.readout_rect,
+            if (rydberg_zone == .readout) palette.zone_active else palette.zone_readout,
+        );
 
         drawAodHighlight(v.cam, v.draw_positions, loaded, frame_ops);
 
@@ -346,14 +372,16 @@ pub const ScheduleView = struct {
                     if (ib <= ia or !v.active[ib]) continue;
                     const dx: i64 = @as(i64, pa.x) - @as(i64, pb.x);
                     const dy: i64 = @as(i64, pa.y) - @as(i64, pb.y);
-                    if (dx * dx + dy * dy <= db2) drawPairHalo(v.cam, pa, pb, palette.op_rydberg);
+                    if (dx * dx + dy * dy <= db2)
+                        drawPairHalo(v.cam, pa, pb, palette.op_rydberg);
                 }
             }
         }
 
         for (v.draw_positions, 0..) |pos, id| {
             const is_loaded = id < loaded.len and loaded[id];
-            drawQubit(v.cam, font, pos, id, id < v.active.len and v.active[id], is_loaded, accent);
+            const is_active = id < v.active.len and v.active[id];
+            drawQubit(v.cam, font, pos, id, is_active, is_loaded, accent);
         }
     }
 
@@ -386,16 +414,32 @@ pub const ScheduleView = struct {
         }, "|<")) v.seek(0);
         x += BTN_W + 6;
 
-        if (rg.button(.{ .x = x, .y = row1_y, .width = BTN_W, .height = BTN_H }, "<")) v.seek(v.frame -| 1);
+        if (rg.button(.{
+            .x = x,
+            .y = row1_y,
+            .width = BTN_W,
+            .height = BTN_H,
+        }, "<")) v.seek(v.frame -| 1);
         x += BTN_W + 6;
 
-        if (rg.button(.{ .x = x, .y = row1_y, .width = 2 * BTN_W, .height = BTN_H }, if (v.playing) "pause" else "play")) {
+        const play_label: [:0]const u8 = if (v.playing) "pause" else "play";
+        if (rg.button(.{
+            .x = x,
+            .y = row1_y,
+            .width = 2 * BTN_W,
+            .height = BTN_H,
+        }, play_label)) {
             v.playing = !v.playing;
             v.clock = 0;
         }
         x += 2 * BTN_W + 6;
 
-        if (rg.button(.{ .x = x, .y = row1_y, .width = BTN_W, .height = BTN_H }, ">")) v.seek(v.frame + 1);
+        if (rg.button(.{
+            .x = x,
+            .y = row1_y,
+            .width = BTN_W,
+            .height = BTN_H,
+        }, ">")) v.seek(v.frame + 1);
         x += BTN_W + PAD;
 
         // Scrub slider over the whole schedule.
@@ -441,8 +485,20 @@ pub const ScheduleView = struct {
         // Row 2: playback speed + status line.
         const row2_y = row1_y + BTN_H + 8;
         var spd_buf: [16]u8 = undefined;
-        const spd_txt = std.fmt.bufPrintSentinel(&spd_buf, "{d:.1}/s", .{v.speed}, 0) catch "?";
-        rl.drawTextEx(font, "speed", .{ .x = PAD, .y = row2_y + 2 }, 20, 1, palette.text_sub);
+        const spd_txt = std.fmt.bufPrintSentinel(
+            &spd_buf,
+            "{d:.1}/s",
+            .{v.speed},
+            0,
+        ) catch "?";
+        rl.drawTextEx(
+            font,
+            "speed",
+            .{ .x = PAD, .y = row2_y + 2 },
+            20,
+            1,
+            palette.text_sub,
+        );
         _ = rg.sliderBar(
             .{
                 .x = PAD + 70,
@@ -475,7 +531,12 @@ pub const ScheduleView = struct {
         };
 
         var status_buf: [160]u8 = undefined;
-        const op_txt = std.fmt.bufPrintSentinel(&status_buf, "{s} @ {s}", .{ @tagName(primary_op), zone_txt }, 0) catch "?";
+        const op_txt = std.fmt.bufPrintSentinel(
+            &status_buf,
+            "{s} @ {s}",
+            .{ @tagName(primary_op), zone_txt },
+            0,
+        ) catch "?";
         const op_w = rl.measureTextEx(font, op_txt, 20, 1).x;
 
         var counts_buf: [160]u8 = undefined;
@@ -611,7 +672,10 @@ pub const SpecSheet = struct {
 
         const p = std.fmt.allocPrintSentinel;
         return .{
-            .title = try p(arena, "{s}  v{s}", .{ cfg.platform.name, cfg.platform.version }, 0),
+            .title = try p(arena, "{s}  v{s}", .{
+                cfg.platform.name,
+                cfg.platform.version,
+            }, 0),
             .vals = .{
                 try p(arena, "{d} x {d} max", .{ aod.max_num_row, aod.max_num_col }, 0),
                 try p(arena, ">= {d:.1} um", .{um(aod.min_sep_nm)}, 0),

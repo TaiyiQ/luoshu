@@ -36,7 +36,12 @@ pub const palette = struct {
 };
 
 pub fn withAlpha(c: rl.Color, a: u8) rl.Color {
-    return .{ .r = c.r, .g = c.g, .b = c.b, .a = a };
+    return .{
+        .r = c.r,
+        .g = c.g,
+        .b = c.b,
+        .a = a,
+    };
 }
 
 // Tab bar layout.
@@ -120,18 +125,19 @@ pub const Camera = struct {
 // raygui reads style colors as 0xRRGGBBAA ints; setting them on .default
 // propagates the base properties to every control.
 pub fn styleGui(font: rl.Font) void {
+    const int = rl.colorToInt;
     rg.setFont(font);
     rg.setStyle(.default, .{ .default = .text_size }, 20);
     rg.setStyle(.default, .{ .default = .text_spacing }, 1);
-    rg.setStyle(.default, .{ .default = .background_color }, rl.colorToInt(palette.panel_bg));
-    rg.setStyle(.default, .{ .default = .line_color }, rl.colorToInt(palette.divider));
-    rg.setStyle(.default, .{ .control = .base_color_normal }, rl.colorToInt(palette.bg));
-    rg.setStyle(.default, .{ .control = .border_color_normal }, rl.colorToInt(palette.divider));
-    rg.setStyle(.default, .{ .control = .text_color_normal }, rl.colorToInt(palette.text));
-    rg.setStyle(.default, .{ .control = .base_color_focused }, rl.colorToInt(palette.divider));
-    rg.setStyle(.default, .{ .control = .border_color_focused }, rl.colorToInt(palette.accent));
-    rg.setStyle(.default, .{ .control = .text_color_focused }, rl.colorToInt(palette.text));
-    rg.setStyle(.default, .{ .control = .base_color_pressed }, rl.colorToInt(palette.accent));
-    rg.setStyle(.default, .{ .control = .border_color_pressed }, rl.colorToInt(palette.accent));
-    rg.setStyle(.default, .{ .control = .text_color_pressed }, rl.colorToInt(palette.bg));
+    rg.setStyle(.default, .{ .default = .background_color }, int(palette.panel_bg));
+    rg.setStyle(.default, .{ .default = .line_color }, int(palette.divider));
+    rg.setStyle(.default, .{ .control = .base_color_normal }, int(palette.bg));
+    rg.setStyle(.default, .{ .control = .border_color_normal }, int(palette.divider));
+    rg.setStyle(.default, .{ .control = .text_color_normal }, int(palette.text));
+    rg.setStyle(.default, .{ .control = .base_color_focused }, int(palette.divider));
+    rg.setStyle(.default, .{ .control = .border_color_focused }, int(palette.accent));
+    rg.setStyle(.default, .{ .control = .text_color_focused }, int(palette.text));
+    rg.setStyle(.default, .{ .control = .base_color_pressed }, int(palette.accent));
+    rg.setStyle(.default, .{ .control = .border_color_pressed }, int(palette.accent));
+    rg.setStyle(.default, .{ .control = .text_color_pressed }, int(palette.bg));
 }

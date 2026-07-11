@@ -171,7 +171,7 @@ pub fn build(b: *std.Build) void {
     // raygui-based visualizer: one window hosting the circuit, stage,
     // logical, and schedule views as tabs.
     const viz_mod = b.addModule("viz", .{
-        .root_source_file = b.path("src/viz.zig"),
+        .root_source_file = b.path("src/viz/viz.zig"),
         .target = target,
     });
     viz_mod.addImport("schedule", schedule_mod);

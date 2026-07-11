@@ -55,7 +55,12 @@ pub const LogicalView = struct {
             w = @max(w, @as(f32, @floatFromInt(round.fixed.len)) * CELL_W);
             y += TBL_LABEL_H + tableHeight(round) + TBL_GAP;
         }
-        return .{ .min_x = -ROW_LABEL_W, .min_y = 0, .max_x = w, .max_y = y - TBL_GAP };
+        return .{
+            .min_x = -ROW_LABEL_W,
+            .min_y = 0,
+            .max_x = w,
+            .max_y = y - TBL_GAP,
+        };
     }
 
     pub fn fit(v: *LogicalView, region: rl.Rectangle) void {
@@ -65,7 +70,14 @@ pub const LogicalView = struct {
 
     pub fn draw(v: LogicalView, font: rl.Font, region: rl.Rectangle) void {
         if (v.empty()) {
-            rl.drawTextEx(font, "nothing routed (no CZ stages)", .{ .x = PAD, .y = TAB_H + PAD }, 20, 1, palette.text_sub);
+            rl.drawTextEx(
+                font,
+                "nothing routed (no CZ stages)",
+                .{ .x = PAD, .y = TAB_H + PAD },
+                20,
+                1,
+                palette.text_sub,
+            );
             return;
         }
 
@@ -92,7 +104,12 @@ pub const LogicalView = struct {
     }
 
     // A table's stage/round landmark; clamped readable at any zoom.
-    fn drawLabel(v: LogicalView, font: rl.Font, round: viewmodel.SlotTables.Round, ty: f32) void {
+    fn drawLabel(
+        v: LogicalView,
+        font: rl.Font,
+        round: viewmodel.SlotTables.Round,
+        ty: f32,
+    ) void {
         const s = v.cam.worldToScreen(.{ .x = 0, .y = ty });
         const fs = std.math.clamp(24.0 * v.cam.zoom, 12, 26);
         var buf: [48]u8 = undefined;
@@ -102,10 +119,24 @@ pub const LogicalView = struct {
             .{ round.stage, round.ri, round.n_in_stage - 1 },
             0,
         ) catch "?";
-        rl.drawTextEx(font, txt, .{ .x = s.x, .y = s.y }, fs, 0.5, palette.accent);
+
+        rl.drawTextEx(
+            font,
+            txt,
+            .{ .x = s.x, .y = s.y },
+            fs,
+            0.5,
+            palette.accent,
+        );
     }
 
-    fn drawRound(v: LogicalView, font: rl.Font, round: viewmodel.SlotTables.Round, ty: f32, mw: ?rl.Vector2) void {
+    fn drawRound(
+        v: LogicalView,
+        font: rl.Font,
+        round: viewmodel.SlotTables.Round,
+        ty: f32,
+        mw: ?rl.Vector2,
+    ) void {
         const cam = v.cam;
         const n_slots = round.fixed.len;
         const n_rows = 1 + round.moveable.len;
@@ -129,18 +160,28 @@ pub const LogicalView = struct {
             }
         }
         if (hover_row) |r| {
-            const tl = cam.worldToScreen(.{ .x = -ROW_LABEL_W, .y = ty + @as(f32, @floatFromInt(r)) * CELL_H });
-            rl.drawRectangleRec(
-                .{ .x = tl.x, .y = tl.y, .width = (table_w + ROW_LABEL_W) * cam.zoom, .height = cell_h },
-                band,
-            );
+            const tl = cam.worldToScreen(.{
+                .x = -ROW_LABEL_W,
+                .y = ty + @as(f32, @floatFromInt(r)) * CELL_H,
+            });
+            rl.drawRectangleRec(.{
+                .x = tl.x,
+                .y = tl.y,
+                .width = (table_w + ROW_LABEL_W) * cam.zoom,
+                .height = cell_h,
+            }, band);
         }
         if (hover_col) |c| {
-            const tl = cam.worldToScreen(.{ .x = @as(f32, @floatFromInt(c)) * CELL_W, .y = ty });
-            rl.drawRectangleRec(
-                .{ .x = tl.x, .y = tl.y, .width = CELL_W * cam.zoom, .height = table_h * cam.zoom },
-                band,
-            );
+            const tl = cam.worldToScreen(.{
+                .x = @as(f32, @floatFromInt(c)) * CELL_W,
+                .y = ty,
+            });
+            rl.drawRectangleRec(.{
+                .x = tl.x,
+                .y = tl.y,
+                .width = CELL_W * cam.zoom,
+                .height = table_h * cam.zoom,
+            }, band);
         }
 
         // Cells: the SLM row, then one row per timestep.
@@ -169,12 +210,22 @@ pub const LogicalView = struct {
         const y1 = ty + @as(f32, @floatFromInt(n_rows)) * CELL_H;
         for (0..n_slots + 1) |i| {
             const x = @as(f32, @floatFromInt(i)) * CELL_W;
-            rl.drawLineEx(cam.worldToScreen(.{ .x = x, .y = ty }), cam.worldToScreen(.{ .x = x, .y = y1 }), 1.0, palette.divider);
+            rl.drawLineEx(
+                cam.worldToScreen(.{ .x = x, .y = ty }),
+                cam.worldToScreen(.{ .x = x, .y = y1 }),
+                1.0,
+                palette.divider,
+            );
         }
         for (0..n_rows + 1) |r| {
             const y = ty + @as(f32, @floatFromInt(r)) * CELL_H;
             const thick: f32 = if (r == 1) 2.5 else 1.0;
-            rl.drawLineEx(cam.worldToScreen(.{ .x = 0, .y = y }), cam.worldToScreen(.{ .x = x1, .y = y }), thick, palette.divider);
+            rl.drawLineEx(
+                cam.worldToScreen(.{ .x = 0, .y = y }),
+                cam.worldToScreen(.{ .x = x1, .y = y }),
+                thick,
+                palette.divider,
+            );
         }
 
         // Row labels in the left margin: SLM, then t0..tN.
@@ -187,36 +238,82 @@ pub const LogicalView = struct {
                 else
                     std.fmt.bufPrintSentinel(&buf, "t{d}", .{r - 1}, 0) catch "?";
                 const tw = rl.measureTextEx(font, txt, lfs, 0.5).x;
-                const s = cam.worldToScreen(.{ .x = 0, .y = ty + (@as(f32, @floatFromInt(r)) + 0.5) * CELL_H });
+                const s = cam.worldToScreen(.{
+                    .x = 0,
+                    .y = ty + (@as(f32, @floatFromInt(r)) + 0.5) * CELL_H,
+                });
                 const col = if (hover_row == r) palette.text else palette.text_sub;
-                rl.drawTextEx(font, txt, .{ .x = s.x - tw - 10, .y = s.y - lfs / 2 }, lfs, 0.5, col);
+                rl.drawTextEx(
+                    font,
+                    txt,
+                    .{ .x = s.x - tw - 10, .y = s.y - lfs / 2 },
+                    lfs,
+                    0.5,
+                    col,
+                );
             }
         }
     }
 
-    fn drawCell(v: LogicalView, font: rl.Font, wx: f32, wy: f32, fill: rl.Color, q: usize, show_text: bool, fs: f32) void {
+    fn drawCell(
+        v: LogicalView,
+        font: rl.Font,
+        wx: f32,
+        wy: f32,
+        fill: rl.Color,
+        q: usize,
+        show_text: bool,
+        fs: f32,
+    ) void {
         const tl = v.cam.worldToScreen(.{ .x = wx, .y = wy });
-        rl.drawRectangleRec(
-            .{ .x = tl.x, .y = tl.y, .width = CELL_W * v.cam.zoom, .height = CELL_H * v.cam.zoom },
-            fill,
-        );
+        rl.drawRectangleRec(.{
+            .x = tl.x,
+            .y = tl.y,
+            .width = CELL_W * v.cam.zoom,
+            .height = CELL_H * v.cam.zoom,
+        }, fill);
         if (!show_text) return;
         var buf: [12]u8 = undefined;
         const txt = std.fmt.bufPrintSentinel(&buf, "{d}", .{q}, 0) catch "?";
         const tw = rl.measureTextEx(font, txt, fs, 0.5).x;
-        const c = v.cam.worldToScreen(.{ .x = wx + CELL_W / 2, .y = wy + CELL_H / 2 });
-        rl.drawTextEx(font, txt, .{ .x = c.x - tw / 2, .y = c.y - fs / 2 }, fs, 0.5, palette.text);
+        const c = v.cam.worldToScreen(.{
+            .x = wx + CELL_W / 2,
+            .y = wy + CELL_H / 2,
+        });
+        rl.drawTextEx(
+            font,
+            txt,
+            .{ .x = c.x - tw / 2, .y = c.y - fs / 2 },
+            fs,
+            0.5,
+            palette.text,
+        );
     }
 
     // The ASCII table's `·`: an empty slot.
     fn drawDot(v: LogicalView, wx: f32, wy: f32) void {
-        const c = v.cam.worldToScreen(.{ .x = wx + CELL_W / 2, .y = wy + CELL_H / 2 });
+        const c = v.cam.worldToScreen(.{
+            .x = wx + CELL_W / 2,
+            .y = wy + CELL_H / 2,
+        });
         rl.drawCircleV(c, @max(1.0, 2.5 * v.cam.zoom), palette.qdot);
     }
 };
 
 fn legendChip(font: rl.Font, x: f32, region_y: f32, fill: rl.Color, txt: [:0]const u8) f32 {
-    rl.drawRectangleRounded(.{ .x = x, .y = region_y + 10, .width = 14, .height = 14 }, 0.3, 4, fill);
-    rl.drawTextEx(font, txt, .{ .x = x + 18, .y = region_y + 8 }, 18, 0.5, palette.text_sub);
+    rl.drawRectangleRounded(.{
+        .x = x,
+        .y = region_y + 10,
+        .width = 14,
+        .height = 14,
+    }, 0.3, 4, fill);
+    rl.drawTextEx(
+        font,
+        txt,
+        .{ .x = x + 18, .y = region_y + 8 },
+        18,
+        0.5,
+        palette.text_sub,
+    );
     return x + 18 + rl.measureTextEx(font, txt, 18, 0.5).x + PAD;
 }
