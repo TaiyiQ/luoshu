@@ -707,10 +707,18 @@ const LogicalView = struct {
             return;
         }
 
+        // Mouse in world space, for the row hover highlight; the tab bar
+        // and anything outside the region don't hover.
+        const mouse = rl.getMousePosition();
+        const mw: ?rl.Vector2 = if (rl.checkCollisionPointRec(mouse, region))
+            v.cam.screenToWorld(mouse)
+        else
+            null;
+
         var ty: f32 = 0;
         for (v.tables.rounds) |round| {
             v.drawLabel(font, round, ty);
-            v.drawRound(font, round, ty + TBL_LABEL_H);
+            v.drawRound(font, round, ty + TBL_LABEL_H, mw);
             ty += TBL_LABEL_H + tableHeight(round) + TBL_GAP;
         }
 
@@ -735,13 +743,43 @@ const LogicalView = struct {
         rl.drawTextEx(font, txt, .{ .x = s.x, .y = s.y }, fs, 0.5, palette.text);
     }
 
-    fn drawRound(v: LogicalView, font: rl.Font, round: viewmodel.SlotTables.Round, ty: f32) void {
+    fn drawRound(v: LogicalView, font: rl.Font, round: viewmodel.SlotTables.Round, ty: f32, mw: ?rl.Vector2) void {
         const cam = v.cam;
         const n_slots = round.fixed.len;
         const n_rows = 1 + round.moveable.len;
         const cell_h = CELL_H * cam.zoom;
         const fs = std.math.clamp(20.0 * cam.zoom, 0, 24);
         const show_text = cell_h >= 13;
+        const table_w = @as(f32, @floatFromInt(n_slots)) * CELL_W;
+
+        // The hovered row and column, banded under the cells so their
+        // fills stay on top; together they crosshair the hovered cell.
+        const table_h = @as(f32, @floatFromInt(n_rows)) * CELL_H;
+        const band = rl.Color{ .r = palette.accent.r, .g = palette.accent.g, .b = palette.accent.b, .a = 28 };
+        var hover_row: ?usize = null;
+        var hover_col: ?usize = null;
+        if (mw) |m| {
+            if (m.y >= ty and m.y < ty + table_h) {
+                if (m.x >= -ROW_LABEL_W and m.x <= table_w)
+                    hover_row = @intFromFloat((m.y - ty) / CELL_H);
+                if (m.x >= 0 and m.x < table_w)
+                    hover_col = @intFromFloat(m.x / CELL_W);
+            }
+        }
+        if (hover_row) |r| {
+            const tl = cam.worldToScreen(.{ .x = -ROW_LABEL_W, .y = ty + @as(f32, @floatFromInt(r)) * CELL_H });
+            rl.drawRectangleRec(
+                .{ .x = tl.x, .y = tl.y, .width = (table_w + ROW_LABEL_W) * cam.zoom, .height = cell_h },
+                band,
+            );
+        }
+        if (hover_col) |c| {
+            const tl = cam.worldToScreen(.{ .x = @as(f32, @floatFromInt(c)) * CELL_W, .y = ty });
+            rl.drawRectangleRec(
+                .{ .x = tl.x, .y = tl.y, .width = CELL_W * cam.zoom, .height = table_h * cam.zoom },
+                band,
+            );
+        }
 
         // Cells: the SLM row, then one row per timestep.
         for (0..n_slots) |i| {
@@ -788,7 +826,8 @@ const LogicalView = struct {
                     std.fmt.bufPrintSentinel(&buf, "t{d}", .{r - 1}, 0) catch "?";
                 const tw = rl.measureTextEx(font, txt, lfs, 0.5).x;
                 const s = cam.worldToScreen(.{ .x = 0, .y = ty + (@as(f32, @floatFromInt(r)) + 0.5) * CELL_H });
-                rl.drawTextEx(font, txt, .{ .x = s.x - tw - 10, .y = s.y - lfs / 2 }, lfs, 0.5, palette.text_sub);
+                const col = if (hover_row == r) palette.text else palette.text_sub;
+                rl.drawTextEx(font, txt, .{ .x = s.x - tw - 10, .y = s.y - lfs / 2 }, lfs, 0.5, col);
             }
         }
     }
