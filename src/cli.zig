@@ -17,7 +17,7 @@ const usage =
     \\                      procedural placement
     \\  --out <path>        write the hardware schedule as JSON
     \\  --bench <path>      write schedule benchmark metrics as JSON
-    \\  --no-draw           skip the schedule visualization
+    \\  --viz               open the schedule visualizer (off by default)
     \\  -v, --verbose       trace the compiler passes to stderr
     \\  -h, --help          show this help
     \\
@@ -42,7 +42,7 @@ pub const Options = struct {
     out_dir: ?[]const u8 = null,
     arch_path: []const u8,
     asm_path: ?[]const u8 = null,
-    draw: bool = true,
+    viz: bool = false,
     verbose: bool = false,
 };
 
@@ -84,8 +84,8 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
         } else if (std.mem.eql(u8, arg, "--bench")) {
             const v = it.next() orelse fatal("--bench expects a path", .{});
             flags.bench = try arena.dupe(u8, v);
-        } else if (std.mem.eql(u8, arg, "--no-draw")) {
-            flags.draw = false;
+        } else if (std.mem.eql(u8, arg, "--viz")) {
+            flags.viz = true;
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
             flags.verbose = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
@@ -104,7 +104,7 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
         .jobs = undefined,
         .arch_path = cfg.arch,
         .asm_path = cfg.assembly,
-        .draw = cfg.draw,
+        .viz = cfg.viz,
         .verbose = cfg.verbose,
     };
 
@@ -125,7 +125,7 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
         opts.jobs = jobs;
         opts.benchmark = true;
         opts.out_dir = cfg.benchmark.out_dir;
-        opts.draw = false; // batch run: metrics, not windows
+        opts.viz = false; // batch run: metrics, not windows
     } else {
         fatal("missing <circuit.qasm> and no [benchmark] circuits in settings\n\n" ++ usage, .{});
     }

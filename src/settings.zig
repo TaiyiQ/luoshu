@@ -16,7 +16,7 @@ pub const Options = struct {
     assembly: ?[]const u8 = null,
     out: ?[]const u8 = null,
     bench: ?[]const u8 = null,
-    draw: ?bool = null,
+    viz: ?bool = null,
     verbose: ?bool = null,
 };
 
@@ -40,7 +40,7 @@ pub const Resolved = struct {
     assembly: ?[]const u8 = null,
     out: ?[]const u8 = null,
     bench: ?[]const u8 = null,
-    draw: bool = true,
+    viz: bool = false,
     verbose: bool = false,
     benchmark: Benchmark = .{},
 };
@@ -70,7 +70,7 @@ fn apply(r: *Resolved, o: Options) void {
     if (o.assembly) |v| r.assembly = v;
     if (o.out) |v| r.out = v;
     if (o.bench) |v| r.bench = v;
-    if (o.draw) |v| r.draw = v;
+    if (o.viz) |v| r.viz = v;
     if (o.verbose) |v| r.verbose = v;
 }
 
@@ -131,14 +131,14 @@ test "missing tables fall back to defaults" {
 }
 
 test "merge precedence: flag beats file beats built-in" {
-    const file = Settings{ .options = .{ .arch = "file.toml", .draw = false } };
+    const file = Settings{ .options = .{ .arch = "file.toml", .viz = true } };
     const r = merge(file, .{ .arch = "flag.toml", .verbose = true });
     try std.testing.expectEqualStrings("flag.toml", r.arch);
-    try std.testing.expect(!r.draw); // file value survives: no flag given
+    try std.testing.expect(r.viz); // file value survives: no flag given
     try std.testing.expect(r.verbose);
 
     const bare = merge(.{}, .{});
     try std.testing.expectEqualStrings("cfg/arch.toml", bare.arch);
-    try std.testing.expect(bare.draw);
+    try std.testing.expect(!bare.viz);
     try std.testing.expect(!bare.verbose);
 }

@@ -204,7 +204,7 @@ fn compileOne(
     }
 
     // Circuit, stages, logical, and schedule views as tabs in one window.
-    if (opts.draw) try viz.run(init.gpa, cfg, sch, asm_doc, circ, pipeline);
+    if (opts.viz) try viz.run(init.gpa, cfg, sch, asm_doc, circ, pipeline);
 
     return metrics;
 }

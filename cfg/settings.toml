@@ -5,7 +5,7 @@ arch = "cfg/arch.toml"
 # assembly = "cfg/assembly.json" # storage occupancy from atom-rearrangement
 # out = "schedule.json"             # hardware schedule JSON (single run only)
 # bench = "bench.json"              # benchmark metrics JSON (single run only)
-# draw = false                      # skip the schedule visualization
+# viz = true                        # open the schedule visualizer (off by default)
 # verbose = true                    # trace compiler passes to stderr
 
 # ── Benchmark suite ────────────────────────────────────────────────
