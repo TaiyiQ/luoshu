@@ -1,5 +1,6 @@
-run:
-	zig build run -- ./ex/graph/graph-90-9.qasm --viz gui
+build:
+	zig build
+	cp ./zig-out/bin/gatecomp .
 
 bench:
 	zig build run
