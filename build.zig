@@ -156,7 +156,7 @@ pub fn build(b: *std.Build) void {
     golden_mod.addImport("serialize", serialize_mod);
     golden_mod.addImport("verify", verify_mod);
 
-    // draw's raylib-free precompute, split out so it is unit-testable.
+    // viz's raylib-free precompute, split out so it is unit-testable.
     const viewmodel_mod = b.addModule("viewmodel", .{
         .root_source_file = b.path("src/viewmodel.zig"),
         .target = target,
@@ -168,21 +168,10 @@ pub fn build(b: *std.Build) void {
     // rather than threading capture through the compile.
     viewmodel_mod.addImport("compiler", compiler_mod);
 
-    const draw_mod = b.addModule("draw", .{
-        .root_source_file = b.path("src/draw.zig"),
-        .target = target,
-    });
-    draw_mod.addImport("schedule", schedule_mod);
-    draw_mod.addImport("arch", arch_mod);
-    draw_mod.addImport("assembly", assembly_mod);
-    draw_mod.addImport("circuit", circuit_mod);
-    draw_mod.addImport("viewmodel", viewmodel_mod);
-    exe.root_module.addImport("draw", draw_mod);
-
-    // raygui-based visualizer (`--viz gui`): one window hosting the circuit,
-    // stage, and schedule views — the in-progress rewrite of draw.zig.
+    // raygui-based visualizer: one window hosting the circuit, stage,
+    // logical, and schedule views as tabs.
     const viz_mod = b.addModule("viz", .{
-        .root_source_file = b.path("src/viz.zig"),
+        .root_source_file = b.path("src/viz/viz.zig"),
         .target = target,
     });
     viz_mod.addImport("schedule", schedule_mod);
@@ -204,7 +193,6 @@ pub fn build(b: *std.Build) void {
         .linux_display_backend = .Wayland,
     });
     exe.root_module.linkLibrary(raylib_dep.artifact("raylib"));
-    draw_mod.addImport("raylib", raylib_dep.module("raylib"));
     viz_mod.addImport("raylib", raylib_dep.module("raylib"));
     viz_mod.addImport("raygui", raylib_dep.module("raygui"));
 
@@ -219,8 +207,8 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // --- Tests: `zig build test`.
-    // draw and viz are excluded: testing them would link raylib; they are
-    // still compiled by the exe build. Every other module carries a
+    // viz is excluded: testing it would link raylib; it is still compiled
+    // by the exe build. Every other module carries a
     // std.testing.refAllDecls test, so dead code fails the build instead of
     // bit-rotting.
 

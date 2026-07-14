@@ -11,11 +11,14 @@ Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule f
 
 - Quick start leveraging defaults.
 ```shell
-# Run tests (unit & snapshots)
-> just test
+# Build the binary
+> just build
 
-# Run the default circuit
-> just run
+# Run the CLI with help options
+> ./gatecomp -h
+
+# Run a single circuit and visualize
+> ./gatecomp ./ex/mvp/mvp.qasm --viz
 ```
 
 ## Configuration
