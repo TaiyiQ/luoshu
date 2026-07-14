@@ -7,6 +7,7 @@ const std = @import("std");
 const schedule = @import("schedule");
 const arch = @import("arch");
 const circuit = @import("circuit");
+const compiler = @import("compiler");
 
 const Point = schedule.Point;
 
@@ -133,6 +134,69 @@ pub const CircuitLayout = struct {
         @memset(next_free[span[0] .. span[1] + 1], col + 1);
         try laid.append(gpa, .{ .gate = gate, .col = col });
         return col + 1;
+    }
+};
+
+/// The logical routing product for the visualizer: one slot table per
+/// routing round, in stage order — the SLM row of fixed qubits plus the
+/// per-timestep AOD rows that route.Sequence.print() renders as ASCII.
+/// compile frees its sequences as it schedules them, but routing is
+/// deterministic, so re-running it here reproduces exactly the tables the
+/// schedule was choreographed from.
+pub const SlotTables = struct {
+    arena: std.heap.ArenaAllocator,
+    rounds: []const Round,
+
+    pub const Round = struct {
+        /// Pipeline stage this round routed; U-only stages never appear.
+        stage: usize,
+        /// Round index within the stage, of n_in_stage (non-bipartite
+        /// stage graphs leave SLM-SLM residue for further rounds).
+        ri: usize,
+        n_in_stage: usize,
+        /// Qubit fixed in each compute-zone SLM column, or null.
+        fixed: []const ?usize,
+        /// moveable[t][col] = qubit the AOD holds over `col` at timestep
+        /// t, null when that column's AOD is resting. A non-null entry
+        /// over an occupied SLM column is a CZ firing at t.
+        moveable: []const []const ?usize,
+    };
+
+    pub fn init(gpa: std.mem.Allocator, pipe: *const circuit.Pipeline) !SlotTables {
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        errdefer arena.deinit();
+        const alloc = arena.allocator();
+
+        var rounds: std.ArrayList(Round) = .empty;
+        defer rounds.deinit(gpa);
+
+        for (pipe.stages.items, 0..) |*stage, si| {
+            if (stage.cz_gates.items.len == 0) continue;
+
+            const seqs = try compiler.routeStage(gpa, stage.cz_gates.items, pipe.num_qubits, null);
+            defer {
+                for (seqs) |*s| s.deinit();
+                gpa.free(seqs);
+            }
+
+            for (seqs, 0..) |seq, ri| {
+                const rows = try alloc.alloc([]const ?usize, seq.moveable.len);
+                for (seq.moveable, rows) |src, *dst| dst.* = try alloc.dupe(?usize, src);
+                try rounds.append(gpa, .{
+                    .stage = si,
+                    .ri = ri,
+                    .n_in_stage = seqs.len,
+                    .fixed = try alloc.dupe(?usize, seq.fixed),
+                    .moveable = rows,
+                });
+            }
+        }
+
+        return .{ .arena = arena, .rounds = try alloc.dupe(Round, rounds.items) };
+    }
+
+    pub fn deinit(t: *SlotTables) void {
+        t.arena.deinit();
     }
 };
 
@@ -489,6 +553,48 @@ test "staged layout: stages never share a column" {
     const last = lay.laid[lay.laid.len - 1];
     try std.testing.expect(last.gate == .cz);
     try std.testing.expect(last.col >= lay.stage_cols[2]);
+}
+
+test "slot tables reproduce each CZ stage's gates as AOD-over-SLM pairings" {
+    const gpa = std.testing.allocator;
+
+    // h(0) makes stage 0 a U stage; the two commuting CZs merge into
+    // stage 1, a path graph 0-1-2 that routes in one round.
+    var c = circuit.Circuit.init(gpa, 3);
+    defer c.deinit();
+    try c.h(0);
+    try c.cz(0, 1);
+    try c.cz(1, 2);
+
+    var pipe = try circuit.decompose(gpa, c);
+    defer pipe.deinit();
+
+    var tables = try SlotTables.init(gpa, &pipe);
+    defer tables.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), tables.rounds.len);
+    const round = tables.rounds[0];
+    try std.testing.expectEqual(@as(usize, 1), round.stage);
+    try std.testing.expectEqual(@as(usize, 0), round.ri);
+    try std.testing.expectEqual(@as(usize, 1), round.n_in_stage);
+
+    // Every timestep row spans the same slots as the SLM row, and the
+    // (AOD, SLM) pairings across all timesteps are exactly the stage's
+    // CZ gates, each firing once.
+    var fired = [_]usize{0} ** 9;
+    for (round.moveable) |row| {
+        try std.testing.expectEqual(round.fixed.len, row.len);
+        for (row, round.fixed) |aod, slm| {
+            const q = aod orelse continue;
+            const p = slm orelse continue;
+            fired[@min(p, q) * 3 + @max(p, q)] += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), fired[0 * 3 + 1]);
+    try std.testing.expectEqual(@as(usize, 1), fired[1 * 3 + 2]);
+    var total: usize = 0;
+    for (fired) |n| total += n;
+    try std.testing.expectEqual(@as(usize, 2), total);
 }
 
 test {
