@@ -15,14 +15,12 @@ const RawSlm = struct {
 const RawStorageZone = struct {
     zone_id: u32,
     offset_um: [2]f64,
-    dimension_um: [2]f64,
     slm: RawSlm,
 };
 
 const RawComputeZone = struct {
     zone_id: u32,
-    offset_um: [2]f64,
-    dimension_um: [2]f64,
+    gap_um: f64,
     dr_um: f64,
     dw_um: f64,
     slms: []RawSlm,
@@ -30,8 +28,7 @@ const RawComputeZone = struct {
 
 const RawReadoutZone = struct {
     zone_id: u32,
-    offset_um: [2]f64,
-    dimension_um: [2]f64,
+    gap_um: f64,
     slm: RawSlm,
 };
 
@@ -111,6 +108,31 @@ pub const Grid = struct {
     }
 };
 
+/// A zone's extent in absolute nm: the union of its SLM trap grids, each
+/// padded by half a trap separation per side. The compiler's proxy for the
+/// zone's illuminated footprint — derived from the traps rather than
+/// configured, so it can never drift from the grid geometry.
+pub const ZoneBox = struct {
+    min: [2]i32,
+    max: [2]i32,
+
+    fn fromGrid(g: Grid) ZoneBox {
+        const hx = @divTrunc(g.sep_nm[0], 2);
+        const hy = @divTrunc(g.sep_nm[1], 2);
+        return .{
+            .min = .{ g.x(0) - hx, g.y(0) - hy },
+            .max = .{ g.x(g.num_col - 1) + hx, g.y(g.num_row - 1) + hy },
+        };
+    }
+
+    fn join(a: ZoneBox, b: ZoneBox) ZoneBox {
+        return .{
+            .min = .{ @min(a.min[0], b.min[0]), @min(a.min[1], b.min[1]) },
+            .max = .{ @max(a.max[0], b.max[0]), @max(a.max[1], b.max[1]) },
+        };
+    }
+};
+
 fn slmGrid(zone_offset_nm: [2]i32, slm: Slm) Grid {
     return .{
         .origin_nm = .{
@@ -129,18 +151,20 @@ fn slmGrid(zone_offset_nm: [2]i32, slm: Slm) Grid {
 pub const StorageZone = struct {
     zone_id: u32,
     offset_nm: [2]i32,
-    dimension_nm: [2]u32,
     slm: Slm,
 
     pub fn grid(z: StorageZone) Grid {
         return slmGrid(z.offset_nm, z.slm);
+    }
+
+    pub fn box(z: StorageZone) ZoneBox {
+        return .fromGrid(z.grid());
     }
 };
 
 pub const ComputeZone = struct {
     zone_id: u32,
     offset_nm: [2]i32,
-    dimension_nm: [2]u32,
     dr_nm: u32,
     dw_nm: u32,
     slms: []Slm,
@@ -148,16 +172,26 @@ pub const ComputeZone = struct {
     pub fn grid(z: ComputeZone, slm_idx: usize) Grid {
         return slmGrid(z.offset_nm, z.slms[slm_idx]);
     }
+
+    pub fn box(z: ComputeZone) ZoneBox {
+        if (z.slms.len == 0) return .{ .min = z.offset_nm, .max = z.offset_nm };
+        var b = ZoneBox.fromGrid(z.grid(0));
+        for (1..z.slms.len) |i| b = b.join(.fromGrid(z.grid(i)));
+        return b;
+    }
 };
 
 pub const ReadoutZone = struct {
     zone_id: u32,
     offset_nm: [2]i32,
-    dimension_nm: [2]u32,
     slm: Slm,
 
     pub fn grid(z: ReadoutZone) Grid {
         return slmGrid(z.offset_nm, z.slm);
+    }
+
+    pub fn box(z: ReadoutZone) ZoneBox {
+        return .fromGrid(z.grid());
     }
 };
 
@@ -269,8 +303,7 @@ pub const ConfigError = error{
     TooFewComputeSlms,
     MismatchedComputeSlms,
     InvalidSlmGrid,
-    SlmOutsideZone,
-    ZonesOverlap,
+    ZoneGapTooSmall,
     BlockadeGeometry,
     InvalidFidelity,
 };
@@ -296,8 +329,8 @@ pub fn validate(cfg: ArchConfig) ConfigError!void {
         return error.InvalidAodLimits;
     }
 
-    try validateSlm("storage", cfg.storage_zone.slm, cfg.storage_zone.dimension_nm);
-    try validateSlm("readout", cfg.readout_zone.slm, cfg.readout_zone.dimension_nm);
+    try validateSlm("storage", cfg.storage_zone.slm);
+    try validateSlm("readout", cfg.readout_zone.slm);
 
     // The scheduler pairs Rydberg sites from slms[0] and slms[1] unconditionally.
     if (cfg.compute_zone.slms.len < 2) {
@@ -307,7 +340,7 @@ pub fn validate(cfg: ArchConfig) ConfigError!void {
         return error.TooFewComputeSlms;
     }
     for (cfg.compute_zone.slms) |slm| {
-        try validateSlm("compute", slm, cfg.compute_zone.dimension_nm);
+        try validateSlm("compute", slm);
     }
 
     // Sites are paired by (row, col) index across slms[0] and slms[1], with
@@ -335,24 +368,14 @@ pub fn validate(cfg: ArchConfig) ConfigError!void {
         return error.MismatchedComputeSlms;
     }
 
-    // Zones must not overlap, and must keep the configured inter-zone gap so
-    // the Rydberg laser cannot stray into storage or readout.
+    // Zones must keep the configured inter-zone gap so the Rydberg laser
+    // cannot stray into storage or readout. Boxes derive from the trap
+    // grids, so this bounds gap_um from below: it must cover dz plus the
+    // half-sep margins of the facing zones. (storage <-> readout follows
+    // from the vertical stacking.)
     const dz: i64 = cfg.constraints.dz_nm;
-    const storage = zoneBox(
-        cfg.storage_zone.offset_nm,
-        cfg.storage_zone.dimension_nm,
-    );
-    const compute = zoneBox(
-        cfg.compute_zone.offset_nm,
-        cfg.compute_zone.dimension_nm,
-    );
-    const readout = zoneBox(
-        cfg.readout_zone.offset_nm,
-        cfg.readout_zone.dimension_nm,
-    );
-    try requireGap("storage", storage, "compute", compute, dz);
-    try requireGap("compute", compute, "readout", readout, dz);
-    try requireGap("storage", storage, "readout", readout, dz);
+    try requireGap("storage", cfg.storage_zone.box(), "compute", cfg.compute_zone.box(), dz);
+    try requireGap("compute", cfg.compute_zone.box(), "readout", cfg.readout_zone.box(), dz);
 
     // A Rydberg pair must sit within the blockade radius; neighbouring sites
     // must sit outside it.
@@ -380,7 +403,7 @@ pub fn validate(cfg: ArchConfig) ConfigError!void {
     }
 }
 
-fn validateSlm(zone: []const u8, slm: Slm, dim: [2]u32) ConfigError!void {
+fn validateSlm(zone: []const u8, slm: Slm) ConfigError!void {
     if (slm.num_row == 0 or
         slm.num_col == 0 or
         slm.sep_nm[0] == 0 or
@@ -389,29 +412,6 @@ fn validateSlm(zone: []const u8, slm: Slm, dim: [2]u32) ConfigError!void {
         cfail("{s} slm {d}: rows, cols, and separations must be positive", .{ zone, slm.slm_id });
         return error.InvalidSlmGrid;
     }
-    const ext_x = @as(i64, slm.offset_nm[0]) + @as(i64, slm.num_col - 1) * slm.sep_nm[0];
-    const ext_y = @as(i64, slm.offset_nm[1]) + @as(i64, slm.num_row - 1) * slm.sep_nm[1];
-    if (slm.offset_nm[0] < 0 or slm.offset_nm[1] < 0 or ext_x > dim[0] or ext_y > dim[1]) {
-        cfail("{s} slm {d}: trap grid extends outside its zone ({d}x{d}nm grid, {d}x{d}nm zone)", .{
-            zone, slm.slm_id, ext_x, ext_y, dim[0], dim[1],
-        });
-        return error.SlmOutsideZone;
-    }
-}
-
-const ZoneBox = struct { min: [2]i64, max: [2]i64 };
-
-fn zoneBox(offset_nm: [2]i32, dim_nm: [2]u32) ZoneBox {
-    return .{
-        .min = .{
-            offset_nm[0],
-            offset_nm[1],
-        },
-        .max = .{
-            offset_nm[0] + @as(i64, dim_nm[0]),
-            offset_nm[1] + @as(i64, dim_nm[1]),
-        },
-    };
 }
 
 fn requireGap(
@@ -422,13 +422,13 @@ fn requireGap(
     gap: i64,
 ) ConfigError!void {
     const separated =
-        a.max[0] + gap <= b.min[0] or
-        b.max[0] + gap <= a.min[0] or
-        a.max[1] + gap <= b.min[1] or
-        b.max[1] + gap <= a.min[1];
+        @as(i64, a.max[0]) + gap <= b.min[0] or
+        @as(i64, b.max[0]) + gap <= a.min[0] or
+        @as(i64, a.max[1]) + gap <= b.min[1] or
+        @as(i64, b.max[1]) + gap <= a.min[1];
     if (!separated) {
         cfail("{s} and {s} zones overlap or sit closer than dz={d}nm", .{ a_name, b_name, gap });
-        return error.ZonesOverlap;
+        return error.ZoneGapTooSmall;
     }
 }
 
@@ -460,6 +460,26 @@ fn convertSlm(raw: RawSlm) Slm {
     };
 }
 
+/// Absolute y of the bottom-most trap row across `slms` for a zone at `zone_y`.
+fn lastRowY(zone_y: i32, slms: []const Slm) i32 {
+    var last = zone_y;
+    for (slms, 0..) |slm, i| {
+        const span = @as(i32, @intCast(slm.num_row -| 1)) * @as(i32, @intCast(slm.sep_nm[1]));
+        const y = zone_y + slm.offset_nm[1] + span;
+        last = if (i == 0) y else @max(last, y);
+    }
+    return last;
+}
+
+/// Zone-relative y of the top-most trap row across `slms`.
+fn firstRowOffsetY(slms: []const Slm) i32 {
+    var first: i32 = 0;
+    for (slms, 0..) |slm, i| {
+        first = if (i == 0) slm.offset_nm[1] else @min(first, slm.offset_nm[1]);
+    }
+    return first;
+}
+
 fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
     const name = try alloc.dupe(u8, raw.platform.name);
     errdefer alloc.free(name);
@@ -471,6 +491,28 @@ fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
     for (raw.compute_zone.slms, 0..) |raw_slm, i| {
         slms[i] = convertSlm(raw_slm);
     }
+
+    // Zones stack vertically, sharing the storage anchor's x. gap_um is
+    // the trap-row flight gap — previous zone's last atom row to this
+    // zone's first — so the zone origins are derived, never configured.
+    const storage_slm = convertSlm(raw.storage_zone.slm);
+    const storage_offset: [2]i32 = .{
+        umToNmSigned(raw.storage_zone.offset_um[0]),
+        umToNmSigned(raw.storage_zone.offset_um[1]),
+    };
+
+    const compute_offset: [2]i32 = .{
+        storage_offset[0],
+        lastRowY(storage_offset[1], &.{storage_slm}) +
+            umToNmSigned(raw.compute_zone.gap_um) - firstRowOffsetY(slms),
+    };
+
+    const readout_slm = convertSlm(raw.readout_zone.slm);
+    const readout_offset: [2]i32 = .{
+        storage_offset[0],
+        lastRowY(compute_offset[1], slms) +
+            umToNmSigned(raw.readout_zone.gap_um) - readout_slm.offset_nm[1],
+    };
 
     return .{
         .platform = .{
@@ -485,41 +527,20 @@ fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
         },
         .storage_zone = .{
             .zone_id = raw.storage_zone.zone_id,
-            .offset_nm = .{
-                umToNmSigned(raw.storage_zone.offset_um[0]),
-                umToNmSigned(raw.storage_zone.offset_um[1]),
-            },
-            .dimension_nm = .{
-                umToNm(raw.storage_zone.dimension_um[0]),
-                umToNm(raw.storage_zone.dimension_um[1]),
-            },
-            .slm = convertSlm(raw.storage_zone.slm),
+            .offset_nm = storage_offset,
+            .slm = storage_slm,
         },
         .compute_zone = .{
             .zone_id = raw.compute_zone.zone_id,
-            .offset_nm = .{
-                umToNmSigned(raw.compute_zone.offset_um[0]),
-                umToNmSigned(raw.compute_zone.offset_um[1]),
-            },
-            .dimension_nm = .{
-                umToNm(raw.compute_zone.dimension_um[0]),
-                umToNm(raw.compute_zone.dimension_um[1]),
-            },
+            .offset_nm = compute_offset,
             .dr_nm = umToNm(raw.compute_zone.dr_um),
             .dw_nm = umToNm(raw.compute_zone.dw_um),
             .slms = slms,
         },
         .readout_zone = .{
             .zone_id = raw.readout_zone.zone_id,
-            .offset_nm = .{
-                umToNmSigned(raw.readout_zone.offset_um[0]),
-                umToNmSigned(raw.readout_zone.offset_um[1]),
-            },
-            .dimension_nm = .{
-                umToNm(raw.readout_zone.dimension_um[0]),
-                umToNm(raw.readout_zone.dimension_um[1]),
-            },
-            .slm = convertSlm(raw.readout_zone.slm),
+            .offset_nm = readout_offset,
+            .slm = readout_slm,
         },
         .constraints = .{
             .db_nm = umToNm(raw.constraints.db_um),
@@ -570,21 +591,20 @@ fn testCfg() ArchConfig {
         .storage_zone = .{
             .zone_id = 0,
             .offset_nm = .{ 0, 0 },
-            .dimension_nm = .{ 12000, 4000 },
             .slm = test_slm,
         },
         .compute_zone = .{
             .zone_id = 1,
             .offset_nm = .{ 0, 10000 },
-            .dimension_nm = .{ 20000, 14000 },
             .dr_nm = 2000,
             .dw_nm = 10000,
             .slms = &test_compute_slms,
         },
         .readout_zone = .{
             .zone_id = 2,
-            .offset_nm = .{ 0, 30000 },
-            .dimension_nm = .{ 12000, 4000 },
+            // The compute box (grid extent + half-sep padding) reaches
+            // y=27000; this leaves a 3500nm derived gap, above dz=3000.
+            .offset_nm = .{ 0, 31000 },
             .slm = test_slm,
         },
         .constraints = .{
@@ -627,28 +647,22 @@ test "validate rejects zero trap separation" {
     try std.testing.expectError(error.InvalidSlmGrid, validate(cfg));
 }
 
-test "validate rejects an SLM grid extending outside its zone" {
-    var cfg = testCfg();
-    cfg.storage_zone.dimension_nm = .{ 4000, 4000 }; // grid is 9000nm wide
-    quiet = true;
-    defer quiet = false;
-    try std.testing.expectError(error.SlmOutsideZone, validate(cfg));
-}
-
 test "validate rejects overlapping zones" {
     var cfg = testCfg();
-    cfg.compute_zone.offset_nm = .{ 0, 2000 }; // storage spans y 0..4000
+    cfg.compute_zone.offset_nm = .{ 0, 500 }; // on top of the storage grid
     quiet = true;
     defer quiet = false;
-    try std.testing.expectError(error.ZonesOverlap, validate(cfg));
+    try std.testing.expectError(error.ZoneGapTooSmall, validate(cfg));
 }
 
 test "validate rejects zones closer than the configured gap" {
     var cfg = testCfg();
-    cfg.compute_zone.offset_nm = .{ 0, 5000 }; // 1000nm gap, dz is 3000nm
+    // Storage box ends at y=1500, the compute box starts 5000 below its
+    // origin: a 2500nm derived gap, under dz=3000.
+    cfg.compute_zone.offset_nm = .{ 0, 9000 };
     quiet = true;
     defer quiet = false;
-    try std.testing.expectError(error.ZonesOverlap, validate(cfg));
+    try std.testing.expectError(error.ZoneGapTooSmall, validate(cfg));
 }
 
 test "validate rejects broken blockade geometry" {
@@ -670,6 +684,13 @@ test "validate rejects an out-of-range fidelity" {
 test "the example config loads and validates" {
     const cfg = try load(std.testing.allocator, std.testing.io, "cfg/arch.toml");
     defer cfg.deinit(std.testing.allocator);
+
+    // gap_um anchors on trap rows: storage's last row (10 rows @ 3um ends
+    // at y=27um) + 20um gap puts the compute origin at 47um.
+    try std.testing.expectEqual(47_000, cfg.compute_zone.offset_nm[1]);
+    // Compute's bottom row (origin 47um + slm offset 2um + 9 rows @ 12um
+    // = 157um) + 20um gap puts the readout origin at 177um.
+    try std.testing.expectEqual(177_000, cfg.readout_zone.offset_nm[1]);
 }
 
 test "umToNm rounds to the nearest nanometre" {

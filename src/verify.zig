@@ -397,29 +397,14 @@ fn inverts(a0: i32, b0: i32, a1: i32, b1: i32) bool {
 const Bounds = struct { min: Point, max: Point };
 
 fn zoneBounds(cfg: arch.ArchConfig, zone: schedule.Zone) Bounds {
-    const offset, const dim = switch (zone) {
-        .storage => .{
-            cfg.storage_zone.offset_nm,
-            cfg.storage_zone.dimension_nm,
-        },
-        .compute => .{
-            cfg.compute_zone.offset_nm,
-            cfg.compute_zone.dimension_nm,
-        },
-        .readout => .{
-            cfg.readout_zone.offset_nm,
-            cfg.readout_zone.dimension_nm,
-        },
+    const box = switch (zone) {
+        .storage => cfg.storage_zone.box(),
+        .compute => cfg.compute_zone.box(),
+        .readout => cfg.readout_zone.box(),
     };
     return .{
-        .min = .{
-            .x = offset[0],
-            .y = offset[1],
-        },
-        .max = .{
-            .x = offset[0] + @as(i32, @intCast(dim[0])),
-            .y = offset[1] + @as(i32, @intCast(dim[1])),
-        },
+        .min = .{ .x = box.min[0], .y = box.min[1] },
+        .max = .{ .x = box.max[0], .y = box.max[1] },
     };
 }
 
@@ -494,10 +479,27 @@ fn checkBlockade(t: usize, cfg: arch.ArchConfig, pos: []const Point, zone: sched
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-var test_no_slms: [0]arch.Slm = .{};
+// Rydberg site pair whose padded box spans x 0..4000, y 4800..7200 with the
+// compute zone at y 5000 — covering the y=6000 positions the zone tests use.
+var test_compute_slms = [2]arch.Slm{
+    .{
+        .slm_id = 1,
+        .num_row = 1,
+        .num_col = 2,
+        .sep_nm = .{ 2000, 2000 },
+        .offset_nm = .{ 1000, 800 },
+    },
+    .{
+        .slm_id = 2,
+        .num_row = 1,
+        .num_col = 2,
+        .sep_nm = .{ 2000, 2000 },
+        .offset_nm = .{ 1000, 1200 },
+    },
+};
 
-// Minimal hand-built config: storage at y 0..2000, compute at y 5000..7000,
-// readout at y 9000..10000, blockade radius 300nm.
+// Minimal hand-built config: storage box at y -500..1500, compute box at
+// y 4800..7200, readout box at y 8500..10500, blockade radius 300nm.
 fn testCfg() arch.ArchConfig {
     const slm = arch.Slm{
         .slm_id = 0,
@@ -521,21 +523,18 @@ fn testCfg() arch.ArchConfig {
         .storage_zone = .{
             .zone_id = 0,
             .offset_nm = .{ 0, 0 },
-            .dimension_nm = .{ 4000, 2000 },
             .slm = slm,
         },
         .compute_zone = .{
             .zone_id = 1,
             .offset_nm = .{ 0, 5000 },
-            .dimension_nm = .{ 4000, 2000 },
             .dr_nm = 200,
             .dw_nm = 1000,
-            .slms = &test_no_slms,
+            .slms = &test_compute_slms,
         },
         .readout_zone = .{
             .zone_id = 2,
             .offset_nm = .{ 0, 9000 },
-            .dimension_nm = .{ 4000, 1000 },
             .slm = slm,
         },
         .constraints = .{

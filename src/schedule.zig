@@ -756,13 +756,11 @@ test "init rejects more qubits than loading-window sites" {
         .storage_zone = .{
             .zone_id = 0,
             .offset_nm = .{ 0, 0 },
-            .dimension_nm = .{ 4000, 1000 },
             .slm = slm,
         },
         .compute_zone = .{
             .zone_id = 1,
             .offset_nm = .{ 0, 5000 },
-            .dimension_nm = .{ 4000, 1000 },
             .dr_nm = 200,
             .dw_nm = 1000,
             .slms = &test_no_slms,
@@ -770,7 +768,6 @@ test "init rejects more qubits than loading-window sites" {
         .readout_zone = .{
             .zone_id = 2,
             .offset_nm = .{ 0, 9000 },
-            .dimension_nm = .{ 4000, 1000 },
             .slm = slm,
         },
         .constraints = .{
@@ -856,7 +853,6 @@ fn testShuttleCfg() arch.ArchConfig {
         .storage_zone = .{
             .zone_id = 0,
             .offset_nm = .{ 0, 0 },
-            .dimension_nm = .{ 4000, 3000 },
             .slm = .{
                 .slm_id = 0,
                 .num_row = 3,
@@ -868,7 +864,6 @@ fn testShuttleCfg() arch.ArchConfig {
         .compute_zone = .{
             .zone_id = 1,
             .offset_nm = .{ 0, 6000 },
-            .dimension_nm = .{ 12000, 4000 },
             .dr_nm = 500,
             .dw_nm = 2500,
             .slms = &test_compute_slms,
@@ -876,7 +871,6 @@ fn testShuttleCfg() arch.ArchConfig {
         .readout_zone = .{
             .zone_id = 2,
             .offset_nm = .{ 0, 12000 },
-            .dimension_nm = .{ 4000, 1000 },
             .slm = .{
                 .slm_id = 3,
                 .num_row = 1,
@@ -955,7 +949,6 @@ test "pickup traversal past an occupied site preserves site exclusivity" {
     // Widen storage to six columns: three left traversals need the room.
     var cfg = testShuttleCfg();
     cfg.storage_zone.slm.num_col = 6;
-    cfg.storage_zone.dimension_nm[0] = 6000;
 
     // Bottom row: a blocker at column 0 that is never picked up, and four
     // pickups right to left. The traversal to column 1 packs the register
@@ -998,7 +991,6 @@ test "pickup packs one register column per storage gap" {
 
     var cfg = testShuttleCfg();
     cfg.storage_zone.slm.num_col = 6;
-    cfg.storage_zone.dimension_nm[0] = 6000;
 
     // Bottom row: pickups at columns 5, 2, 0 advance leftward past
     // stored blockers at columns 1 and 3 that are never picked up.

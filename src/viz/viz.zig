@@ -196,22 +196,10 @@ pub fn run(
     var tables = try viewmodel.SlotTables.init(gpa, &pipe);
     defer tables.deinit();
 
-    // Zone rects in world-space (nm).
-    const sz = layout.storage_zone;
-    const storage_rect = viewmodel.slmZoneRect(sz.offset_nm[0], sz.offset_nm[1], sz.slm);
-
-    const ez = layout.compute_zone;
-    var compute_rect = viewmodel.slmZoneRect(ez.offset_nm[0], ez.offset_nm[1], ez.slms[0]);
-    for (ez.slms[1..]) |slm| {
-        const r = viewmodel.slmZoneRect(ez.offset_nm[0], ez.offset_nm[1], slm);
-        compute_rect.x0 = @min(compute_rect.x0, r.x0);
-        compute_rect.y0 = @min(compute_rect.y0, r.y0);
-        compute_rect.x1 = @max(compute_rect.x1, r.x1);
-        compute_rect.y1 = @max(compute_rect.y1, r.y1);
-    }
-
-    const rz = layout.readout_zone;
-    const readout_rect = viewmodel.slmZoneRect(rz.offset_nm[0], rz.offset_nm[1], rz.slm);
+    // Zone rects in world-space (nm): the grid-derived zone boxes.
+    const storage_rect = viewmodel.zoneRect(layout.storage_zone.box());
+    const compute_rect = viewmodel.zoneRect(layout.compute_zone.box());
+    const readout_rect = viewmodel.zoneRect(layout.readout_zone.box());
 
     rl.setConfigFlags(.{
         .fullscreen_mode = false,
