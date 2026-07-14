@@ -42,6 +42,9 @@ const palette = struct {
     pub const op_rydberg = rl.Color{ .r = 239, .g = 159, .b = 118, .a = 255 };
     pub const op_load = rl.Color{ .r = 147, .g = 154, .b = 183, .a = 255 };
     pub const op_store = rl.Color{ .r = 231, .g = 130, .b = 132, .a = 255 };
+    /// Faint wash behind every other stage, so stage extents read at a
+    /// glance; content draws over it.
+    pub const stage_band = rl.Color{ .r = 198, .g = 208, .b = 245, .a = 10 };
 };
 
 fn opFill(op: OpKind) rl.Color {
@@ -52,6 +55,10 @@ fn opFill(op: OpKind) rl.Color {
         .load => palette.op_load,
         .store => palette.op_store,
     };
+}
+
+fn withAlpha(c: rl.Color, a: u8) rl.Color {
+    return .{ .r = c.r, .g = c.g, .b = c.b, .a = a };
 }
 
 const ATOM_R: f32 = 300.0;
@@ -87,7 +94,12 @@ const BBox = struct {
     max_y: f32,
 
     fn fromPoints(points: []const Point) BBox {
-        if (points.len == 0) return .{ .min_x = -10, .min_y = -10, .max_x = 10, .max_y = 10 };
+        if (points.len == 0) return .{
+            .min_x = -10,
+            .min_y = -10,
+            .max_x = 10,
+            .max_y = 10,
+        };
         var b = BBox{
             .min_x = std.math.floatMax(f32),
             .min_y = std.math.floatMax(f32),
@@ -138,25 +150,36 @@ const Camera = struct {
 };
 
 const View = enum(i32) {
-    circuit = 0,
-    stages = 1,
-    schedule = 2,
-    logical = 3,
+    circuit,
+    stages,
+    logical,
+    schedule,
 
     fn next(v: View) View {
         return switch (v) {
             .circuit => .stages,
-            .stages => .schedule,
-            .schedule => .logical,
-            .logical => .circuit,
+            .stages => .logical,
+            .logical => .schedule,
+            .schedule => .circuit,
         };
     }
 };
 
 fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
-    const tl = cam.worldToScreen(.{ .x = @floatFromInt(r.x0), .y = @floatFromInt(r.y0) });
-    const br = cam.worldToScreen(.{ .x = @floatFromInt(r.x1), .y = @floatFromInt(r.y1) });
-    const rec = rl.Rectangle{ .x = tl.x, .y = tl.y, .width = br.x - tl.x, .height = br.y - tl.y };
+    const tl = cam.worldToScreen(.{
+        .x = @floatFromInt(r.x0),
+        .y = @floatFromInt(r.y0),
+    });
+    const br = cam.worldToScreen(.{
+        .x = @floatFromInt(r.x1),
+        .y = @floatFromInt(r.y1),
+    });
+    const rec = rl.Rectangle{
+        .x = tl.x,
+        .y = tl.y,
+        .width = br.x - tl.x,
+        .height = br.y - tl.y,
+    };
     rl.drawRectangleRounded(rec, 0.06, 8, fill);
     rl.drawRectangleRoundedLinesEx(rec, 0.06, 8, 1.0, palette.zone_border);
 }
@@ -183,9 +206,14 @@ fn drawSlot(cam: Camera, slot: Point, positions: []const Point, loaded: []const 
 
 /// Row/column crosshair for atoms riding the AOD. The bands span the full
 /// screen; the tab and transport bars paint over them afterwards.
-fn drawAodHighlight(cam: Camera, positions: []const Point, loaded: []const bool, frame_ops: []const OpKind) void {
-    const fill = rl.Color{ .r = palette.accent.r, .g = palette.accent.g, .b = palette.accent.b, .a = 15 };
-    const edge = rl.Color{ .r = palette.accent.r, .g = palette.accent.g, .b = palette.accent.b, .a = 55 };
+fn drawAodHighlight(
+    cam: Camera,
+    positions: []const Point,
+    loaded: []const bool,
+    frame_ops: []const OpKind,
+) void {
+    const fill = withAlpha(palette.accent, 15);
+    const edge = withAlpha(palette.accent, 55);
     const hw = ATOM_R * cam.zoom;
     const sw: f32 = @floatFromInt(rl.getScreenWidth());
     const sh: f32 = @floatFromInt(rl.getScreenHeight());
@@ -195,16 +223,34 @@ fn drawAodHighlight(cam: Camera, positions: []const Point, loaded: []const bool,
         const s = cam.worldToScreen(toVec(pos));
 
         // Horizontal row — visible while the atom is in the AOD (disappears on store).
-        rl.drawRectangleV(.{ .x = 0, .y = s.y - hw }, .{ .x = sw, .y = 2.0 * hw }, fill);
-        rl.drawLineEx(.{ .x = 0, .y = s.y }, .{ .x = sw, .y = s.y }, 1.0, edge);
+        rl.drawRectangleV(
+            .{ .x = 0, .y = s.y - hw },
+            .{ .x = sw, .y = 2.0 * hw },
+            fill,
+        );
+        rl.drawLineEx(
+            .{ .x = 0, .y = s.y },
+            .{ .x = sw, .y = s.y },
+            1.0,
+            edge,
+        );
 
         // Vertical column — only at the timestep this atom is loaded (picked up).
         const being_loaded = for (frame_ops) |op| {
             if (op == .load and op.load.qubit == @as(u32, @intCast(id))) break true;
         } else false;
         if (being_loaded) {
-            rl.drawRectangleV(.{ .x = s.x - hw, .y = 0 }, .{ .x = 2.0 * hw, .y = sh }, fill);
-            rl.drawLineEx(.{ .x = s.x, .y = 0 }, .{ .x = s.x, .y = sh }, 1.0, edge);
+            rl.drawRectangleV(
+                .{ .x = s.x - hw, .y = 0 },
+                .{ .x = 2.0 * hw, .y = sh },
+                fill,
+            );
+            rl.drawLineEx(
+                .{ .x = s.x, .y = 0 },
+                .{ .x = s.x, .y = sh },
+                1.0,
+                edge,
+            );
         }
     }
 }
@@ -215,15 +261,18 @@ fn drawPairHalo(cam: Camera, a: Point, b: Point, color: rl.Color) void {
     const sa = cam.worldToScreen(toVec(a));
     const sb = cam.worldToScreen(toVec(b));
     const base_r = ATOM_R * cam.zoom;
-    const center = rl.Vector2{ .x = (sa.x + sb.x) / 2.0, .y = (sa.y + sb.y) / 2.0 };
+    const center = rl.Vector2{
+        .x = (sa.x + sb.x) / 2.0,
+        .y = (sa.y + sb.y) / 2.0,
+    };
     const dx = sb.x - sa.x;
     const dy = sb.y - sa.y;
     const r = @sqrt(dx * dx + dy * dy) / 2.0 + base_r * 1.8;
 
-    rl.drawCircleV(center, r, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 12 });
-    rl.drawCircleLinesV(center, r, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 90 });
-    rl.drawCircleLinesV(center, r + 2.0, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 40 });
-    rl.drawCircleLinesV(center, r + 4.0, rl.Color{ .r = color.r, .g = color.g, .b = color.b, .a = 15 });
+    rl.drawCircleV(center, r, withAlpha(color, 12));
+    rl.drawCircleLinesV(center, r, withAlpha(color, 90));
+    rl.drawCircleLinesV(center, r + 2.0, withAlpha(color, 40));
+    rl.drawCircleLinesV(center, r + 4.0, withAlpha(color, 15));
 }
 
 fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, is_active: bool, is_loaded: bool, fill: rl.Color) void {
@@ -237,7 +286,17 @@ fn drawQubit(cam: Camera, font: rl.Font, pos: Point, id: usize, is_active: bool,
         rl.drawCircleV(screen, radius, fill);
         var buf: [8]u8 = undefined;
         const label = std.fmt.bufPrintSentinel(&buf, "{d}", .{id}, 0) catch "?";
-        rl.drawTextEx(font, label, .{ .x = screen.x + radius + 10, .y = screen.y - 12 }, 24, 0.5, palette.text);
+        rl.drawTextEx(
+            font,
+            label,
+            .{
+                .x = screen.x + radius + 10,
+                .y = screen.y - 12,
+            },
+            24,
+            0.5,
+            palette.text,
+        );
     }
 }
 
@@ -283,7 +342,12 @@ const CircuitView = struct {
     fn bbox(v: CircuitView) BBox {
         const w: f32 = @as(f32, @floatFromInt(@max(v.lay.n_cols, 1))) * COL_W;
         const h: f32 = @as(f32, @floatFromInt(@max(v.lay.num_qubits, 1) - 1)) * WIRE_DY;
-        return .{ .min_x = -COL_W, .min_y = -WIRE_DY, .max_x = w + COL_W, .max_y = h + WIRE_DY };
+        return .{
+            .min_x = -COL_W,
+            .min_y = -WIRE_DY,
+            .max_x = w + COL_W,
+            .max_y = h + WIRE_DY,
+        };
     }
 
     fn fit(v: *CircuitView, region: rl.Rectangle) void {
@@ -296,10 +360,40 @@ const CircuitView = struct {
         const nq = v.lay.num_qubits;
         const content_w: f32 = @as(f32, @floatFromInt(v.lay.n_cols)) * COL_W;
 
+        // Alternating stage bands under everything else.
+        if (v.show_stages) {
+            const top = cam.worldToScreen(.{ .x = 0, .y = -WIRE_DY }).y;
+            const bot = cam.worldToScreen(.{ .x = 0, .y = wireY(nq -| 1) + WIRE_DY }).y;
+            for (v.lay.stage_cols, 0..) |sc, s| {
+                if (s % 2 == 0) continue;
+                const x0 = cam.worldToScreen(.{ .x = @as(f32, @floatFromInt(sc)) * COL_W, .y = 0 }).x;
+                const end_col: f32 = if (s + 1 < v.lay.stage_cols.len)
+                    @floatFromInt(v.lay.stage_cols[s + 1])
+                else
+                    @floatFromInt(v.lay.n_cols);
+                const x1 = cam.worldToScreen(.{ .x = end_col * COL_W, .y = 0 }).x;
+                rl.drawRectangleRec(
+                    .{
+                        .x = x0,
+                        .y = top,
+                        .width = x1 - x0,
+                        .height = bot - top,
+                    },
+                    palette.stage_band,
+                );
+            }
+        }
+
         for (0..nq) |q| {
             const y = wireY(q);
-            const a = cam.worldToScreen(.{ .x = -COL_W * 0.5, .y = y });
-            const b = cam.worldToScreen(.{ .x = content_w + COL_W * 0.5, .y = y });
+            const a = cam.worldToScreen(.{
+                .x = -COL_W * 0.5,
+                .y = y,
+            });
+            const b = cam.worldToScreen(.{
+                .x = content_w + COL_W * 0.5,
+                .y = y,
+            });
             rl.drawLineEx(a, b, 1.0, palette.wire);
         }
 
@@ -338,33 +432,83 @@ const CircuitView = struct {
         v.drawStageLabels(font, region);
     }
 
-    fn drawGateBox(v: CircuitView, font: rl.Font, col: usize, q: u32, label: [:0]const u8, fill: rl.Color, box: f32, fs: f32) void {
-        const c = v.cam.worldToScreen(.{ .x = colX(col), .y = wireY(q) });
-        const rec = rl.Rectangle{ .x = c.x - box / 2, .y = c.y - box / 2, .width = box, .height = box };
+    fn drawGateBox(
+        v: CircuitView,
+        font: rl.Font,
+        col: usize,
+        q: u32,
+        label: [:0]const u8,
+        fill: rl.Color,
+        box: f32,
+        fs: f32,
+    ) void {
+        const c = v.cam.worldToScreen(.{
+            .x = colX(col),
+            .y = wireY(q),
+        });
+        const rec = rl.Rectangle{
+            .x = c.x - box / 2,
+            .y = c.y - box / 2,
+            .width = box,
+            .height = box,
+        };
         rl.drawRectangleRounded(rec, 0.2, 4, fill);
         if (box >= 14) {
             const tw = rl.measureTextEx(font, label, fs, 0).x;
-            rl.drawTextEx(font, label, .{ .x = c.x - tw / 2, .y = c.y - fs / 2 }, fs, 0, palette.bg);
+            rl.drawTextEx(
+                font,
+                label,
+                .{
+                    .x = c.x - tw / 2,
+                    .y = c.y - fs / 2,
+                },
+                fs,
+                0,
+                palette.bg,
+            );
         }
     }
 
     // Qubit labels pinned to a left gutter; at low zoom only every k-th
     // label draws, so a thousand wires don't smear into one column of text.
     fn drawGutter(v: CircuitView, font: rl.Font, region: rl.Rectangle) void {
-        rl.drawRectangleRec(.{ .x = 0, .y = region.y, .width = GUTTER_W, .height = region.height }, palette.panel_bg);
-        rl.drawLineEx(.{ .x = GUTTER_W, .y = region.y }, .{ .x = GUTTER_W, .y = region.y + region.height }, 1.0, palette.divider);
+        rl.drawRectangleRec(
+            .{
+                .x = 0,
+                .y = region.y,
+                .width = GUTTER_W,
+                .height = region.height,
+            },
+            palette.panel_bg,
+        );
+        rl.drawLineEx(
+            .{ .x = GUTTER_W, .y = region.y },
+            .{ .x = GUTTER_W, .y = region.y + region.height },
+            1.0,
+            palette.divider,
+        );
 
         const spacing = WIRE_DY * v.cam.zoom;
+
         if (spacing < 1) return;
+
         const fs = std.math.clamp(20.0 * v.cam.zoom, 10.0, 24.0);
         const step: usize = if (spacing >= fs + 2) 1 else @intFromFloat(@ceil((fs + 2) / spacing));
+
         var q: usize = 0;
         while (q < v.lay.num_qubits) : (q += step) {
             const sy = v.cam.worldToScreen(.{ .x = 0, .y = wireY(q) }).y;
             if (sy < region.y + fs / 2 or sy > region.y + region.height) continue;
             var buf: [12]u8 = undefined;
             const label = std.fmt.bufPrintSentinel(&buf, "q{d}", .{q}, 0) catch "?";
-            rl.drawTextEx(font, label, .{ .x = 10, .y = sy - fs / 2 }, fs, 0.5, palette.text_sub);
+            rl.drawTextEx(
+                font,
+                label,
+                .{ .x = 10, .y = sy - fs / 2 },
+                fs,
+                0.5,
+                palette.text_sub,
+            );
         }
     }
 
@@ -372,11 +516,21 @@ const CircuitView = struct {
     fn drawStageLabels(v: CircuitView, font: rl.Font, region: rl.Rectangle) void {
         if (!v.show_stages) return;
         for (v.lay.stage_cols, 0..) |sc, s| {
-            const sx = v.cam.worldToScreen(.{ .x = @as(f32, @floatFromInt(sc)) * COL_W, .y = 0 }).x;
+            const sx = v.cam.worldToScreen(.{
+                .x = @as(f32, @floatFromInt(sc)) * COL_W,
+                .y = 0,
+            }).x;
             if (sx < GUTTER_W or sx > region.x + region.width) continue;
             var buf: [16]u8 = undefined;
             const label = std.fmt.bufPrintSentinel(&buf, "S{d}", .{s}, 0) catch "?";
-            rl.drawTextEx(font, label, .{ .x = sx + 4, .y = region.y + 6 }, 18, 0.5, palette.text_sub);
+            rl.drawTextEx(
+                font,
+                label,
+                .{ .x = sx + 4, .y = region.y + 6 },
+                18,
+                0.5,
+                palette.accent,
+            );
         }
     }
 };
@@ -389,6 +543,8 @@ const CircuitView = struct {
 const ScheduleView = struct {
     s: *const schedule.Hardware,
     vm: *const viewmodel.ViewModel,
+    specs: SpecSheet,
+    specs_w: f32,
     storage_rect: ZoneRect,
     compute_rect: ZoneRect,
     readout_rect: ZoneRect,
@@ -398,6 +554,7 @@ const ScheduleView = struct {
     draw_positions: []Point,
     last_frame: usize,
     db_nm: u32,
+    show_specs: bool = true,
 
     frame: usize = 0,
     playing: bool = false,
@@ -413,16 +570,22 @@ const ScheduleView = struct {
         return v.s.placement.len == 0 or v.s.frames.items.len == 0;
     }
 
+    /// Jump to a frame and stop playback.
+    fn seek(v: *ScheduleView, frame: usize) void {
+        v.frame = @min(frame, v.last_frame);
+        v.playing = false;
+        v.clock = 0;
+    }
+
+    fn fit(v: *ScheduleView, region: rl.Rectangle) void {
+        v.cam.fitToRegion(BBox.fromPoints(v.sites), region);
+        v.touched = false;
+    }
+
     fn input(v: *ScheduleView) void {
         if (v.empty()) return;
-        if (rl.isKeyPressed(.k) or rl.isKeyPressedRepeat(.k)) {
-            v.playing = false;
-            v.frame = @min(v.frame + 1, v.last_frame);
-        }
-        if (rl.isKeyPressed(.j) or rl.isKeyPressedRepeat(.j)) {
-            v.playing = false;
-            if (v.frame > 0) v.frame -= 1;
-        }
+        if (rl.isKeyPressed(.k) or rl.isKeyPressedRepeat(.k)) v.seek(v.frame + 1);
+        if (rl.isKeyPressed(.j) or rl.isKeyPressedRepeat(.j)) v.seek(v.frame -| 1);
         if (rl.isKeyPressed(.space)) {
             v.playing = !v.playing;
             v.clock = 0;
@@ -450,7 +613,14 @@ const ScheduleView = struct {
             drawZone(v.cam, v.compute_rect, palette.zone_compute);
             drawZone(v.cam, v.readout_rect, palette.zone_readout);
             for (v.sites) |slot| drawSlot(v.cam, slot, &.{}, &.{}, v.idle);
-            rl.drawTextEx(font, "empty schedule", .{ .x = PAD, .y = TAB_H + PAD }, 20, 1, palette.text_sub);
+            rl.drawTextEx(
+                font,
+                "empty schedule",
+                .{ .x = PAD, .y = TAB_H + PAD },
+                20,
+                1,
+                palette.text_sub,
+            );
             return;
         }
 
@@ -523,7 +693,7 @@ const ScheduleView = struct {
                 v.cam.worldToScreen(toVec(m.src)),
                 v.cam.worldToScreen(toVec(v.draw_positions[m.qubit])),
                 2.0,
-                rl.Color{ .r = accent.r, .g = accent.g, .b = accent.b, .a = 140 },
+                withAlpha(accent, 140),
             );
         }
 
@@ -550,38 +720,55 @@ const ScheduleView = struct {
 
     fn drawBar(v: *ScheduleView, font: rl.Font, sw: f32, sh: f32) void {
         const bar_y = sh - BAR_H;
-        rl.drawRectangleRec(.{ .x = 0, .y = bar_y, .width = sw, .height = BAR_H }, palette.panel_bg);
-        rl.drawLineEx(.{ .x = 0, .y = bar_y }, .{ .x = sw, .y = bar_y }, 1.0, palette.divider);
+        rl.drawRectangleRec(
+            .{
+                .x = 0,
+                .y = bar_y,
+                .width = sw,
+                .height = BAR_H,
+            },
+            palette.panel_bg,
+        );
+        rl.drawLineEx(
+            .{ .x = 0, .y = bar_y },
+            .{ .x = sw, .y = bar_y },
+            1.0,
+            palette.divider,
+        );
 
         const row1_y = bar_y + PAD;
+
         var x: f32 = PAD;
-        if (rg.button(.{ .x = x, .y = row1_y, .width = BTN_W, .height = BTN_H }, "|<")) {
-            v.frame = 0;
-            v.playing = false;
-            v.clock = 0;
-        }
+        if (rg.button(.{
+            .x = x,
+            .y = row1_y,
+            .width = BTN_W,
+            .height = BTN_H,
+        }, "|<")) v.seek(0);
         x += BTN_W + 6;
-        if (rg.button(.{ .x = x, .y = row1_y, .width = BTN_W, .height = BTN_H }, "<")) {
-            v.playing = false;
-            if (v.frame > 0) v.frame -= 1;
-        }
+
+        if (rg.button(.{ .x = x, .y = row1_y, .width = BTN_W, .height = BTN_H }, "<")) v.seek(v.frame -| 1);
         x += BTN_W + 6;
+
         if (rg.button(.{ .x = x, .y = row1_y, .width = 2 * BTN_W, .height = BTN_H }, if (v.playing) "pause" else "play")) {
             v.playing = !v.playing;
             v.clock = 0;
         }
         x += 2 * BTN_W + 6;
-        if (rg.button(.{ .x = x, .y = row1_y, .width = BTN_W, .height = BTN_H }, ">")) {
-            v.playing = false;
-            v.frame = @min(v.frame + 1, v.last_frame);
-        }
+
+        if (rg.button(.{ .x = x, .y = row1_y, .width = BTN_W, .height = BTN_H }, ">")) v.seek(v.frame + 1);
         x += BTN_W + PAD;
 
         // Scrub slider over the whole schedule.
         const slider_w = @max(60, sw - x - FRAME_BOX_W - 2 * PAD);
         var frame_f: f32 = @floatFromInt(v.frame);
         _ = rg.sliderBar(
-            .{ .x = x, .y = row1_y, .width = slider_w, .height = BTN_H },
+            .{
+                .x = x,
+                .y = row1_y,
+                .width = slider_w,
+                .height = BTN_H,
+            },
             null,
             null,
             &frame_f,
@@ -589,17 +776,18 @@ const ScheduleView = struct {
             @floatFromInt(@max(v.last_frame, 1)),
         );
         const scrubbed: usize = @intFromFloat(@round(@max(0, frame_f)));
-        if (scrubbed != v.frame) {
-            v.frame = @min(scrubbed, v.last_frame);
-            v.playing = false;
-            v.clock = 0;
-        }
+        if (scrubbed != v.frame) v.seek(scrubbed);
 
         // Exact-frame entry: click, type the frame number, enter jumps
         // there. 0-based, so verify's "frame N" pastes in verbatim.
         if (!v.editing) v.frame_box = @intCast(v.frame);
         if (rg.valueBox(
-            .{ .x = x + slider_w + PAD, .y = row1_y, .width = FRAME_BOX_W, .height = BTN_H },
+            .{
+                .x = x + slider_w + PAD,
+                .y = row1_y,
+                .width = FRAME_BOX_W,
+                .height = BTN_H,
+            },
             "",
             &v.frame_box,
             0,
@@ -607,11 +795,8 @@ const ScheduleView = struct {
             v.editing,
         ) != 0) {
             v.editing = !v.editing;
-            if (!v.editing) { // committed with enter or a click away
-                v.frame = @min(@as(usize, @intCast(@max(0, v.frame_box))), v.last_frame);
-                v.playing = false;
-                v.clock = 0;
-            }
+            // Committed with enter or a click away.
+            if (!v.editing) v.seek(@intCast(@max(0, v.frame_box)));
         }
 
         // Row 2: playback speed + status line.
@@ -620,14 +805,26 @@ const ScheduleView = struct {
         const spd_txt = std.fmt.bufPrintSentinel(&spd_buf, "{d:.1}/s", .{v.speed}, 0) catch "?";
         rl.drawTextEx(font, "speed", .{ .x = PAD, .y = row2_y + 2 }, 20, 1, palette.text_sub);
         _ = rg.sliderBar(
-            .{ .x = PAD + 70, .y = row2_y, .width = 160, .height = ROW2_H },
+            .{
+                .x = PAD + 70,
+                .y = row2_y,
+                .width = 160,
+                .height = ROW2_H,
+            },
             null,
             null,
             &v.speed,
             0.5,
             60,
         );
-        rl.drawTextEx(font, spd_txt, .{ .x = PAD + 240, .y = row2_y + 2 }, 20, 1, palette.text_sub);
+        rl.drawTextEx(
+            font,
+            spd_txt,
+            .{ .x = PAD + 240, .y = row2_y + 2 },
+            20,
+            1,
+            palette.text_sub,
+        );
 
         const frame_ops = v.s.frames.items[v.frame].items;
         const primary_op: OpKind = frame_ops[0];
@@ -637,21 +834,182 @@ const ScheduleView = struct {
             .measure => |m| @tagName(m.zone),
             else => "-",
         };
+
         var status_buf: [160]u8 = undefined;
         const op_txt = std.fmt.bufPrintSentinel(&status_buf, "{s} @ {s}", .{ @tagName(primary_op), zone_txt }, 0) catch "?";
         const op_w = rl.measureTextEx(font, op_txt, 20, 1).x;
+
         var counts_buf: [160]u8 = undefined;
         const counts_txt = std.fmt.bufPrintSentinel(
             &counts_buf,
             "  |  frame {d} / {d}  |  move {d}  raman {d}  rydberg {d}  measure {d}",
-            .{ v.frame, v.last_frame, v.vm.summary.move, v.vm.summary.raman, v.vm.summary.rydberg, v.vm.summary.measure },
+            .{
+                v.frame,
+                v.last_frame,
+                v.vm.summary.move,
+                v.vm.summary.raman,
+                v.vm.summary.rydberg,
+                v.vm.summary.measure,
+            },
             0,
         ) catch "?";
+
         const status_x = PAD + 330;
-        rl.drawTextEx(font, op_txt, .{ .x = status_x, .y = row2_y + 2 }, 20, 1, accent);
-        rl.drawTextEx(font, counts_txt, .{ .x = status_x + op_w, .y = row2_y + 2 }, 20, 1, palette.text_sub);
+
+        rl.drawTextEx(
+            font,
+            op_txt,
+            .{ .x = status_x, .y = row2_y + 2 },
+            20,
+            1,
+            accent,
+        );
+
+        rl.drawTextEx(
+            font,
+            counts_txt,
+            .{ .x = status_x + op_w, .y = row2_y + 2 },
+            20,
+            1,
+            palette.text_sub,
+        );
+    }
+
+    /// Architecture spec sheet, toggled with `h`: the geometry and
+    /// constraint numbers behind the picture, pinned top-left. The panel
+    /// is sized from the measured text (specs_w), and the schedule's fit
+    /// region starts past it, so neither the text nor the grid ever sits
+    /// under it.
+    fn drawSpecs(v: ScheduleView, font: rl.Font) void {
+        const row_h: f32 = 24;
+        const h = @as(f32, spec_keys.len) * row_h + 2 * PAD + row_h + 8;
+
+        const rec = rl.Rectangle{
+            .x = PAD,
+            .y = TAB_H + PAD,
+            .width = v.specs_w,
+            .height = h,
+        };
+
+        rl.drawRectangleRounded(
+            rec,
+            0.06,
+            6,
+            withAlpha(palette.panel_bg, 235),
+        );
+
+        rl.drawRectangleRoundedLinesEx(
+            rec,
+            0.06,
+            6,
+            1.0,
+            palette.divider,
+        );
+
+        var y = TAB_H + 2 * PAD;
+        rl.drawTextEx(
+            font,
+            v.specs.title,
+            .{ .x = 2 * PAD, .y = y },
+            20,
+            0.5,
+            palette.accent,
+        );
+        y += row_h + 8;
+
+        for (spec_keys, v.specs.vals) |key, val| {
+            rl.drawTextEx(
+                font,
+                key,
+                .{ .x = 2 * PAD, .y = y },
+                18,
+                0.5,
+                palette.text_sub,
+            );
+
+            rl.drawTextEx(
+                font,
+                val,
+                .{ .x = PAD + SPEC_VAL_X, .y = y },
+                18,
+                0.5,
+                palette.text,
+            );
+
+            y += row_h;
+        }
     }
 };
+
+// ── Arch spec sheet ──────────────────────────────────────────────────────────
+
+const SPEC_VAL_X: f32 = 180; // value column offset from the panel's left edge
+
+const spec_keys = [_][:0]const u8{
+    "aod grid",
+    "aod sep",
+    "storage slm",
+    "compute slm",
+    "compute dr/dw",
+    "readout slm",
+    "blockade db",
+    "zone gap dz",
+};
+
+/// The spec sheet's text, formatted once at startup (the arch config never
+/// changes mid-run) so the panel can be sized to the measured strings.
+const SpecSheet = struct {
+    title: [:0]const u8,
+    vals: [spec_keys.len][:0]const u8,
+
+    fn build(arena: std.mem.Allocator, cfg: arch_mod.ArchConfig) !SpecSheet {
+        const aod = cfg.aod;
+        const st = cfg.storage_zone.slm;
+        const cz = cfg.compute_zone;
+        const c0 = cz.slms[0];
+        const ro = cfg.readout_zone.slm;
+        const con = cfg.constraints;
+
+        const p = std.fmt.allocPrintSentinel;
+        return .{
+            .title = try p(arena, "{s}  v{s}", .{ cfg.platform.name, cfg.platform.version }, 0),
+            .vals = .{
+                try p(arena, "{d} x {d} max", .{ aod.max_num_row, aod.max_num_col }, 0),
+                try p(arena, ">= {d:.1} um", .{um(aod.min_sep_nm)}, 0),
+                try p(arena, "{d} x {d}  @ {d:.1} x {d:.1} um", .{
+                    st.num_row,
+                    st.num_col,
+                    um(st.sep_nm[0]),
+                    um(st.sep_nm[1]),
+                }, 0),
+                try p(arena, "{d} x ({d} x {d})  @ {d:.1} x {d:.1} um", .{
+                    cz.slms.len,
+                    c0.num_row,
+                    c0.num_col,
+                    um(c0.sep_nm[0]),
+                    um(c0.sep_nm[1]),
+                }, 0),
+                try p(arena, "{d:.1} / {d:.1} um", .{ um(cz.dr_nm), um(cz.dw_nm) }, 0),
+                try p(arena, "{d} x {d}", .{ ro.num_row, ro.num_col }, 0),
+                try p(arena, "{d:.1} um", .{um(con.db_nm)}, 0),
+                try p(arena, "{d:.1} um", .{um(con.dz_nm)}, 0),
+            },
+        };
+    }
+
+    /// Panel width covering the widest line, plus padding.
+    fn width(s: SpecSheet, font: rl.Font) f32 {
+        var w = PAD + rl.measureTextEx(font, s.title, 20, 0.5).x;
+        for (s.vals) |v| {
+            w = @max(w, SPEC_VAL_X + rl.measureTextEx(font, v, 18, 0.5).x);
+        }
+        return w + PAD;
+    }
+};
+
+fn um(nm: u32) f64 {
+    return @as(f64, @floatFromInt(nm)) / 1000.0;
+}
 
 // ── Logical view ─────────────────────────────────────────────────────────────
 
@@ -673,9 +1031,9 @@ const LogicalView = struct {
     cam: Camera = .{},
     touched: bool = false,
 
-    const slm_fill = rl.Color{ .r = palette.op_load.r, .g = palette.op_load.g, .b = palette.op_load.b, .a = 70 };
-    const ride_fill = rl.Color{ .r = palette.accent.r, .g = palette.accent.g, .b = palette.accent.b, .a = 45 };
-    const fire_fill = rl.Color{ .r = palette.op_rydberg.r, .g = palette.op_rydberg.g, .b = palette.op_rydberg.b, .a = 120 };
+    const slm_fill = withAlpha(palette.op_load, 70);
+    const ride_fill = withAlpha(palette.accent, 45);
+    const fire_fill = withAlpha(palette.op_rydberg, 120);
 
     fn empty(v: LogicalView) bool {
         return v.tables.rounds.len == 0;
@@ -686,7 +1044,12 @@ const LogicalView = struct {
     }
 
     fn bbox(v: LogicalView) BBox {
-        if (v.empty()) return .{ .min_x = -10, .min_y = -10, .max_x = 10, .max_y = 10 };
+        if (v.empty()) return .{
+            .min_x = -10,
+            .min_y = -10,
+            .max_x = 10,
+            .max_y = 10,
+        };
         var w: f32 = 1;
         var y: f32 = 0;
         for (v.tables.rounds) |round| {
@@ -740,7 +1103,7 @@ const LogicalView = struct {
             .{ round.stage, round.ri, round.n_in_stage - 1 },
             0,
         ) catch "?";
-        rl.drawTextEx(font, txt, .{ .x = s.x, .y = s.y }, fs, 0.5, palette.text);
+        rl.drawTextEx(font, txt, .{ .x = s.x, .y = s.y }, fs, 0.5, palette.accent);
     }
 
     fn drawRound(v: LogicalView, font: rl.Font, round: viewmodel.SlotTables.Round, ty: f32, mw: ?rl.Vector2) void {
@@ -755,7 +1118,7 @@ const LogicalView = struct {
         // The hovered row and column, banded under the cells so their
         // fills stay on top; together they crosshair the hovered cell.
         const table_h = @as(f32, @floatFromInt(n_rows)) * CELL_H;
-        const band = rl.Color{ .r = palette.accent.r, .g = palette.accent.g, .b = palette.accent.b, .a = 28 };
+        const band = withAlpha(palette.accent, 28);
         var hover_row: ?usize = null;
         var hover_col: ?usize = null;
         if (mw) |m| {
@@ -859,6 +1222,48 @@ fn legendChip(font: rl.Font, x: f32, region_y: f32, fill: rl.Color, txt: [:0]con
     return x + 18 + rl.measureTextEx(font, txt, 18, 0.5).x + PAD;
 }
 
+// ── Shortcut help ────────────────────────────────────────────────────────────
+
+const shortcuts = [_]struct { key: [:0]const u8, desc: [:0]const u8 }{
+    .{ .key = "1-4", .desc = "switch view" },
+    .{ .key = "tab", .desc = "next view" },
+    .{ .key = "r", .desc = "refit view (schedule: also rewind)" },
+    .{ .key = "wheel", .desc = "zoom at the cursor" },
+    .{ .key = "drag", .desc = "pan (schedule: right/middle button only)" },
+    .{ .key = "space", .desc = "schedule: play / pause" },
+    .{ .key = "j / k", .desc = "schedule: step a frame back / forward" },
+    .{ .key = "h", .desc = "schedule: toggle the arch specs" },
+    .{ .key = "esc", .desc = "close edit or help, else quit" },
+    .{ .key = "?", .desc = "toggle this help" },
+};
+
+/// Centered overlay listing every key binding, toggled with `?`.
+fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
+    const row_h: f32 = 26;
+    const key_w: f32 = 110;
+    var desc_w: f32 = 0;
+    for (shortcuts) |sc| desc_w = @max(desc_w, rl.measureTextEx(font, sc.desc, 18, 0.5).x);
+    const w = key_w + desc_w + 3 * PAD;
+    const h = @as(f32, shortcuts.len) * row_h + row_h + 3 * PAD;
+
+    // Dim the world so the panel owns the eye.
+    rl.drawRectangleRec(.{ .x = 0, .y = 0, .width = sw, .height = sh }, rl.Color{ .r = 0, .g = 0, .b = 0, .a = 120 });
+
+    const rec = rl.Rectangle{ .x = (sw - w) / 2, .y = (sh - h) / 2, .width = w, .height = h };
+    rl.drawRectangleRounded(rec, 0.04, 6, palette.panel_bg);
+    rl.drawRectangleRoundedLinesEx(rec, 0.04, 6, 1.0, palette.divider);
+
+    var y = rec.y + PAD;
+    rl.drawTextEx(font, "shortcuts", .{ .x = rec.x + PAD, .y = y }, 20, 0.5, palette.accent);
+    y += row_h + PAD;
+    for (shortcuts) |sc| {
+        const kw = rl.measureTextEx(font, sc.key, 18, 0.5).x;
+        rl.drawTextEx(font, sc.key, .{ .x = rec.x + key_w - kw, .y = y }, 18, 0.5, palette.accent);
+        rl.drawTextEx(font, sc.desc, .{ .x = rec.x + key_w + PAD, .y = y }, 18, 0.5, palette.text);
+        y += row_h;
+    }
+}
+
 // ── Tab bar + entry point ────────────────────────────────────────────────────
 
 fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
@@ -868,12 +1273,12 @@ fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
     var idx: i32 = @intFromEnum(view.*);
     _ = rg.toggleGroup(
         .{ .x = PAD, .y = (TAB_H - BTN_H) / 2, .width = TAB_W, .height = BTN_H },
-        "circuit;stages;schedule;logical",
+        "circuit;stages;logical;schedule",
         &idx,
     );
     view.* = @enumFromInt(std.math.clamp(idx, 0, 3));
 
-    const hint = "1-4 view   wheel zoom   drag pan   r fit";
+    const hint = "1-4 view   r fit   ? shortcuts";
     const tw = rl.measureTextEx(font, hint, 16, 0.5).x;
     rl.drawTextEx(font, hint, .{ .x = sw - tw - PAD, .y = (TAB_H - 16) / 2 }, 16, 0.5, palette.text_sub);
 }
@@ -940,7 +1345,6 @@ pub fn run(
 
     const sites = try viewmodel.allSlmSites(gpa, layout);
     defer gpa.free(sites);
-    const sched_bbox = BBox.fromPoints(sites);
 
     var idle_buf: std.ArrayList(Point) = .empty;
     defer idle_buf.deinit(gpa);
@@ -959,9 +1363,15 @@ pub fn run(
     var flat = CircuitView{ .lay = flat_lay, .show_stages = false };
     var staged = CircuitView{ .lay = staged_lay, .show_stages = true };
     var logical = LogicalView{ .tables = &tables };
+
+    var spec_arena = std.heap.ArenaAllocator.init(gpa);
+    defer spec_arena.deinit();
+    const specs = try SpecSheet.build(spec_arena.allocator(), layout);
     var sched = ScheduleView{
         .s = &s,
         .vm = &vm,
+        .specs = specs,
+        .specs_w = specs.width(font),
         .storage_rect = storage_rect,
         .compute_rect = compute_rect,
         .readout_rect = readout_rect,
@@ -974,6 +1384,7 @@ pub fn run(
     };
 
     var view: View = .circuit;
+    var show_help = false;
     var panning = false;
     var last_mouse: rl.Vector2 = undefined;
     // The initial fit happens inside the loop, once the window reports its
@@ -988,7 +1399,10 @@ pub fn run(
         // Screen regions: the tab bar owns the top; the schedule's
         // transport bar owns the bottom; each view's world fills the rest.
         const circuit_region = rl.Rectangle{ .x = GUTTER_W, .y = TAB_H, .width = @max(1, sw - GUTTER_W), .height = @max(1, sh - TAB_H) };
-        const sched_region = rl.Rectangle{ .x = 0, .y = TAB_H, .width = sw, .height = @max(1, sh - TAB_H - BAR_H) };
+        // The spec panel owns the schedule's left edge while shown, so
+        // fits (initial, resize, `r`) never put the grid under it.
+        const specs_pad: f32 = if (sched.show_specs) sched.specs_w + 2 * PAD else 0;
+        const sched_region = rl.Rectangle{ .x = specs_pad, .y = TAB_H, .width = @max(1, sw - specs_pad), .height = @max(1, sh - TAB_H - BAR_H) };
         const logical_region = rl.Rectangle{ .x = 0, .y = TAB_H, .width = sw, .height = @max(1, sh - TAB_H) };
         const region = switch (view) {
             .circuit, .stages => circuit_region,
@@ -999,7 +1413,7 @@ pub fn run(
         if (!fitted or rl.isWindowResized()) {
             if (!flat.touched) flat.fit(circuit_region);
             if (!staged.touched) staged.fit(circuit_region);
-            if (!sched.touched) sched.cam.fitToRegion(sched_bbox, sched_region);
+            if (!sched.touched) sched.fit(sched_region);
             if (!logical.touched) logical.fit(logical_region);
             fitted = true;
         }
@@ -1008,27 +1422,38 @@ pub fn run(
         if (!sched.editing) {
             if (rl.isKeyPressed(.one)) view = .circuit;
             if (rl.isKeyPressed(.two)) view = .stages;
-            if (rl.isKeyPressed(.three)) view = .schedule;
-            if (rl.isKeyPressed(.four)) view = .logical;
+            if (rl.isKeyPressed(.three)) view = .logical;
+            if (rl.isKeyPressed(.four)) view = .schedule;
             if (rl.isKeyPressed(.tab)) view = view.next();
+            if (rl.isKeyPressed(.slash)) show_help = !show_help;
 
             if (rl.isKeyPressed(.r)) switch (view) {
                 .circuit => flat.fit(circuit_region),
                 .stages => staged.fit(circuit_region),
                 .schedule => {
-                    sched.cam.fitToRegion(sched_bbox, sched_region);
-                    sched.touched = false;
-                    sched.frame = 0;
-                    sched.playing = false;
-                    sched.clock = 0;
+                    sched.fit(sched_region);
+                    sched.seek(0);
                 },
                 .logical => logical.fit(logical_region),
             };
 
-            if (view == .schedule) sched.input();
+            if (view == .schedule) {
+                sched.input();
+                // Toggling the panel resizes the world's region; the fit
+                // block picks up the new region next frame (untouched
+                // cameras only, as on a window resize).
+                if (rl.isKeyPressed(.h)) {
+                    sched.show_specs = !sched.show_specs;
+                    fitted = false;
+                }
+            }
         }
         if (rl.isKeyPressed(.escape)) {
-            if (sched.editing) sched.editing = false else break;
+            if (sched.editing) {
+                sched.editing = false;
+            } else if (show_help) {
+                show_help = false;
+            } else break;
         }
 
         const cam: *Camera, const touched: *bool = switch (view) {
@@ -1082,11 +1507,13 @@ pub fn run(
             .schedule => {
                 sched.drawWorld(font);
                 if (!sched.empty()) sched.drawBar(font, sw, sh);
+                if (sched.show_specs) sched.drawSpecs(font);
             },
             .logical => logical.draw(font, logical_region),
         }
 
         drawTabs(font, &view, sw);
+        if (show_help) drawHelp(font, sw, sh);
         // A click on another tab leaves the frame box mid-edit; drop the
         // edit so 1/2/3 and j/k aren't dead on return.
         if (view != .schedule) sched.editing = false;
