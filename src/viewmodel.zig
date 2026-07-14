@@ -43,17 +43,11 @@ fn appendSlmSites(
     };
 }
 
-/// One zone's SLM grid extent in world nm, padded by half a trap separation.
+/// One zone's extent in world nm as the drawing rect type.
 pub const ZoneRect = struct { x0: i32, y0: i32, x1: i32, y1: i32 };
 
-pub fn slmZoneRect(zone_ox: i32, zone_oy: i32, slm: arch.Slm) ZoneRect {
-    const pad_x: i32 = @intCast(slm.sep_nm[0] / 2);
-    const pad_y: i32 = @intCast(slm.sep_nm[1] / 2);
-    const x0 = zone_ox + slm.offset_nm[0] - pad_x;
-    const y0 = zone_oy + slm.offset_nm[1] - pad_y;
-    const x1 = x0 + @as(i32, @intCast((slm.num_col - 1) * slm.sep_nm[0])) + 2 * pad_x;
-    const y1 = y0 + @as(i32, @intCast((slm.num_row - 1) * slm.sep_nm[1])) + 2 * pad_y;
-    return .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1 };
+pub fn zoneRect(b: arch.ZoneBox) ZoneRect {
+    return .{ .x0 = b.min[0], .y0 = b.min[1], .x1 = b.max[0], .y1 = b.max[1] };
 }
 
 // ── Dimension annotations ────────────────────────────────────────────────────
@@ -434,13 +428,11 @@ fn testHw(gpa: std.mem.Allocator, initial: []const Point) !schedule.Hardware {
             .storage_zone = .{
                 .zone_id = 0,
                 .offset_nm = .{ 0, 0 },
-                .dimension_nm = .{ 4000, 1000 },
                 .slm = slm,
             },
             .compute_zone = .{
                 .zone_id = 1,
                 .offset_nm = .{ 0, 5000 },
-                .dimension_nm = .{ 4000, 1000 },
                 .dr_nm = 200,
                 .dw_nm = 1000,
                 .slms = &test_no_slms,
@@ -448,7 +440,6 @@ fn testHw(gpa: std.mem.Allocator, initial: []const Point) !schedule.Hardware {
             .readout_zone = .{
                 .zone_id = 2,
                 .offset_nm = .{ 0, 9000 },
-                .dimension_nm = .{ 4000, 1000 },
                 .slm = slm,
             },
             .constraints = .{
@@ -723,8 +714,8 @@ test "buildDimensions anchors seps, dr, and zone gaps to the example config" {
         "10.0 um", "12.0 um", // compute site seps
         "4.0 um",    "4.0 um", // readout trap seps
         "dr 2.0 um",
-        "gap 23.0 um", // storage bottom row (y=27) -> compute top row (y=50)
-        "gap 20.0 um", // compute bottom row (y=160) -> readout top row (y=180)
+        "gap 20.0 um", // storage bottom row (y=27) -> compute top row (y=47)
+        "gap 20.0 um", // compute bottom row (y=157) -> readout top row (y=177)
     };
     try std.testing.expectEqual(labels.len, dims.len);
     for (dims, labels) |d, want| {

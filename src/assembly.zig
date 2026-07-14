@@ -252,7 +252,6 @@ fn testCfg() arch.ArchConfig {
         .storage_zone = .{
             .zone_id = 0,
             .offset_nm = .{ 0, 0 },
-            .dimension_nm = .{ 4000, 3000 },
             .slm = .{
                 .slm_id = 0,
                 .num_row = 3,
@@ -264,7 +263,6 @@ fn testCfg() arch.ArchConfig {
         .compute_zone = .{
             .zone_id = 1,
             .offset_nm = .{ 0, 6000 },
-            .dimension_nm = .{ 4000, 3000 },
             .dr_nm = 500,
             .dw_nm = 2500,
             .slms = &test_no_slms,
@@ -272,7 +270,6 @@ fn testCfg() arch.ArchConfig {
         .readout_zone = .{
             .zone_id = 2,
             .offset_nm = .{ 0, 12000 },
-            .dimension_nm = .{ 4000, 1000 },
             .slm = .{
                 .slm_id = 3,
                 .num_row = 1,
