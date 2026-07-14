@@ -33,6 +33,8 @@ pub const palette = struct {
     /// Faint wash behind every other stage, so stage extents read at a
     /// glance; content draws over it.
     pub const stage_band = rl.Color{ .r = 198, .g = 208, .b = 245, .a = 10 };
+    /// Dimension annotations: spacing arrows and their labels.
+    pub const dimension = rl.Color{ .r = 229, .g = 200, .b = 144, .a = 255 };
 };
 
 pub fn withAlpha(c: rl.Color, a: u8) rl.Color {

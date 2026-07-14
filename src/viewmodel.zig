@@ -56,6 +56,117 @@ pub fn slmZoneRect(zone_ox: i32, zone_oy: i32, slm: arch.Slm) ZoneRect {
     return .{ .x0 = x0, .y0 = y0, .x1 = x1, .y1 = y1 };
 }
 
+// ── Dimension annotations ────────────────────────────────────────────────────
+
+/// One CAD-style dimension for the schedule view: a double-headed arrow
+/// between two feature anchors, pushed sideways into a clear lane outside
+/// the traps, labeled with the physical distance it spans.
+pub const Dimension = struct {
+    a: Point,
+    b: Point,
+    /// World offset from the anchors to the arrow itself; extension lines
+    /// bridge each anchor to its offset end.
+    lane_nm: Point,
+    label: [:0]const u8,
+};
+
+/// The spacing numbers behind the layout, anchored to the trap sites they
+/// measure: per-zone trap separations, the Rydberg pair distance dr, and
+/// the trap-row-to-trap-row flight gap between neighbouring zones. Labels
+/// live in `arena`.
+pub fn buildDimensions(arena: std.mem.Allocator, layout: arch.ArchConfig) ![]Dimension {
+    var dims: std.ArrayList(Dimension) = .empty;
+
+    const sg = layout.storage_zone.grid();
+    const cg = layout.compute_zone.grid(0);
+    const cg1 = layout.compute_zone.grid(1);
+    const rg = layout.readout_zone.grid();
+
+    try appendSeps(arena, &dims, sg, 0);
+    // Rows 1..2, so the sep-y arrow stays clear of the dr arrow spanning
+    // the paired grids at row 0.
+    try appendSeps(arena, &dims, cg, 1);
+    try appendSeps(arena, &dims, rg, 0);
+
+    // Rydberg pair distance: the slm 0 and slm 1 traps at the same index.
+    try appendDim(arena, &dims, "dr", .{
+        .x = cg.x(0),
+        .y = cg.y(0),
+    }, .{
+        .x = cg1.x(0),
+        .y = cg1.y(0),
+    }, .{ .x = -cg.sep_nm[0], .y = 0 });
+
+    // Gaps between neighbouring zones: the flight distance between the
+    // facing trap rows, not the configured zone boxes.
+    try appendDim(arena, &dims, "gap", .{
+        .x = sg.x(0),
+        .y = sg.bottomRowY(),
+    }, .{
+        .x = cg.x(0),
+        .y = cg.y(0),
+    }, .{ .x = -sg.sep_nm[0], .y = 0 });
+
+    const cbottom = if (cg1.bottomRowY() > cg.bottomRowY()) cg1 else cg;
+    try appendDim(arena, &dims, "gap", .{
+        .x = cbottom.x(0),
+        .y = cbottom.bottomRowY(),
+    }, .{
+        .x = rg.x(0),
+        .y = rg.y(0),
+    }, .{ .x = -cg.sep_nm[0], .y = 0 });
+
+    return dims.toOwnedSlice(arena);
+}
+
+/// The two trap separations of one SLM grid: sep-x between the first two
+/// columns of the top row (arrow above the grid), sep-y between rows
+/// `row`..`row + 1` of the first column (arrow left of the grid).
+fn appendSeps(
+    arena: std.mem.Allocator,
+    dims: *std.ArrayList(Dimension),
+    g: arch.Grid,
+    row: usize,
+) !void {
+    if (g.num_col >= 2) {
+        try appendDim(arena, dims, "", .{
+            .x = g.x(0),
+            .y = g.y(0),
+        }, .{
+            .x = g.x(1),
+            .y = g.y(0),
+        }, .{ .x = 0, .y = -g.sep_nm[1] });
+    }
+    if (g.num_row >= 2) {
+        const r = if (row + 1 < g.num_row) row else 0;
+        try appendDim(arena, dims, "", .{
+            .x = g.x(0),
+            .y = g.y(r),
+        }, .{
+            .x = g.x(0),
+            .y = g.y(r + 1),
+        }, .{ .x = -g.sep_nm[0], .y = 0 });
+    }
+}
+
+fn appendDim(
+    arena: std.mem.Allocator,
+    dims: *std.ArrayList(Dimension),
+    name: []const u8,
+    a: Point,
+    b: Point,
+    lane_nm: Point,
+) !void {
+    const dx: f64 = @floatFromInt(b.x - a.x);
+    const dy: f64 = @floatFromInt(b.y - a.y);
+    const dist_um = @sqrt(dx * dx + dy * dy) / 1000.0;
+    const label = if (name.len == 0)
+        try std.fmt.allocPrintSentinel(arena, "{d:.1} um", .{dist_um}, 0)
+    else
+        try std.fmt.allocPrintSentinel(arena, "{s} {d:.1} um", .{ name, dist_um }, 0);
+    try dims.append(arena, .{ .a = a, .b = b, .lane_nm = lane_nm, .label = label });
+}
+
 /// One gate with the diagram column the layout pass assigned it.
 pub const LaidGate = struct { gate: circuit.Native, col: usize };
 
@@ -595,6 +706,39 @@ test "slot tables reproduce each CZ stage's gates as AOD-over-SLM pairings" {
     var total: usize = 0;
     for (fired) |n| total += n;
     try std.testing.expectEqual(@as(usize, 2), total);
+}
+
+test "buildDimensions anchors seps, dr, and zone gaps to the example config" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    const cfg = try arch.load(std.testing.allocator, std.testing.io, "cfg/arch.toml");
+    defer cfg.deinit(std.testing.allocator);
+
+    const dims = try buildDimensions(arena_state.allocator(), cfg);
+
+    // sep-x + sep-y per zone, dr, and the two inter-zone gaps.
+    const labels = [_][]const u8{
+        "3.0 um", "3.0 um", // storage trap seps
+        "10.0 um", "12.0 um", // compute site seps
+        "4.0 um",    "4.0 um", // readout trap seps
+        "dr 2.0 um",
+        "gap 23.0 um", // storage bottom row (y=27) -> compute top row (y=50)
+        "gap 20.0 um", // compute bottom row (y=160) -> readout top row (y=180)
+    };
+    try std.testing.expectEqual(labels.len, dims.len);
+    for (dims, labels) |d, want| {
+        try std.testing.expectEqualStrings(want, d.label);
+    }
+
+    // The dr arrow spans the two compute SLM grids at the same trap index.
+    const dr = dims[6];
+    try std.testing.expectEqual(cfg.compute_zone.grid(0).y(0), dr.a.y);
+    try std.testing.expectEqual(cfg.compute_zone.grid(1).y(0), dr.b.y);
+
+    // Arrows sit in lanes outside the grid: sep-x above, sep-y left.
+    try std.testing.expect(dims[0].lane_nm.y < 0 and dims[0].lane_nm.x == 0);
+    try std.testing.expect(dims[1].lane_nm.x < 0 and dims[1].lane_nm.y == 0);
 }
 
 test {
