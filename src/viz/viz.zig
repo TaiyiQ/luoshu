@@ -74,6 +74,7 @@ const shortcuts = [_]struct { key: [:0]const u8, desc: [:0]const u8 }{
     .{ .key = "space", .desc = "schedule: play / pause" },
     .{ .key = "j / k", .desc = "schedule: step a frame back / forward" },
     .{ .key = "h", .desc = "schedule: toggle the arch specs" },
+    .{ .key = "d", .desc = "schedule: toggle dimension arrows" },
     .{ .key = "esc", .desc = "close edit or help, else quit" },
     .{ .key = "?", .desc = "toggle this help" },
 };
@@ -261,6 +262,7 @@ pub fn run(
     var spec_arena = std.heap.ArenaAllocator.init(gpa);
     defer spec_arena.deinit();
     const specs = try SpecSheet.build(spec_arena.allocator(), layout);
+    const dims = try viewmodel.buildDimensions(spec_arena.allocator(), layout);
     var sched = ScheduleView{
         .s = &s,
         .vm = &vm,
@@ -275,6 +277,7 @@ pub fn run(
         .draw_positions = draw_positions,
         .last_frame = s.frames.items.len -| 1,
         .db_nm = layout.constraints.db_nm,
+        .dims = dims,
     };
 
     var view: View = .circuit;

@@ -139,6 +139,71 @@ fn drawAodHighlight(
     }
 }
 
+const DIM_HEAD: f32 = 7.0; // arrowhead length in screen px
+
+/// One CAD-style dimension: extension lines from the feature anchors out
+/// to an offset lane, a double-headed arrow spanning the lane, and the
+/// distance label beside it. Returns false without drawing while the
+/// arrow is too short on screen to carry its label — zooming in resolves
+/// progressively finer spacings.
+fn drawDimension(cam: Camera, font: rl.Font, d: viewmodel.Dimension) bool {
+    const qa = cam.worldToScreen(.{
+        .x = @floatFromInt(d.a.x + d.lane_nm.x),
+        .y = @floatFromInt(d.a.y + d.lane_nm.y),
+    });
+    const qb = cam.worldToScreen(.{
+        .x = @floatFromInt(d.b.x + d.lane_nm.x),
+        .y = @floatFromInt(d.b.y + d.lane_nm.y),
+    });
+
+    const dx = qb.x - qa.x;
+    const dy = qb.y - qa.y;
+    const len = @sqrt(dx * dx + dy * dy);
+    const horizontal = @abs(dx) >= @abs(dy);
+    const label_w = rl.measureTextEx(font, d.label, FONT, 0.5).x;
+    // A horizontal label sits over its arrow; a vertical arrow only has
+    // to clear the label's height beside it.
+    const needed: f32 = if (horizontal) label_w + 2 * DIM_HEAD else FONT + DIM_HEAD;
+    if (len < needed) return false;
+
+    const line = withAlpha(palette.dimension, 200);
+    const ext = withAlpha(palette.dimension, 90);
+
+    rl.drawLineEx(cam.worldToScreen(toVec(d.a)), overshoot(cam.worldToScreen(toVec(d.a)), qa), 1.0, ext);
+    rl.drawLineEx(cam.worldToScreen(toVec(d.b)), overshoot(cam.worldToScreen(toVec(d.b)), qb), 1.0, ext);
+
+    rl.drawLineEx(qa, qb, 1.5, line);
+    const u = rl.Vector2{ .x = dx / len, .y = dy / len };
+    const perp = rl.Vector2{ .x = -u.y, .y = u.x };
+    drawArrowHead(qa, u, perp, line);
+    drawArrowHead(qb, .{ .x = -u.x, .y = -u.y }, perp, line);
+
+    const mid = rl.Vector2{ .x = (qa.x + qb.x) / 2, .y = (qa.y + qb.y) / 2 };
+    const pos: rl.Vector2 = if (horizontal)
+        .{ .x = mid.x - label_w / 2, .y = mid.y - FONT - 4 }
+    else
+        .{ .x = mid.x - label_w - DIM_HEAD - 4, .y = mid.y - FONT / 2 };
+    rl.drawTextEx(font, d.label, pos, FONT, 0.5, palette.dimension);
+    return true;
+}
+
+/// Extension lines run a few px past the arrow lane, CAD-style.
+fn overshoot(from: rl.Vector2, to: rl.Vector2) rl.Vector2 {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const n = @sqrt(dx * dx + dy * dy);
+    if (n == 0) return to;
+    return .{ .x = to.x + dx / n * 4, .y = to.y + dy / n * 4 };
+}
+
+/// Open V arrowhead with its tip at `tip`; `in` points along the shaft.
+fn drawArrowHead(tip: rl.Vector2, in: rl.Vector2, perp: rl.Vector2, color: rl.Color) void {
+    const base = rl.Vector2{ .x = tip.x + in.x * DIM_HEAD, .y = tip.y + in.y * DIM_HEAD };
+    const s = DIM_HEAD * 0.4;
+    rl.drawLineEx(tip, .{ .x = base.x + perp.x * s, .y = base.y + perp.y * s }, 1.5, color);
+    rl.drawLineEx(tip, .{ .x = base.x - perp.x * s, .y = base.y - perp.y * s }, 1.5, color);
+}
+
 /// Halo enclosing a pair of atoms sitting within the blockade radius during
 /// a rydberg pulse — the pairs that actually entangle.
 fn drawPairHalo(cam: Camera, a: Point, b: Point, color: rl.Color) void {
@@ -209,7 +274,9 @@ pub const ScheduleView = struct {
     draw_positions: []Point,
     last_frame: usize,
     db_nm: u32,
+    dims: []const viewmodel.Dimension,
     show_specs: bool = true,
+    show_dims: bool = true,
 
     frame: usize = 0,
     playing: bool = false,
@@ -238,6 +305,7 @@ pub const ScheduleView = struct {
     }
 
     pub fn input(v: *ScheduleView) void {
+        if (rl.isKeyPressed(.d)) v.show_dims = !v.show_dims;
         if (v.empty()) return;
         if (rl.isKeyPressed(.k) or rl.isKeyPressedRepeat(.k)) v.seek(v.frame + 1);
         if (rl.isKeyPressed(.j) or rl.isKeyPressedRepeat(.j)) v.seek(v.frame -| 1);
@@ -268,6 +336,7 @@ pub const ScheduleView = struct {
             drawZone(v.cam, v.compute_rect, palette.zone_compute);
             drawZone(v.cam, v.readout_rect, palette.zone_readout);
             for (v.sites) |slot| drawSlot(v.cam, slot, &.{}, &.{}, v.idle);
+            if (v.show_dims) v.drawDims(font);
             rl.drawTextEx(
                 font,
                 "empty schedule",
@@ -384,6 +453,31 @@ pub const ScheduleView = struct {
             const is_loaded = id < loaded.len and loaded[id];
             const is_active = id < v.active.len and v.active[id];
             drawQubit(v.cam, font, pos, id, is_active, is_loaded, accent);
+        }
+
+        if (v.show_dims) v.drawDims(font);
+    }
+
+    /// Dimension arrows mapping the spec-sheet numbers onto the layout.
+    /// Finer spacings resolve as the camera zooms in; a hint stands in
+    /// while every arrow is still too short for its label.
+    fn drawDims(v: *const ScheduleView, font: rl.Font) void {
+        var shown: usize = 0;
+        for (v.dims) |d| {
+            if (drawDimension(v.cam, font, d)) shown += 1;
+        }
+        if (shown == 0 and v.dims.len > 0) {
+            const hint = "dimensions: zoom in";
+            const tw = rl.measureTextEx(font, hint, FONT, 0.5).x;
+            const sw: f32 = @floatFromInt(rl.getScreenWidth());
+            rl.drawTextEx(
+                font,
+                hint,
+                .{ .x = sw - tw - PAD, .y = TAB_H + PAD },
+                FONT,
+                0.5,
+                palette.text_sub,
+            );
         }
     }
 
