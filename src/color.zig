@@ -9,8 +9,8 @@ const ColoredEdge = struct {
 };
 
 /// Left-to-right SLM ordering constraints built during edge coloring:
-/// adj[q] holds the qubits q must sit left of. Kept acyclic by construction
-/// - leastAdmissible checks reachability before committing.
+/// adj[q] holds the qubits q must sit left of.
+/// Kept acyclic by construction - leastAdmissible checks reachability before committing.
 pub const SlmOrder = struct {
     gpa: std.mem.Allocator,
     adj: []std.ArrayList(usize),
@@ -66,16 +66,13 @@ pub const SlmOrder = struct {
     }
 };
 
-// Modified DSatur edge coloring, after arXiv:2405.08068 (and qmap's
-// NAGraphAlgorithms). Edges are colored AOD by AOD in the fixed sequence
+// Edges are colored AOD by AOD in the fixed sequence
 // order while a partial order on the SLM qubits grows alongside: an AOD
 // gates its SLM partners left to right in color order, and AODs sharing a
 // color class order their partners by AOD rank. leastAdmissible rejects
 // colors that contradict the partial order, so the AOD sequence never needs
 // reordering and the SLM layout is just a topological sort of `order`.
 pub fn dsatur(gpa: std.mem.Allocator, g: *Graph, aod_nodes: []const usize, order: *SlmOrder) !void {
-    // rank_of[q] = index of AOD q in the fixed sequence (0 = rightmost);
-    // aod_set[q] = q is one of aod_nodes.
     const rank_of = try gpa.alloc(usize, g.n);
     @memset(rank_of, 0);
     defer gpa.free(rank_of);
@@ -89,7 +86,6 @@ pub fn dsatur(gpa: std.mem.Allocator, g: *Graph, aod_nodes: []const usize, order
         aod_set[q] = true;
     }
 
-    // cov_degree[q] = number of AOD neighbours; edge-sort tie-break.
     const cov_degree = try gpa.alloc(usize, g.n);
     @memset(cov_degree, 0);
     defer gpa.free(cov_degree);
@@ -143,8 +139,6 @@ pub fn dsatur(gpa: std.mem.Allocator, g: *Graph, aod_nodes: []const usize, order
                 if (edge.y == v) edge.color = c;
             }
 
-            // Commit the constraints the color implies; leastAdmissible
-            // already verified none closes a cycle.
             for (colored.items) |f| {
                 if (f.aod == v) {
                     if (f.color < c) {
@@ -166,9 +160,8 @@ pub fn dsatur(gpa: std.mem.Allocator, g: *Graph, aod_nodes: []const usize, order
     }
 }
 
-/// Smallest color for edge (v, y) - v the AOD, y the SLM - that keeps the
-/// SLM partial order acyclic. Errors when no color can: the coloring cannot
-/// complete against the fixed AOD column order.
+/// Smallest color for edge (v, y) - v the AOD, y the SLM.
+/// That keeps the SLM partial order acyclic.
 fn leastAdmissible(
     v: usize,
     y: usize,
@@ -188,19 +181,15 @@ fn leastAdmissible(
     outer: while (true) : (k += 1) {
         for (colored) |f| {
             if (f.aod == v) {
-                // v cannot gate two partners in one class...
                 if (f.color == k) continue :outer;
 
                 if (f.color > k) {
-                    // ...and would add y -> f.slm; cycle if f.slm already reaches y.
                     if (order.mustPrecede(f.slm, y)) continue :outer;
                 } else {
-                    // Would add f.slm -> y. f.color stays below every later
-                    // candidate too, so this cycle cannot be colored around.
                     if (order.mustPrecede(y, f.slm)) return error.CyclicAodOrder;
                 }
             } else if (f.color == k) {
-                // Same class: the SLM order must mirror the AOD ranks.
+                // The SLM order must mirror the AOD ranks.
                 if (rank_v > rank_of[f.aod]) {
                     if (order.mustPrecede(f.slm, y)) continue :outer;
                 } else {

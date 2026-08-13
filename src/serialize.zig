@@ -7,8 +7,8 @@ const bench = @import("bench");
 
 /// Serializes a logical schedule (SLM slot assignment plus per-timeframe AOD
 /// slot rows) to an owned JSON string. Takes the slot tables directly rather
-/// than route.Sequence so this module never depends on route (route's tests
-/// file-import this module via snapshot.zig).
+/// than route.Sequence so this module never depends on route (route's
+/// snapshot tests import this module).
 pub fn sequenceToJson(
     gpa: std.mem.Allocator,
     fixed: []const ?usize,
@@ -191,18 +191,6 @@ pub fn writeJsonFile(io: std.Io, filename: []const u8, json: []const u8) !void {
     try file.writePositionalAll(io, json, 0);
 }
 
-pub fn writeSequence(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    filename: []const u8,
-    fixed: []const ?usize,
-    moveable: []const []?usize,
-) !void {
-    const json = try sequenceToJson(gpa, fixed, moveable);
-    defer gpa.free(json);
-    try writeJsonFile(io, filename, json);
-}
-
 pub fn writeHardware(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -231,6 +219,43 @@ fn zoneName(z: schedule.Zone) []const u8 {
         .compute => "compute",
         .readout => "readout_zone",
     };
+}
+
+/// Test helper: byte-compares `actual` against the checked-in snapshot at
+/// `path`, printing a diff-style report on mismatch and a regeneration hint
+/// when the snapshot is missing. Lives here because every snapshot producer
+/// (route's graph snapshots, golden's pipeline snapshots) already imports
+/// this module.
+pub fn expectMatchesFile(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    actual: []const u8,
+) !void {
+    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print(
+                "\nSnapshot missing: {s}\n" ++
+                    "  Run `zig build update-snapshots` to generate it.\n",
+                .{path},
+            );
+        }
+        return err;
+    };
+    defer file.close(io);
+
+    const stat = try file.stat(io);
+    const expected = try gpa.alloc(u8, stat.size);
+    defer gpa.free(expected);
+    _ = try file.readPositionalAll(io, expected, 0);
+
+    if (!std.mem.eql(u8, actual, expected)) {
+        std.debug.print(
+            "\nSnapshot mismatch: {s}\n--- expected ---\n{s}\n--- actual ---\n{s}\n",
+            .{ path, expected, actual },
+        );
+        return error.SnapshotMismatch;
+    }
 }
 
 test {
