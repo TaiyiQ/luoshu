@@ -734,50 +734,12 @@ fn occupiedStorageX(
     return occ;
 }
 
-var test_no_slms: [0]arch.Slm = .{};
-
 test "init rejects more qubits than loading-window sites" {
-    const slm = arch.Slm{
-        .slm_id = 0,
-        .num_row = 1,
-        .num_col = 4,
-        .sep_nm = .{ 1000, 1000 },
-        .offset_nm = .{ 0, 0 },
-    };
-
-    const cfg = arch.ArchConfig{
-        .platform = .{ .name = "test", .version = "0" },
-        .aod = .{
-            .aod_id = 0,
-            .min_sep_nm = 100,
-            .max_num_row = 1,
-            .max_num_col = 4,
-        },
-        .storage_zone = .{
-            .zone_id = 0,
-            .offset_nm = .{ 0, 0 },
-            .slm = slm,
-        },
-        .compute_zone = .{
-            .zone_id = 1,
-            .offset_nm = .{ 0, 5000 },
-            .dr_nm = 200,
-            .dw_nm = 1000,
-            .slms = &test_no_slms,
-        },
-        .readout_zone = .{
-            .zone_id = 2,
-            .offset_nm = .{ 0, 9000 },
-            .slm = slm,
-        },
-        .constraints = .{
-            .db_nm = 300,
-            .dz_nm = 100,
-            .one_qubit_gate_fidelity = 1,
-            .two_qubit_gate_fidelity = 1,
-            .readout_fidelity = 1,
-        },
-    };
+    var cfg = arch.testConfig();
+    cfg.aod.max_num_row = 1;
+    cfg.storage_zone.slm.num_row = 1;
+    cfg.readout_zone.slm.num_row = 1;
+    cfg.compute_zone.slms = &arch.test_no_slms;
 
     // The center-half window of a 1x4 grid is columns 1..3: two sites.
     try std.testing.expectError(
@@ -840,53 +802,26 @@ var test_compute_slms = [2]arch.Slm{
 };
 
 // Small three-zone config for shuttling tests: 3x4 storage grid, two
-// compute SLMs, one readout row.
+// compute SLMs, one readout row, roomier separations than the baseline.
 fn testShuttleCfg() arch.ArchConfig {
-    return .{
-        .platform = .{ .name = "test", .version = "0" },
-        .aod = .{
-            .aod_id = 0,
-            .min_sep_nm = 500,
-            .max_num_row = 1,
-            .max_num_col = 8,
-        },
-        .storage_zone = .{
-            .zone_id = 0,
-            .offset_nm = .{ 0, 0 },
-            .slm = .{
-                .slm_id = 0,
-                .num_row = 3,
-                .num_col = 4,
-                .sep_nm = .{ 1000, 1000 },
-                .offset_nm = .{ 0, 0 },
-            },
-        },
-        .compute_zone = .{
-            .zone_id = 1,
-            .offset_nm = .{ 0, 6000 },
-            .dr_nm = 500,
-            .dw_nm = 2500,
-            .slms = &test_compute_slms,
-        },
-        .readout_zone = .{
-            .zone_id = 2,
-            .offset_nm = .{ 0, 12000 },
-            .slm = .{
-                .slm_id = 3,
-                .num_row = 1,
-                .num_col = 4,
-                .sep_nm = .{ 1000, 1000 },
-                .offset_nm = .{ 0, 0 },
-            },
-        },
-        .constraints = .{
-            .db_nm = 1000,
-            .dz_nm = 1000,
-            .one_qubit_gate_fidelity = 1,
-            .two_qubit_gate_fidelity = 1,
-            .readout_fidelity = 1,
-        },
+    var cfg = arch.testConfig();
+    cfg.aod = .{ .aod_id = 0, .min_sep_nm = 500, .max_num_row = 1, .max_num_col = 8 };
+    cfg.storage_zone.slm.num_row = 3;
+    cfg.compute_zone.offset_nm = .{ 0, 6000 };
+    cfg.compute_zone.dr_nm = 500;
+    cfg.compute_zone.dw_nm = 2500;
+    cfg.compute_zone.slms = &test_compute_slms;
+    cfg.readout_zone.offset_nm = .{ 0, 12000 };
+    cfg.readout_zone.slm = .{
+        .slm_id = 3,
+        .num_row = 1,
+        .num_col = 4,
+        .sep_nm = .{ 1000, 1000 },
+        .offset_nm = .{ 0, 0 },
     };
+    cfg.constraints.db_nm = 1000;
+    cfg.constraints.dz_nm = 1000;
+    return cfg;
 }
 
 // Replays `frames`, asserting that all AOD-held atoms share one y at the

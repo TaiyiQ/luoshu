@@ -554,6 +554,75 @@ fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+// Shared baseline for tests across modules: unit-separation 2x4 storage and
+// readout grids, three stacked zones at y 0/5000/9000, and a Rydberg pair
+// whose padded box spans x 0..4000, y 4800..7200. Callers mutate the
+// returned value to vary the knobs they exercise. The SLM fixtures are
+// module-level `var`s because ComputeZone.slms is a mutable slice.
+pub var test_no_slms: [0]Slm = .{};
+
+pub var test_compute_slms = [2]Slm{
+    .{
+        .slm_id = 1,
+        .num_row = 1,
+        .num_col = 2,
+        .sep_nm = .{ 2000, 2000 },
+        .offset_nm = .{ 1000, 800 },
+    },
+    .{
+        .slm_id = 2,
+        .num_row = 1,
+        .num_col = 2,
+        .sep_nm = .{ 2000, 2000 },
+        .offset_nm = .{ 1000, 1200 },
+    },
+};
+
+pub fn testConfig() ArchConfig {
+    const slm = Slm{
+        .slm_id = 0,
+        .num_row = 2,
+        .num_col = 4,
+        .sep_nm = .{ 1000, 1000 },
+        .offset_nm = .{ 0, 0 },
+    };
+    return .{
+        .platform = .{ .name = "test", .version = "0" },
+        .aod = .{
+            .aod_id = 0,
+            .min_sep_nm = 100,
+            .max_num_row = 4,
+            .max_num_col = 4,
+        },
+        .storage_zone = .{
+            .zone_id = 0,
+            .offset_nm = .{ 0, 0 },
+            .slm = slm,
+        },
+        .compute_zone = .{
+            .zone_id = 1,
+            .offset_nm = .{ 0, 5000 },
+            .dr_nm = 200,
+            .dw_nm = 1000,
+            .slms = &test_compute_slms,
+        },
+        .readout_zone = .{
+            .zone_id = 2,
+            .offset_nm = .{ 0, 9000 },
+            .slm = slm,
+        },
+        .constraints = .{
+            .db_nm = 300,
+            .dz_nm = 100,
+            .one_qubit_gate_fidelity = 1,
+            .two_qubit_gate_fidelity = 1,
+            .readout_fidelity = 1,
+        },
+    };
+}
+
+// Validation-geometry fixtures: wider separations so the zone-gap and
+// blockade tests below have room to move things out of tolerance.
 const test_slm = Slm{
     .slm_id = 0,
     .num_row = 2,
@@ -562,7 +631,7 @@ const test_slm = Slm{
     .offset_nm = .{ 0, 0 },
 };
 
-var test_compute_slms = [2]Slm{
+var validate_slms = [2]Slm{
     .{
         .slm_id = 1,
         .num_row = 2,
@@ -598,7 +667,7 @@ fn testCfg() ArchConfig {
             .offset_nm = .{ 0, 10000 },
             .dr_nm = 2000,
             .dw_nm = 10000,
-            .slms = &test_compute_slms,
+            .slms = &validate_slms,
         },
         .readout_zone = .{
             .zone_id = 2,
@@ -622,7 +691,7 @@ test "validate accepts a well-formed config" {
 }
 
 test "validate rejects mismatched Rydberg pair SLMs" {
-    var slms = test_compute_slms;
+    var slms = validate_slms;
     slms[1].num_col = 1;
     var cfg = testCfg();
     cfg.compute_zone.slms = &slms;
@@ -633,7 +702,7 @@ test "validate rejects mismatched Rydberg pair SLMs" {
 
 test "validate rejects a single compute SLM" {
     var cfg = testCfg();
-    cfg.compute_zone.slms = test_compute_slms[0..1];
+    cfg.compute_zone.slms = validate_slms[0..1];
     quiet = true;
     defer quiet = false;
     try std.testing.expectError(error.TooFewComputeSlms, validate(cfg));

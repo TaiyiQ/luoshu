@@ -234,58 +234,26 @@ test "the example assembly file loads" {
     );
 }
 
-var test_no_slms: [0]arch.Slm = .{};
-
 // Storage SLM congruent with test_doc: zone 0, slm 0, 3x4.
 fn testCfg() arch.ArchConfig {
-    return .{
-        .platform = .{
-            .name = "test",
-            .version = "0",
-        },
-        .aod = .{
-            .aod_id = 0,
-            .min_sep_nm = 0,
-            .max_num_row = 1,
-            .max_num_col = 1,
-        },
-        .storage_zone = .{
-            .zone_id = 0,
-            .offset_nm = .{ 0, 0 },
-            .slm = .{
-                .slm_id = 0,
-                .num_row = 3,
-                .num_col = 4,
-                .sep_nm = .{ 1000, 1000 },
-                .offset_nm = .{ 0, 0 },
-            },
-        },
-        .compute_zone = .{
-            .zone_id = 1,
-            .offset_nm = .{ 0, 6000 },
-            .dr_nm = 500,
-            .dw_nm = 2500,
-            .slms = &test_no_slms,
-        },
-        .readout_zone = .{
-            .zone_id = 2,
-            .offset_nm = .{ 0, 12000 },
-            .slm = .{
-                .slm_id = 3,
-                .num_row = 1,
-                .num_col = 4,
-                .sep_nm = .{ 1000, 1000 },
-                .offset_nm = .{ 0, 0 },
-            },
-        },
-        .constraints = .{
-            .db_nm = 1000,
-            .dz_nm = 1000,
-            .one_qubit_gate_fidelity = 1,
-            .two_qubit_gate_fidelity = 1,
-            .readout_fidelity = 1,
-        },
+    var cfg = arch.testConfig();
+    cfg.aod = .{ .aod_id = 0, .min_sep_nm = 0, .max_num_row = 1, .max_num_col = 1 };
+    cfg.storage_zone.slm.num_row = 3;
+    cfg.compute_zone.offset_nm = .{ 0, 6000 };
+    cfg.compute_zone.dr_nm = 500;
+    cfg.compute_zone.dw_nm = 2500;
+    cfg.compute_zone.slms = &arch.test_no_slms;
+    cfg.readout_zone.offset_nm = .{ 0, 12000 };
+    cfg.readout_zone.slm = .{
+        .slm_id = 3,
+        .num_row = 1,
+        .num_col = 4,
+        .sep_nm = .{ 1000, 1000 },
+        .offset_nm = .{ 0, 0 },
     };
+    cfg.constraints.db_nm = 1000;
+    cfg.constraints.dz_nm = 1000;
+    return cfg;
 }
 
 test "check accepts a handoff matching the storage SLM" {
