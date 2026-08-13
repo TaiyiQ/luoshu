@@ -5,10 +5,27 @@ const std = @import("std");
 const schedule = @import("schedule");
 const bench = @import("bench");
 
-/// Serializes a logical schedule (SLM slot assignment plus per-timeframe AOD
-/// slot rows) to an owned JSON string. Takes the slot tables directly rather
-/// than route.Sequence so this module never depends on route (route's
-/// snapshot tests import this module).
+fn field(s: *std.json.Stringify, name: []const u8, v: anytype) !void {
+    try s.objectField(name);
+    try s.write(v);
+}
+
+fn fieldFmt(s: *std.json.Stringify, name: []const u8, comptime fmt: []const u8, args: anytype) !void {
+    try s.objectField(name);
+    try s.print(fmt, args);
+}
+
+fn writeSlotRow(s: *std.json.Stringify, row: []const ?usize) !void {
+    try s.beginWriteRaw();
+    try s.writer.writeAll("[");
+    for (row, 0..) |v, i| {
+        if (i > 0) try s.writer.writeAll(", ");
+        if (v) |slot| try s.writer.print("{d}", .{slot}) else try s.writer.writeAll("null");
+    }
+    try s.writer.writeAll("]");
+    s.endWriteRaw();
+}
+
 pub fn sequenceToJson(
     gpa: std.mem.Allocator,
     fixed: []const ?usize,
@@ -16,171 +33,154 @@ pub fn sequenceToJson(
 ) ![]u8 {
     var buf: std.Io.Writer.Allocating = .init(gpa);
     defer buf.deinit();
-    const w = &buf.writer;
+    var s: std.json.Stringify = .{
+        .writer = &buf.writer,
+        .options = .{ .whitespace = .indent_2 },
+    };
 
-    try w.writeAll("{\n");
-
-    try w.writeAll("  \"slm_slots\": [");
-    for (fixed, 0..) |v, i| {
-        if (i > 0) try w.writeAll(", ");
-        if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
-    }
-    try w.writeAll("],\n");
-
-    try w.writeAll("  \"aod_slots_per_color\": [\n");
-    for (moveable, 0..) |row, ci| {
-        try w.writeAll("    [");
-        for (row, 0..) |v, i| {
-            if (i > 0) try w.writeAll(", ");
-            if (v) |slot| try w.print("{d}", .{slot}) else try w.writeAll("null");
-        }
-        const last = ci == moveable.len - 1;
-        try w.writeAll(if (last) "]\n" else "],\n");
-    }
-    try w.writeAll("  ],\n");
-
-    try w.print("  \"max_color\": {d}\n", .{@as(i32, @intCast(moveable.len)) - 1});
-    try w.writeAll("}");
+    try s.beginObject();
+    try s.objectField("slm_slots");
+    try writeSlotRow(&s, fixed);
+    try s.objectField("aod_slots_per_color");
+    try s.beginArray();
+    for (moveable) |row| try writeSlotRow(&s, row);
+    try s.endArray();
+    try field(&s, "max_color", @as(i32, @intCast(moveable.len)) - 1);
+    try s.endObject();
 
     return gpa.dupe(u8, buf.written());
 }
 
-/// Serializes a hardware schedule (per-qubit load/move/store/raman/rydberg/
-/// measure ops, grouped by timestep) to an owned JSON string.
 pub fn hardwareToJson(gpa: std.mem.Allocator, hw: *const schedule.Hardware) ![]u8 {
     var buf: std.Io.Writer.Allocating = .init(gpa);
     defer buf.deinit();
-    const w = &buf.writer;
+    var s: std.json.Stringify = .{
+        .writer = &buf.writer,
+        .options = .{ .whitespace = .indent_2 },
+    };
 
-    try w.writeAll("{\n");
-    try w.writeAll("  \"version\": \"1.1\",\n");
-    try w.writeAll("  \"platform\": \"taiyi-v1\",\n");
-    try w.print("  \"num_qubits\": {d},\n", .{hw.placement.len});
-    try w.writeAll("  \"ops\": [\n");
-
-    var total: usize = 0;
-    for (hw.frames.items) |frame| total += frame.items.len;
-
-    var i: usize = 0;
+    try s.beginObject();
+    try field(&s, "version", hw.cfg.platform.version);
+    try field(&s, "platform", hw.cfg.platform.name);
+    try field(&s, "num_qubits", hw.placement.len);
+    try s.objectField("ops");
+    try s.beginArray();
     for (hw.frames.items, 0..) |frame, t| {
-        for (frame.items) |op| {
-            defer i += 1;
-            const last_op = i == total - 1;
-            try w.writeAll("    {\n");
-            switch (op) {
-                .raman => |r| {
-                    try w.writeAll("      \"op\": \"raman\",\n");
-                    try w.print("      \"angle\": {d:.4},\n", .{r.angle});
-                    try w.print("      \"phase\": {d:.4},\n", .{r.phase});
-                    try w.print("      \"t\": {d},\n", .{t});
-                    try w.writeAll("      \"targets\": [\n");
-                    for (r.targets, 0..) |target, j| {
-                        const last = j == r.targets.len - 1;
-                        try w.print("        {{ \"qubit\": {d}, \"x\": {d}, \"y\": {d} }}", .{
-                            target.qubit,
-                            target.pos.x,
-                            target.pos.y,
-                        });
-                        try w.writeAll(if (last) "\n" else ",\n");
-                    }
-                    try w.writeAll("      ]\n");
-                },
-                .move => |m| {
-                    try w.writeAll("      \"op\": \"move\",\n");
-                    try w.print("      \"qubit\": {d},\n", .{m.qubit});
-                    try w.print("      \"from\": {{ \"x\": {d}, \"y\": {d} }},\n", .{ m.src.x, m.src.y });
-                    try w.print("      \"to\": {{ \"x\": {d}, \"y\": {d} }},\n", .{ m.dest.x, m.dest.y });
-                    try w.print("      \"t\": {d}\n", .{t});
-                },
-                .rydberg => |r| {
-                    try w.writeAll("      \"op\": \"rydberg\",\n");
-                    try w.print("      \"zone\": \"{s}\",\n", .{zoneName(r.zone)});
-                    try w.print("      \"t\": {d}\n", .{t});
-                },
-                .measure => |m| {
-                    try w.writeAll("      \"op\": \"measure\",\n");
-                    try w.print("      \"zone\": \"{s}\",\n", .{zoneName(m.zone)});
-                    try w.writeAll("      \"basis\": \"Z\",\n");
-                    try w.print("      \"t\": {d},\n", .{t});
-                    try w.writeAll("      \"qubits\": [");
-                    for (m.qubits, 0..) |q, j| {
-                        if (j > 0) try w.writeAll(", ");
-                        try w.print("{d}", .{q});
-                    }
-                    try w.writeAll("]\n");
-                },
-                .load => |ld| {
-                    try w.writeAll("      \"op\": \"load\",\n");
-                    try w.print("      \"qubit\": {d},\n", .{ld.qubit});
-                    try w.print("      \"x\": {d},\n", .{ld.position.x});
-                    try w.print("      \"y\": {d},\n", .{ld.position.y});
-                    try w.print("      \"t\": {d}\n", .{t});
-                },
-                .store => |st| {
-                    try w.writeAll("      \"op\": \"store\",\n");
-                    try w.print("      \"qubit\": {d},\n", .{st.qubit});
-                    try w.print("      \"x\": {d},\n", .{st.position.x});
-                    try w.print("      \"y\": {d},\n", .{st.position.y});
-                    try w.print("      \"t\": {d}\n", .{t});
-                },
-            }
-            try w.writeAll(if (last_op) "    }\n" else "    },\n");
-        }
+        for (frame.items) |op| try writeOp(&s, op, t);
     }
-
-    try w.writeAll("  ]\n");
-    try w.writeAll("}");
+    try s.endArray();
+    try s.endObject();
 
     return gpa.dupe(u8, buf.written());
 }
 
-/// Serializes benchmark metrics (timing model, op counts, routing overhead,
-/// parallelism) for one compiled schedule to an owned JSON string. One object
-/// per circuit; a benchmarking driver collects these across the circuit suite.
+fn writeOp(s: *std.json.Stringify, op: schedule.OpKind, t: usize) !void {
+    try s.beginObject();
+    try field(s, "op", @tagName(op));
+    switch (op) {
+        .raman => |r| {
+            try fieldFmt(s, "angle", "{d:.4}", .{r.angle});
+            try fieldFmt(s, "phase", "{d:.4}", .{r.phase});
+            try field(s, "t", t);
+            try s.objectField("targets");
+            try s.beginArray();
+            for (r.targets) |target| {
+                try s.print("{{ \"qubit\": {d}, \"x\": {d}, \"y\": {d} }}", .{
+                    target.qubit, target.pos.x, target.pos.y,
+                });
+            }
+            try s.endArray();
+        },
+        .move => |m| {
+            try field(s, "qubit", m.qubit);
+            try fieldFmt(s, "from", "{{ \"x\": {d}, \"y\": {d} }}", .{ m.src.x, m.src.y });
+            try fieldFmt(s, "to", "{{ \"x\": {d}, \"y\": {d} }}", .{ m.dest.x, m.dest.y });
+            try field(s, "t", t);
+        },
+        .rydberg => |r| {
+            try field(s, "zone", zoneName(r.zone));
+            try field(s, "t", t);
+        },
+        .measure => |m| {
+            try field(s, "zone", zoneName(m.zone));
+            try field(s, "basis", "Z");
+            try field(s, "t", t);
+            try s.objectField("qubits");
+            try s.beginWriteRaw();
+            try s.writer.writeAll("[");
+            for (m.qubits, 0..) |q, i| {
+                if (i > 0) try s.writer.writeAll(", ");
+                try s.writer.print("{d}", .{q});
+            }
+            try s.writer.writeAll("]");
+            s.endWriteRaw();
+        },
+        .load => |ld| {
+            try field(s, "qubit", ld.qubit);
+            try field(s, "x", ld.position.x);
+            try field(s, "y", ld.position.y);
+            try field(s, "t", t);
+        },
+        .store => |st| {
+            try field(s, "qubit", st.qubit);
+            try field(s, "x", st.position.x);
+            try field(s, "y", st.position.y);
+            try field(s, "t", t);
+        },
+    }
+    try s.endObject();
+}
+
 pub fn benchToJson(gpa: std.mem.Allocator, m: bench.Metrics) ![]u8 {
     var buf: std.Io.Writer.Allocating = .init(gpa);
     defer buf.deinit();
-    const w = &buf.writer;
+    var s: std.json.Stringify = .{
+        .writer = &buf.writer,
+        .options = .{ .whitespace = .indent_2 },
+    };
 
-    try w.writeAll("{\n");
-    try w.print("  \"num_qubits\": {d},\n", .{m.num_qubits});
-    try w.print("  \"frames\": {d},\n", .{m.frames});
-
-    try w.print(
-        "  \"ops\": {{ \"load\": {d}, \"store\": {d}, \"move\": {d}, \"rydberg\": {d}, \"raman\": {d}, \"measure\": {d} }},\n",
+    try s.beginObject();
+    try field(&s, "num_qubits", m.num_qubits);
+    try field(&s, "frames", m.frames);
+    try fieldFmt(
+        &s,
+        "ops",
+        "{{ \"load\": {d}, \"store\": {d}, \"move\": {d}, \"rydberg\": {d}, \"raman\": {d}, \"measure\": {d} }}",
         .{ m.n_load, m.n_store, m.n_move, m.n_rydberg, m.n_raman, m.n_measure },
     );
-    try w.print(
-        "  \"entangling\": {{ \"pulses\": {d}, \"cz_pairs\": {d}, \"avg_cz_per_pulse\": {d:.3} }},\n",
+    try fieldFmt(
+        &s,
+        "entangling",
+        "{{ \"pulses\": {d}, \"cz_pairs\": {d}, \"avg_cz_per_pulse\": {d:.3} }}",
         .{ m.n_rydberg, m.cz_pairs, m.avgCzPerPulse() },
     );
-    try w.print(
-        "  \"distance_nm\": {{ \"total\": {d:.1}, \"max\": {d:.1} }},\n",
+    try fieldFmt(
+        &s,
+        "distance_nm",
+        "{{ \"total\": {d:.1}, \"max\": {d:.1} }}",
         .{ m.total_move_nm, m.max_move_nm },
     );
 
-    try w.writeAll("  \"time_us\": {\n");
-    try w.print("    \"loading\": {d:.3},\n", .{m.loading_us});
-    try w.print("    \"shuttling\": {d:.3},\n", .{m.shuttling_us});
-    try w.print("    \"routing\": {d:.3},\n", .{m.routingUs()});
-    try w.print("    \"gate\": {d:.3},\n", .{m.gateUs()});
-    try w.print("    \"total\": {d:.3}\n", .{m.totalUs()});
-    try w.writeAll("  },\n");
+    try s.objectField("time_us");
+    try s.beginObject();
+    try fieldFmt(&s, "loading", "{d:.3}", .{m.loading_us});
+    try fieldFmt(&s, "shuttling", "{d:.3}", .{m.shuttling_us});
+    try fieldFmt(&s, "routing", "{d:.3}", .{m.routingUs()});
+    try fieldFmt(&s, "gate", "{d:.3}", .{m.gateUs()});
+    try fieldFmt(&s, "total", "{d:.3}", .{m.totalUs()});
+    try s.endObject();
 
-    try w.writeAll("  \"timing_model\": {\n");
-    try w.print("    \"shuttle_nm_per_us\": {d:.3},\n", .{m.timing.shuttle_nm_per_us});
-    try w.print("    \"load_us\": {d:.3},\n", .{m.timing.load_us});
-    try w.print("    \"store_us\": {d:.3},\n", .{m.timing.store_us});
-    try w.print("    \"rydberg_us\": {d:.3},\n", .{m.timing.rydberg_us});
-    try w.print("    \"raman_us\": {d:.3}\n", .{m.timing.raman_us});
-    try w.writeAll("  },\n");
+    try s.objectField("timing_model");
+    try s.beginObject();
+    try fieldFmt(&s, "shuttle_nm_per_us", "{d:.3}", .{m.timing.shuttle_nm_per_us});
+    try fieldFmt(&s, "load_us", "{d:.3}", .{m.timing.load_us});
+    try fieldFmt(&s, "store_us", "{d:.3}", .{m.timing.store_us});
+    try fieldFmt(&s, "rydberg_us", "{d:.3}", .{m.timing.rydberg_us});
+    try fieldFmt(&s, "raman_us", "{d:.3}", .{m.timing.raman_us});
+    try s.endObject();
 
-    if (m.compile_ns) |ns|
-        try w.print("  \"compile_ns\": {d}\n", .{ns})
-    else
-        try w.writeAll("  \"compile_ns\": null\n");
-
-    try w.writeAll("}");
+    try field(&s, "compile_ns", m.compile_ns);
+    try s.endObject();
 
     return gpa.dupe(u8, buf.written());
 }
