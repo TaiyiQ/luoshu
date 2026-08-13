@@ -6,8 +6,13 @@ bench:
 	zig build run
 
 test:
-	rm -rf .zig-cache
 	zig build test --summary all
 
 update:
 	zig build update-snapshots
+
+fmt:
+	zig fmt build.zig build.zig.zon src
+
+check:
+	zig fmt --check build.zig build.zig.zon src
