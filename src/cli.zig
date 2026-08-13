@@ -131,3 +131,7 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
     }
     return opts;
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}
