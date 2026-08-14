@@ -56,13 +56,6 @@ fn opFill(op: OpKind) rl.Color {
     };
 }
 
-// Base zone fills, indexed by @intFromEnum(schedule.Zone).
-const zone_fills = [3]rl.Color{
-    palette.zone_storage,
-    palette.zone_compute,
-    palette.zone_readout,
-};
-
 fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
     const rec = cam.rect(.{
         .x = @floatFromInt(r.x0),
@@ -122,6 +115,7 @@ fn drawAodHighlight(
         const being_loaded = for (frame_ops) |op| {
             if (op == .load and op.load.qubit == @as(u32, @intCast(id))) break true;
         } else false;
+
         if (being_loaded) {
             rl.drawRectangleV(
                 .{ .x = s.x - hw, .y = 0 },
@@ -183,8 +177,10 @@ fn drawDimension(cam: Camera, font: rl.Font, d: viewmodel.Dimension) bool {
     );
 
     rl.drawLineEx(qa, qb, 1.5, line);
+
     const u = rl.Vector2{ .x = dx / len, .y = dy / len };
     const perp = rl.Vector2{ .x = -u.y, .y = u.x };
+
     drawArrowHead(qa, u, perp, line);
     drawArrowHead(qb, .{ .x = -u.x, .y = -u.y }, perp, line);
 
@@ -220,8 +216,13 @@ fn overshoot(from: rl.Vector2, to: rl.Vector2) rl.Vector2 {
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     const n = @sqrt(dx * dx + dy * dy);
+
     if (n == 0) return to;
-    return .{ .x = to.x + dx / n * 4, .y = to.y + dy / n * 4 };
+
+    return .{
+        .x = to.x + dx / n * 4,
+        .y = to.y + dy / n * 4,
+    };
 }
 
 /// Open V arrowhead with its tip at `tip`; `in` points along the shaft.
@@ -242,6 +243,7 @@ fn drawArrowHead(tip: rl.Vector2, in: rl.Vector2, perp: rl.Vector2, color: rl.Co
         1.5,
         color,
     );
+
     rl.drawLineEx(
         tip,
         .{
@@ -258,13 +260,17 @@ fn drawArrowHead(tip: rl.Vector2, in: rl.Vector2, perp: rl.Vector2, color: rl.Co
 fn drawPairHalo(cam: Camera, a: Point, b: Point, color: rl.Color) void {
     const sa = cam.worldToScreen(toVec(a));
     const sb = cam.worldToScreen(toVec(b));
+
     const base_r = ATOM_R * cam.zoom;
+
     const center = rl.Vector2{
         .x = (sa.x + sb.x) / 2.0,
         .y = (sa.y + sb.y) / 2.0,
     };
+
     const dx = sb.x - sa.x;
     const dy = sb.y - sa.y;
+
     const r = @sqrt(dx * dx + dy * dy) / 2.0 + base_r * 1.8;
 
     rl.drawCircleV(center, r, withAlpha(color, 12));
@@ -286,6 +292,7 @@ fn drawQubit(
     const radius = (if (is_loaded) ATOM_R_LOADED else ATOM_R) * cam.zoom;
 
     rl.drawCircleV(screen, radius, palette.qdot);
+
     if (is_loaded) rl.drawCircleLinesV(screen, radius * 1.2, palette.accent);
 
     if (is_active) {
@@ -363,6 +370,7 @@ pub const ScheduleView = struct {
         // per-frame rebuild in occupiedNow cannot fail.
         var occupied = PointSet.init(gpa);
         errdefer occupied.deinit();
+
         try occupied.ensureTotalCapacity(@intCast(s.placement.len + idle.len));
 
         return .{
@@ -386,7 +394,7 @@ pub const ScheduleView = struct {
         v.arena.deinit();
     }
 
-    pub fn empty(v: ScheduleView) bool {
+    pub fn empty(v: *const ScheduleView) bool {
         return v.s.placement.len == 0 or v.s.frames.items.len == 0;
     }
 
@@ -431,24 +439,25 @@ pub const ScheduleView = struct {
         }
     }
 
-    /// The three zone rects in `schedule.Zone` order, derived from the
-    /// config; cheap enough to rebuild per frame.
-    fn zoneRects(v: *const ScheduleView) [3]ZoneRect {
-        return .{
-            viewmodel.zoneRect(v.s.cfg.storage_zone.box()),
-            viewmodel.zoneRect(v.s.cfg.compute_zone.box()),
-            viewmodel.zoneRect(v.s.cfg.readout_zone.box()),
-        };
-    }
+    const Zones = struct {
+        storage: ZoneRect,
+        compute: ZoneRect,
+        readout: ZoneRect,
+    };
 
-    /// Fill color of the frame's primary (first) op.
-    fn accent(v: *const ScheduleView) rl.Color {
-        return opFill(v.s.frames.items[v.frame].items[0]);
+    /// The zone rects, derived from the config; cheap enough to rebuild
+    /// per frame.
+    fn zoneRects(v: *const ScheduleView) Zones {
+        return .{
+            .storage = viewmodel.zoneRect(v.s.cfg.storage_zone.box()),
+            .compute = viewmodel.zoneRect(v.s.cfg.compute_zone.box()),
+            .readout = viewmodel.zoneRect(v.s.cfg.readout_zone.box()),
+        };
     }
 
     /// Mark every qubit involved in an op this frame; a rydberg pulse
     /// lights up every atom inside the pulsed zone. Returns that zone.
-    fn computeActive(v: *ScheduleView, frame_ops: []const OpKind, zones: [3]ZoneRect) ?schedule.Zone {
+    fn computeActive(v: *ScheduleView, frame_ops: []const OpKind, zones: Zones) ?schedule.Zone {
         @memset(v.active, false);
         var rydberg_zone: ?schedule.Zone = null;
         for (frame_ops) |op| switch (op) {
@@ -463,7 +472,11 @@ pub const ScheduleView = struct {
             .store => |st| v.active[st.qubit] = true,
             .rydberg => |r| {
                 rydberg_zone = r.zone;
-                const zr = zones[@intFromEnum(r.zone)];
+                const zr = switch (r.zone) {
+                    .storage => zones.storage,
+                    .compute => zones.compute,
+                    .readout => zones.readout,
+                };
                 for (v.vm.positions[v.frame], 0..) |p, q| {
                     if (p.x >= zr.x0 and p.x <= zr.x1 and
                         p.y >= zr.y0 and p.y <= zr.y1)
@@ -522,10 +535,21 @@ pub const ScheduleView = struct {
         const rydberg_zone = v.computeActive(frame_ops, zones);
         if (!is_empty) v.interpolate(frame_ops);
 
-        for (zones, zone_fills, 0..) |zr, base, zi| {
-            const lit = rydberg_zone == @as(schedule.Zone, @enumFromInt(zi));
-            drawZone(v.vp.cam, zr, if (lit) palette.zone_active else base);
-        }
+        drawZone(
+            v.vp.cam,
+            zones.storage,
+            if (rydberg_zone == .storage) palette.zone_active else palette.zone_storage,
+        );
+        drawZone(
+            v.vp.cam,
+            zones.compute,
+            if (rydberg_zone == .compute) palette.zone_active else palette.zone_compute,
+        );
+        drawZone(
+            v.vp.cam,
+            zones.readout,
+            if (rydberg_zone == .readout) palette.zone_active else palette.zone_readout,
+        );
 
         if (!is_empty) drawAodHighlight(v.vp.cam, v.draw_positions, loaded, frame_ops);
 
@@ -546,7 +570,7 @@ pub const ScheduleView = struct {
         loaded: []const bool,
         rydberg_zone: ?schedule.Zone,
     ) void {
-        const tint = v.accent();
+        const tint = opFill(frame_ops[0]);
 
         for (frame_ops) |op| {
             if (op != .move) continue;
@@ -594,12 +618,21 @@ pub const ScheduleView = struct {
     /// while every arrow is still too short for its label.
     fn drawDims(v: *const ScheduleView, font: rl.Font) void {
         var shown: usize = 0;
+
         for (v.dims) |d| {
             if (drawDimension(v.vp.cam, font, d)) shown += 1;
         }
+
         if (shown == 0 and v.dims.len > 0) {
             const sw: f32 = @floatFromInt(rl.getScreenWidth());
-            drawTextRight(font, "dimensions: zoom in", sw - PAD, CONTENT_Y, FONT, palette.text_sub);
+            drawTextRight(
+                font,
+                "dimensions: zoom in",
+                sw - PAD,
+                CONTENT_Y,
+                FONT,
+                palette.text_sub,
+            );
         }
     }
 
@@ -772,7 +805,7 @@ pub const ScheduleView = struct {
             .{ .x = bx, .y = row2_y + 2 },
             FONT,
             1,
-            v.accent(),
+            opFill(primary_op),
         );
 
         rl.drawTextEx(
@@ -790,7 +823,7 @@ pub const ScheduleView = struct {
     /// is sized from the measured text (specs_w), and the schedule's fit
     /// region starts past it, so neither the text nor the grid ever sits
     /// under it.
-    pub fn drawSpecs(v: ScheduleView, font: rl.Font) void {
+    pub fn drawSpecs(v: *const ScheduleView, font: rl.Font) void {
         const row_h: f32 = FONT + 4;
         const h = @as(f32, spec_keys.len) * row_h + 2 * PAD + row_h + 8;
 
@@ -873,7 +906,10 @@ pub const SpecSheet = struct {
                 cfg.platform.version,
             }, 0),
             .vals = .{
-                try p(arena, "{d} x {d} max", .{ aod.max_num_row, aod.max_num_col }, 0),
+                try p(arena, "{d} x {d} max", .{
+                    aod.max_num_row,
+                    aod.max_num_col,
+                }, 0),
                 try p(arena, ">= {d:.1} um", .{um(aod.min_sep_nm)}, 0),
                 try p(arena, "{d} x {d}  @ {d:.1} x {d:.1} um", .{
                     st.num_row,
@@ -888,8 +924,14 @@ pub const SpecSheet = struct {
                     um(c0.sep_nm[0]),
                     um(c0.sep_nm[1]),
                 }, 0),
-                try p(arena, "{d:.1} / {d:.1} um", .{ um(cz.dr_nm), um(cz.dw_nm) }, 0),
-                try p(arena, "{d} x {d}", .{ ro.num_row, ro.num_col }, 0),
+                try p(arena, "{d:.1} / {d:.1} um", .{
+                    um(cz.dr_nm),
+                    um(cz.dw_nm),
+                }, 0),
+                try p(arena, "{d} x {d}", .{
+                    ro.num_row,
+                    ro.num_col,
+                }, 0),
                 try p(arena, "{d:.1} um", .{um(con.db_nm)}, 0),
                 try p(arena, "{d:.1} um", .{um(con.dz_nm)}, 0),
             },
