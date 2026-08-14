@@ -14,7 +14,6 @@ const std = @import("std");
 const rl = @import("raylib");
 const rg = @import("raygui");
 const schedule = @import("schedule");
-const arch_mod = @import("arch");
 const assembly_mod = @import("assembly");
 const circuit_mod = @import("circuit");
 const viewmodel = @import("viewmodel");
@@ -26,7 +25,10 @@ const logical_view = @import("logical.zig");
 
 const palette = common.palette;
 const styleGui = common.styleGui;
-const Camera = common.Camera;
+const drawPanel = common.drawPanel;
+const drawChromeStrip = common.drawChromeStrip;
+const drawTextRight = common.drawTextRight;
+const Viewport = common.Viewport;
 const FONT = common.FONT;
 const FONT_LG = common.FONT_LG;
 const PAD = common.PAD;
@@ -38,10 +40,7 @@ const BAR_H = common.BAR_H;
 const CircuitView = circuit_view.CircuitView;
 const GUTTER_W = circuit_view.GUTTER_W;
 const ScheduleView = schedule_view.ScheduleView;
-const SpecSheet = schedule_view.SpecSheet;
 const LogicalView = logical_view.LogicalView;
-
-const Point = schedule.Point;
 
 // The UI font ships inside the binary, so the visualizer renders the
 // same no matter what directory gatecomp runs from.
@@ -53,6 +52,11 @@ const View = enum(i32) {
     logical,
     schedule,
 
+    const count: i32 = @typeInfo(View).@"enum".fields.len;
+
+    // Tab-bar labels for toggleGroup; must match the field order above.
+    const labels = "circuit;stages;logical;schedule";
+
     fn next(v: View) View {
         return switch (v) {
             .circuit => .stages,
@@ -63,7 +67,32 @@ const View = enum(i32) {
     }
 };
 
-// ── Shortcut help ────────────────────────────────────────────────────────────
+/// Screen region a view's world fills: the tab bar owns the top, the
+/// schedule's transport bar the bottom, and the spec panel (while shown,
+/// as `specs_pad`) the schedule's left edge — so fits never put content
+/// under chrome.
+fn regionFor(view: View, sw: f32, sh: f32, specs_pad: f32) rl.Rectangle {
+    return switch (view) {
+        .circuit, .stages => .{
+            .x = GUTTER_W,
+            .y = TAB_H,
+            .width = @max(1, sw - GUTTER_W),
+            .height = @max(1, sh - TAB_H),
+        },
+        .logical => .{
+            .x = 0,
+            .y = TAB_H,
+            .width = sw,
+            .height = @max(1, sh - TAB_H),
+        },
+        .schedule => .{
+            .x = specs_pad,
+            .y = TAB_H,
+            .width = @max(1, sw - specs_pad),
+            .height = @max(1, sh - TAB_H - BAR_H),
+        },
+    };
+}
 
 const shortcuts = [_]struct { key: [:0]const u8, desc: [:0]const u8 }{
     .{ .key = "1-4", .desc = "switch view" },
@@ -100,8 +129,7 @@ fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
         .width = w,
         .height = h,
     };
-    rl.drawRectangleRounded(rec, 0.04, 6, palette.panel_bg);
-    rl.drawRectangleRoundedLinesEx(rec, 0.04, 6, 1.0, palette.divider);
+    drawPanel(rec, palette.panel_bg);
 
     var y = rec.y + PAD;
     rl.drawTextEx(
@@ -114,15 +142,7 @@ fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
     );
     y += row_h + PAD;
     for (shortcuts) |sc| {
-        const kw = rl.measureTextEx(font, sc.key, FONT, 0.5).x;
-        rl.drawTextEx(
-            font,
-            sc.key,
-            .{ .x = rec.x + key_w - kw, .y = y },
-            FONT,
-            0.5,
-            palette.accent,
-        );
+        drawTextRight(font, sc.key, rec.x + key_w, y, FONT, palette.accent);
         rl.drawTextEx(
             font,
             sc.desc,
@@ -135,21 +155,8 @@ fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
     }
 }
 
-// ── Tab bar + entry point ────────────────────────────────────────────────────
-
 fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
-    rl.drawRectangleRec(.{
-        .x = 0,
-        .y = 0,
-        .width = sw,
-        .height = TAB_H,
-    }, palette.panel_bg);
-    rl.drawLineEx(
-        .{ .x = 0, .y = TAB_H },
-        .{ .x = sw, .y = TAB_H },
-        1.0,
-        palette.divider,
-    );
+    drawChromeStrip(0, sw, TAB_H, TAB_H);
 
     var idx: i32 = @intFromEnum(view.*);
     _ = rg.toggleGroup(
@@ -159,26 +166,25 @@ fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
             .width = TAB_W,
             .height = BTN_H,
         },
-        "circuit;stages;logical;schedule",
+        View.labels,
         &idx,
     );
-    view.* = @enumFromInt(std.math.clamp(idx, 0, 3));
+    view.* = @enumFromInt(std.math.clamp(idx, 0, View.count - 1));
 
     const hint = "1-4 view   r fit   ? shortcuts";
-    const tw = rl.measureTextEx(font, hint, FONT, 0.5).x;
-    rl.drawTextEx(
+
+    drawTextRight(
         font,
         hint,
-        .{ .x = sw - tw - PAD, .y = (TAB_H - FONT) / 2 },
+        sw - PAD,
+        (TAB_H - FONT) / 2,
         FONT,
-        0.5,
         palette.text_sub,
     );
 }
 
 pub fn run(
     gpa: std.mem.Allocator,
-    layout: arch_mod.ArchConfig,
     s: schedule.Hardware,
     asm_doc: ?assembly_mod.Assembly,
     circ: circuit_mod.Circuit,
@@ -195,11 +201,6 @@ pub fn run(
 
     var tables = try viewmodel.SlotTables.init(gpa, &pipe);
     defer tables.deinit();
-
-    // Zone rects in world-space (nm): the grid-derived zone boxes.
-    const storage_rect = viewmodel.zoneRect(layout.storage_zone.box());
-    const compute_rect = viewmodel.zoneRect(layout.compute_zone.box());
-    const readout_rect = viewmodel.zoneRect(layout.readout_zone.box());
 
     rl.setConfigFlags(.{
         .fullscreen_mode = false,
@@ -226,47 +227,17 @@ pub fn run(
 
     styleGui(font);
 
-    const sites = try viewmodel.allSlmSites(gpa, layout);
-    defer gpa.free(sites);
-
-    var idle_buf: std.ArrayList(Point) = .empty;
-    defer idle_buf.deinit(gpa);
-    if (asm_doc) |a| {
-        const grid = layout.storage_zone.grid();
-        for (a.sites[vm.num_qubits..]) |site| {
-            try idle_buf.append(gpa, .{ .x = grid.x(site.col), .y = grid.y(site.row) });
-        }
-    }
-
-    const active = try gpa.alloc(bool, s.placement.len);
-    defer gpa.free(active);
-    const draw_positions = try gpa.alloc(Point, s.placement.len);
-    defer gpa.free(draw_positions);
-
     var flat = CircuitView{ .lay = flat_lay, .show_stages = false };
     var staged = CircuitView{ .lay = staged_lay, .show_stages = true };
     var logical = LogicalView{ .tables = &tables };
-
-    var spec_arena = std.heap.ArenaAllocator.init(gpa);
-    defer spec_arena.deinit();
-    const specs = try SpecSheet.build(spec_arena.allocator(), layout);
-    const dims = try viewmodel.buildDimensions(spec_arena.allocator(), layout);
-    var sched = ScheduleView{
-        .s = &s,
-        .vm = &vm,
-        .specs = specs,
-        .specs_w = specs.width(font),
-        .storage_rect = storage_rect,
-        .compute_rect = compute_rect,
-        .readout_rect = readout_rect,
-        .sites = sites,
-        .idle = idle_buf.items,
-        .active = active,
-        .draw_positions = draw_positions,
-        .last_frame = s.frames.items.len -| 1,
-        .db_nm = layout.constraints.db_nm,
-        .dims = dims,
-    };
+    var sched = try ScheduleView.init(
+        gpa,
+        &s,
+        &vm,
+        if (asm_doc) |a| a.sites else &.{},
+        font,
+    );
+    defer sched.deinit();
 
     var view: View = .circuit;
     var show_help = false;
@@ -281,44 +252,20 @@ pub fn run(
         const sw: f32 = @floatFromInt(rl.getScreenWidth());
         const sh: f32 = @floatFromInt(rl.getScreenHeight());
 
-        // Screen regions: the tab bar owns the top; the schedule's
-        // transport bar owns the bottom; each view's world fills the rest.
-        const circuit_region = rl.Rectangle{
-            .x = GUTTER_W,
-            .y = TAB_H,
-            .width = @max(1, sw - GUTTER_W),
-            .height = @max(1, sh - TAB_H),
-        };
         // The spec panel owns the schedule's left edge while shown, so
         // fits (initial, resize, `r`) never put the grid under it.
         const specs_pad: f32 = if (sched.show_specs) sched.specs_w + 2 * PAD else 0;
-        const sched_region = rl.Rectangle{
-            .x = specs_pad,
-            .y = TAB_H,
-            .width = @max(1, sw - specs_pad),
-            .height = @max(1, sh - TAB_H - BAR_H),
-        };
-        const logical_region = rl.Rectangle{
-            .x = 0,
-            .y = TAB_H,
-            .width = sw,
-            .height = @max(1, sh - TAB_H),
-        };
-        const region = switch (view) {
-            .circuit, .stages => circuit_region,
-            .schedule => sched_region,
-            .logical => logical_region,
-        };
+        const region = regionFor(view, sw, sh, specs_pad);
 
         if (!fitted or rl.isWindowResized()) {
-            if (!flat.touched) flat.fit(circuit_region);
-            if (!staged.touched) staged.fit(circuit_region);
-            if (!sched.touched) sched.fit(sched_region);
-            if (!logical.touched) logical.fit(logical_region);
+            if (!flat.vp.touched) flat.fit(regionFor(.circuit, sw, sh, specs_pad));
+            if (!staged.vp.touched) staged.fit(regionFor(.stages, sw, sh, specs_pad));
+            if (!sched.vp.touched) sched.fit(regionFor(.schedule, sw, sh, specs_pad));
+            if (!logical.vp.touched) logical.fit(regionFor(.logical, sw, sh, specs_pad));
             fitted = true;
         }
 
-        // ── Input ──────────────────────────────────────────────────
+        const prev_view = view;
         if (!sched.editing) {
             if (rl.isKeyPressed(.one)) view = .circuit;
             if (rl.isKeyPressed(.two)) view = .stages;
@@ -327,15 +274,18 @@ pub fn run(
             if (rl.isKeyPressed(.tab)) view = view.next();
             if (rl.isKeyPressed(.slash)) show_help = !show_help;
 
-            if (rl.isKeyPressed(.r)) switch (view) {
-                .circuit => flat.fit(circuit_region),
-                .stages => staged.fit(circuit_region),
-                .schedule => {
-                    sched.fit(sched_region);
-                    sched.seek(0);
-                },
-                .logical => logical.fit(logical_region),
-            };
+            if (rl.isKeyPressed(.r)) {
+                const fr = regionFor(view, sw, sh, specs_pad);
+                switch (view) {
+                    .circuit => flat.fit(fr),
+                    .stages => staged.fit(fr),
+                    .logical => logical.fit(fr),
+                    .schedule => {
+                        sched.fit(fr);
+                        sched.seek(0);
+                    },
+                }
+            }
 
             if (view == .schedule) {
                 sched.input();
@@ -356,11 +306,11 @@ pub fn run(
             } else break;
         }
 
-        const cam: *Camera, const touched: *bool = switch (view) {
-            .circuit => .{ &flat.cam, &flat.touched },
-            .stages => .{ &staged.cam, &staged.touched },
-            .schedule => .{ &sched.cam, &sched.touched },
-            .logical => .{ &logical.cam, &logical.touched },
+        const vp: *Viewport = switch (view) {
+            .circuit => &flat.vp,
+            .stages => &staged.vp,
+            .schedule => &sched.vp,
+            .logical => &logical.vp,
         };
 
         // Pan: right- or middle-drag everywhere; the circuit views take
@@ -379,45 +329,45 @@ pub fn run(
         }
         if (!pan_down) panning = false;
         if (panning) {
-            cam.offset.x -= (mouse.x - last_mouse.x) / cam.zoom;
-            cam.offset.y -= (mouse.y - last_mouse.y) / cam.zoom;
+            vp.cam.offset.x -= (mouse.x - last_mouse.x) / vp.cam.zoom;
+            vp.cam.offset.y -= (mouse.y - last_mouse.y) / vp.cam.zoom;
             last_mouse = mouse;
-            touched.* = true;
+            vp.touched = true;
         }
 
         // Zoom anchored at the cursor: the world point under the mouse
         // stays under the mouse.
         const wheel = rl.getMouseWheelMove();
         if (wheel != 0 and in_region) {
-            const before = cam.screenToWorld(mouse);
-            cam.zoom *= std.math.clamp(1.0 + wheel * 0.1, 0.5, 2.0);
-            cam.offset.x = before.x - mouse.x / cam.zoom;
-            cam.offset.y = before.y - mouse.y / cam.zoom;
-            touched.* = true;
+            const before = vp.cam.screenToWorld(mouse);
+            vp.cam.zoom *= std.math.clamp(1.0 + wheel * 0.1, 0.5, 2.0);
+            vp.cam.offset.x = before.x - mouse.x / vp.cam.zoom;
+            vp.cam.offset.y = before.y - mouse.y / vp.cam.zoom;
+            vp.touched = true;
         }
 
         if (view == .schedule) sched.update(dt);
 
-        // ── Draw ───────────────────────────────────────────────────
         rl.beginDrawing();
         defer rl.endDrawing();
         rl.clearBackground(palette.bg);
 
+        const draw_region = regionFor(view, sw, sh, specs_pad);
         switch (view) {
-            .circuit => flat.draw(font, circuit_region),
-            .stages => staged.draw(font, circuit_region),
+            .circuit => flat.draw(font, draw_region),
+            .stages => staged.draw(font, draw_region),
             .schedule => {
                 sched.drawWorld(font);
                 if (!sched.empty()) sched.drawBar(font, sw, sh);
                 if (sched.show_specs) sched.drawSpecs(font);
             },
-            .logical => logical.draw(font, logical_region),
+            .logical => logical.draw(font, draw_region),
         }
 
         drawTabs(font, &view, sw);
         if (show_help) drawHelp(font, sw, sh);
-        // A click on another tab leaves the frame box mid-edit; drop the
-        // edit so 1/2/3 and j/k aren't dead on return.
-        if (view != .schedule) sched.editing = false;
+        // Switching away (key or tab click) leaves the frame box mid-edit;
+        // drop the edit so 1/2/3 and j/k aren't dead on return.
+        if (view != prev_view) sched.editing = false;
     }
 }

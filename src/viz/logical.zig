@@ -8,12 +8,15 @@ const viewmodel = @import("viewmodel");
 const common = @import("common.zig");
 const palette = common.palette;
 const withAlpha = common.withAlpha;
-const Camera = common.Camera;
+const drawNotice = common.drawNotice;
+const drawTextCentered = common.drawTextCentered;
+const drawTextRight = common.drawTextRight;
+const labelSize = common.labelSize;
+const Viewport = common.Viewport;
 const BBox = common.BBox;
 const FONT = common.FONT;
 const FONT_LG = common.FONT_LG;
 const PAD = common.PAD;
-const TAB_H = common.TAB_H;
 
 // Slot-table geometry, world units.
 const CELL_W: f32 = 64;
@@ -29,8 +32,7 @@ const ROW_LABEL_W: f32 = 70;
 /// stage and round.
 pub const LogicalView = struct {
     tables: *const viewmodel.SlotTables,
-    cam: Camera = .{},
-    touched: bool = false,
+    vp: Viewport = .{},
 
     const slm_fill = withAlpha(palette.op_load, 70);
     const ride_fill = withAlpha(palette.accent, 45);
@@ -66,20 +68,12 @@ pub const LogicalView = struct {
     }
 
     pub fn fit(v: *LogicalView, region: rl.Rectangle) void {
-        v.cam.fitToRegion(v.bbox(), region);
-        v.touched = false;
+        v.vp.fit(v.bbox(), region);
     }
 
     pub fn draw(v: LogicalView, font: rl.Font, region: rl.Rectangle) void {
         if (v.empty()) {
-            rl.drawTextEx(
-                font,
-                "nothing routed (no CZ stages)",
-                .{ .x = PAD, .y = TAB_H + PAD },
-                FONT,
-                1,
-                palette.text_sub,
-            );
+            drawNotice(font, "nothing routed (no CZ stages)");
             return;
         }
 
@@ -87,7 +81,7 @@ pub const LogicalView = struct {
         // and anything outside the region don't hover.
         const mouse = rl.getMousePosition();
         const mw: ?rl.Vector2 = if (rl.checkCollisionPointRec(mouse, region))
-            v.cam.screenToWorld(mouse)
+            v.vp.cam.screenToWorld(mouse)
         else
             null;
 
@@ -112,8 +106,8 @@ pub const LogicalView = struct {
         round: viewmodel.SlotTables.Round,
         ty: f32,
     ) void {
-        const s = v.cam.worldToScreen(.{ .x = 0, .y = ty });
-        const fs = std.math.clamp(FONT_LG * v.cam.zoom, 14, FONT_LG);
+        const s = v.vp.cam.worldToScreen(.{ .x = 0, .y = ty });
+        const fs = std.math.clamp(FONT_LG * v.vp.cam.zoom, 14, FONT_LG);
         var buf: [48]u8 = undefined;
         const txt = std.fmt.bufPrintSentinel(
             &buf,
@@ -139,7 +133,7 @@ pub const LogicalView = struct {
         ty: f32,
         mw: ?rl.Vector2,
     ) void {
-        const cam = v.cam;
+        const cam = v.vp.cam;
         const n_slots = round.fixed.len;
         const n_rows = 1 + round.moveable.len;
         const cell_h = CELL_H * cam.zoom;
@@ -162,28 +156,20 @@ pub const LogicalView = struct {
             }
         }
         if (hover_row) |r| {
-            const tl = cam.worldToScreen(.{
+            rl.drawRectangleRec(cam.rect(.{
                 .x = -ROW_LABEL_W,
                 .y = ty + @as(f32, @floatFromInt(r)) * CELL_H,
-            });
-            rl.drawRectangleRec(.{
-                .x = tl.x,
-                .y = tl.y,
-                .width = (table_w + ROW_LABEL_W) * cam.zoom,
-                .height = cell_h,
-            }, band);
+                .width = table_w + ROW_LABEL_W,
+                .height = CELL_H,
+            }), band);
         }
         if (hover_col) |c| {
-            const tl = cam.worldToScreen(.{
+            rl.drawRectangleRec(cam.rect(.{
                 .x = @as(f32, @floatFromInt(c)) * CELL_W,
                 .y = ty,
-            });
-            rl.drawRectangleRec(.{
-                .x = tl.x,
-                .y = tl.y,
-                .width = CELL_W * cam.zoom,
-                .height = table_h * cam.zoom,
-            }, band);
+                .width = CELL_W,
+                .height = table_h,
+            }), band);
         }
 
         // Cells: the SLM row, then one row per timestep.
@@ -232,27 +218,19 @@ pub const LogicalView = struct {
 
         // Row labels in the left margin: SLM, then t0..tN.
         if (cell_h >= 10) {
-            const lfs = std.math.clamp(FONT * cam.zoom, 12, FONT_LG);
+            const lfs = labelSize(cam.zoom);
             for (0..n_rows) |r| {
                 var buf: [12]u8 = undefined;
                 const txt = if (r == 0)
                     "SLM"
                 else
                     std.fmt.bufPrintSentinel(&buf, "t{d}", .{r - 1}, 0) catch "?";
-                const tw = rl.measureTextEx(font, txt, lfs, 0.5).x;
                 const s = cam.worldToScreen(.{
                     .x = 0,
                     .y = ty + (@as(f32, @floatFromInt(r)) + 0.5) * CELL_H,
                 });
                 const col = if (hover_row == r) palette.text else palette.text_sub;
-                rl.drawTextEx(
-                    font,
-                    txt,
-                    .{ .x = s.x - tw - 10, .y = s.y - lfs / 2 },
-                    lfs,
-                    0.5,
-                    col,
-                );
+                drawTextRight(font, txt, s.x - 10, s.y - lfs / 2, lfs, col);
             }
         }
     }
@@ -267,38 +245,29 @@ pub const LogicalView = struct {
         show_text: bool,
         fs: f32,
     ) void {
-        const tl = v.cam.worldToScreen(.{ .x = wx, .y = wy });
-        rl.drawRectangleRec(.{
-            .x = tl.x,
-            .y = tl.y,
-            .width = CELL_W * v.cam.zoom,
-            .height = CELL_H * v.cam.zoom,
-        }, fill);
+        rl.drawRectangleRec(v.vp.cam.rect(.{
+            .x = wx,
+            .y = wy,
+            .width = CELL_W,
+            .height = CELL_H,
+        }), fill);
         if (!show_text) return;
         var buf: [12]u8 = undefined;
         const txt = std.fmt.bufPrintSentinel(&buf, "{d}", .{q}, 0) catch "?";
-        const tw = rl.measureTextEx(font, txt, fs, 0.5).x;
-        const c = v.cam.worldToScreen(.{
+        const c = v.vp.cam.worldToScreen(.{
             .x = wx + CELL_W / 2,
             .y = wy + CELL_H / 2,
         });
-        rl.drawTextEx(
-            font,
-            txt,
-            .{ .x = c.x - tw / 2, .y = c.y - fs / 2 },
-            fs,
-            0.5,
-            palette.text,
-        );
+        drawTextCentered(font, txt, c.x, c.y - fs / 2, fs, palette.text);
     }
 
     // The ASCII table's `·`: an empty slot.
     fn drawDot(v: LogicalView, wx: f32, wy: f32) void {
-        const c = v.cam.worldToScreen(.{
+        const c = v.vp.cam.worldToScreen(.{
             .x = wx + CELL_W / 2,
             .y = wy + CELL_H / 2,
         });
-        rl.drawCircleV(c, @max(1.0, 2.5 * v.cam.zoom), palette.qdot);
+        rl.drawCircleV(c, @max(1.0, 2.5 * v.vp.cam.zoom), palette.qdot);
     }
 };
 

@@ -13,25 +13,38 @@ const common = @import("common.zig");
 const palette = common.palette;
 const withAlpha = common.withAlpha;
 const toVec = common.toVec;
+const drawNotice = common.drawNotice;
+const drawPanel = common.drawPanel;
+const drawChromeStrip = common.drawChromeStrip;
+const drawTextCentered = common.drawTextCentered;
+const drawTextRight = common.drawTextRight;
 const Camera = common.Camera;
+const Viewport = common.Viewport;
 const BBox = common.BBox;
 
 const FONT = common.FONT;
 const FONT_LG = common.FONT_LG;
 const PAD = common.PAD;
-const TAB_H = common.TAB_H;
 const BAR_H = common.BAR_H;
 const BTN_W = common.BTN_W;
 const BTN_H = common.BTN_H;
+const BTN_GAP = common.BTN_GAP;
 const ROW2_H = common.ROW2_H;
 const FRAME_BOX_W = common.FRAME_BOX_W;
+const CONTENT_X = common.CONTENT_X;
+const CONTENT_Y = common.CONTENT_Y;
 
 const Point = schedule.Point;
 const OpKind = schedule.OpKind;
 const ZoneRect = viewmodel.ZoneRect;
 
+/// Set of occupied trap positions.
+const PointSet = std.AutoHashMap(Point, void);
+
 const ATOM_R: f32 = 300.0;
 const ATOM_R_LOADED: f32 = 450.0;
+
+const SPEED_W: f32 = 160; // speed slider width in the transport bar
 
 fn opFill(op: OpKind) rl.Color {
     return switch (op) {
@@ -44,44 +57,23 @@ fn opFill(op: OpKind) rl.Color {
 }
 
 fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
-    const tl = cam.worldToScreen(.{
+    const rec = cam.rect(.{
         .x = @floatFromInt(r.x0),
         .y = @floatFromInt(r.y0),
+        .width = @floatFromInt(r.x1 - r.x0),
+        .height = @floatFromInt(r.y1 - r.y0),
     });
-    const br = cam.worldToScreen(.{
-        .x = @floatFromInt(r.x1),
-        .y = @floatFromInt(r.y1),
-    });
-    const rec = rl.Rectangle{
-        .x = tl.x,
-        .y = tl.y,
-        .width = br.x - tl.x,
-        .height = br.y - tl.y,
-    };
     rl.drawRectangleRounded(rec, 0.06, 8, fill);
     rl.drawRectangleRoundedLinesEx(rec, 0.06, 8, 1.0, palette.zone_border);
 }
 
-fn drawSlot(
-    cam: Camera,
-    slot: Point,
-    positions: []const Point,
-    loaded: []const bool,
-    idle: []const Point,
-) void {
+/// One trap site, filled when `occupied` (the frame's occupancy set from
+/// occupiedNow) holds an atom at its position.
+fn drawSlot(cam: Camera, slot: Point, occupied: *const PointSet) void {
     const screen = cam.worldToScreen(toVec(slot));
     const radius = ATOM_R * cam.zoom;
 
-    var occupied = for (positions, 0..) |p, id| {
-        if (id < loaded.len and loaded[id]) continue; // in the AOD, not this trap
-        if (p.x == slot.x and p.y == slot.y) break true;
-    } else false;
-    // Idle atoms (delivered but unused) hold their trap in every frame.
-    if (!occupied) occupied = for (idle) |p| {
-        if (p.x == slot.x and p.y == slot.y) break true;
-    } else false;
-
-    if (occupied) {
+    if (occupied.contains(slot)) {
         rl.drawCircleV(screen, radius, palette.slot_on);
     } else {
         rl.drawCircleLinesV(screen, radius, palette.slot_off);
@@ -102,8 +94,8 @@ fn drawAodHighlight(
     const sw: f32 = @floatFromInt(rl.getScreenWidth());
     const sh: f32 = @floatFromInt(rl.getScreenHeight());
 
-    for (positions, 0..) |pos, id| {
-        if (id >= loaded.len or !loaded[id]) continue;
+    for (positions, loaded, 0..) |pos, is_loaded, id| {
+        if (!is_loaded) continue;
         const s = cam.worldToScreen(toVec(pos));
 
         // Horizontal row — visible while the atom is in the AOD (disappears on store).
@@ -123,6 +115,7 @@ fn drawAodHighlight(
         const being_loaded = for (frame_ops) |op| {
             if (op == .load and op.load.qubit == @as(u32, @intCast(id))) break true;
         } else false;
+
         if (being_loaded) {
             rl.drawRectangleV(
                 .{ .x = s.x - hw, .y = 0 },
@@ -160,7 +153,7 @@ fn drawDimension(cam: Camera, font: rl.Font, d: viewmodel.Dimension) bool {
     const dy = qb.y - qa.y;
     const len = @sqrt(dx * dx + dy * dy);
     const horizontal = @abs(dx) >= @abs(dy);
-    const label_w = rl.measureTextEx(font, d.label, FONT, 0.5).x;
+    const label_w = rl.measureTextEx(font, d.label, FONT, 1).x;
     // A horizontal label sits over its arrow; a vertical arrow only has
     // to clear the label's height beside it.
     const needed: f32 = if (horizontal) label_w + 2 * DIM_HEAD else FONT + DIM_HEAD;
@@ -169,21 +162,52 @@ fn drawDimension(cam: Camera, font: rl.Font, d: viewmodel.Dimension) bool {
     const line = withAlpha(palette.dimension, 200);
     const ext = withAlpha(palette.dimension, 90);
 
-    rl.drawLineEx(cam.worldToScreen(toVec(d.a)), overshoot(cam.worldToScreen(toVec(d.a)), qa), 1.0, ext);
-    rl.drawLineEx(cam.worldToScreen(toVec(d.b)), overshoot(cam.worldToScreen(toVec(d.b)), qb), 1.0, ext);
+    rl.drawLineEx(
+        cam.worldToScreen(toVec(d.a)),
+        overshoot(cam.worldToScreen(toVec(d.a)), qa),
+        1.0,
+        ext,
+    );
+
+    rl.drawLineEx(
+        cam.worldToScreen(toVec(d.b)),
+        overshoot(cam.worldToScreen(toVec(d.b)), qb),
+        1.0,
+        ext,
+    );
 
     rl.drawLineEx(qa, qb, 1.5, line);
+
     const u = rl.Vector2{ .x = dx / len, .y = dy / len };
     const perp = rl.Vector2{ .x = -u.y, .y = u.x };
+
     drawArrowHead(qa, u, perp, line);
     drawArrowHead(qb, .{ .x = -u.x, .y = -u.y }, perp, line);
 
-    const mid = rl.Vector2{ .x = (qa.x + qb.x) / 2, .y = (qa.y + qb.y) / 2 };
-    const pos: rl.Vector2 = if (horizontal)
-        .{ .x = mid.x - label_w / 2, .y = mid.y - FONT - 4 }
-    else
-        .{ .x = mid.x - label_w - DIM_HEAD - 4, .y = mid.y - FONT / 2 };
-    rl.drawTextEx(font, d.label, pos, FONT, 0.5, palette.dimension);
+    const mid = rl.Vector2{
+        .x = (qa.x + qb.x) / 2,
+        .y = (qa.y + qb.y) / 2,
+    };
+
+    if (horizontal) {
+        drawTextCentered(
+            font,
+            d.label,
+            mid.x,
+            mid.y - FONT - 4,
+            FONT,
+            palette.dimension,
+        );
+    } else {
+        drawTextRight(
+            font,
+            d.label,
+            mid.x - DIM_HEAD - 4,
+            mid.y - FONT / 2,
+            FONT,
+            palette.dimension,
+        );
+    }
     return true;
 }
 
@@ -192,16 +216,43 @@ fn overshoot(from: rl.Vector2, to: rl.Vector2) rl.Vector2 {
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     const n = @sqrt(dx * dx + dy * dy);
+
     if (n == 0) return to;
-    return .{ .x = to.x + dx / n * 4, .y = to.y + dy / n * 4 };
+
+    return .{
+        .x = to.x + dx / n * 4,
+        .y = to.y + dy / n * 4,
+    };
 }
 
 /// Open V arrowhead with its tip at `tip`; `in` points along the shaft.
 fn drawArrowHead(tip: rl.Vector2, in: rl.Vector2, perp: rl.Vector2, color: rl.Color) void {
-    const base = rl.Vector2{ .x = tip.x + in.x * DIM_HEAD, .y = tip.y + in.y * DIM_HEAD };
+    const base = rl.Vector2{
+        .x = tip.x + in.x * DIM_HEAD,
+        .y = tip.y + in.y * DIM_HEAD,
+    };
+
     const s = DIM_HEAD * 0.4;
-    rl.drawLineEx(tip, .{ .x = base.x + perp.x * s, .y = base.y + perp.y * s }, 1.5, color);
-    rl.drawLineEx(tip, .{ .x = base.x - perp.x * s, .y = base.y - perp.y * s }, 1.5, color);
+
+    rl.drawLineEx(
+        tip,
+        .{
+            .x = base.x + perp.x * s,
+            .y = base.y + perp.y * s,
+        },
+        1.5,
+        color,
+    );
+
+    rl.drawLineEx(
+        tip,
+        .{
+            .x = base.x - perp.x * s,
+            .y = base.y - perp.y * s,
+        },
+        1.5,
+        color,
+    );
 }
 
 /// Halo enclosing a pair of atoms sitting within the blockade radius during
@@ -209,13 +260,17 @@ fn drawArrowHead(tip: rl.Vector2, in: rl.Vector2, perp: rl.Vector2, color: rl.Co
 fn drawPairHalo(cam: Camera, a: Point, b: Point, color: rl.Color) void {
     const sa = cam.worldToScreen(toVec(a));
     const sb = cam.worldToScreen(toVec(b));
+
     const base_r = ATOM_R * cam.zoom;
+
     const center = rl.Vector2{
         .x = (sa.x + sb.x) / 2.0,
         .y = (sa.y + sb.y) / 2.0,
     };
+
     const dx = sb.x - sa.x;
     const dy = sb.y - sa.y;
+
     const r = @sqrt(dx * dx + dy * dy) / 2.0 + base_r * 1.8;
 
     rl.drawCircleV(center, r, withAlpha(color, 12));
@@ -237,6 +292,7 @@ fn drawQubit(
     const radius = (if (is_loaded) ATOM_R_LOADED else ATOM_R) * cam.zoom;
 
     rl.drawCircleV(screen, radius, palette.qdot);
+
     if (is_loaded) rl.drawCircleLinesV(screen, radius * 1.2, palette.accent);
 
     if (is_active) {
@@ -261,19 +317,20 @@ fn drawQubit(
 /// buffers the render loop fills each frame. World drawing and the
 /// transport bar both live here so run() stays a thin view switcher.
 pub const ScheduleView = struct {
+    // Owns everything init precomputes: spec strings, dimensions, trap
+    // sites, idle positions, and the per-frame scratch buffers.
+    arena: std.heap.ArenaAllocator,
+
     s: *const schedule.Hardware,
     vm: *const viewmodel.ViewModel,
     specs: SpecSheet,
     specs_w: f32,
-    storage_rect: ZoneRect,
-    compute_rect: ZoneRect,
-    readout_rect: ZoneRect,
     sites: []const Point,
     idle: []const Point,
     active: []bool,
+    active_idx: []usize,
     draw_positions: []Point,
-    last_frame: usize,
-    db_nm: u32,
+    occupied: PointSet,
     dims: []const viewmodel.Dimension,
     show_specs: bool = true,
     show_dims: bool = true,
@@ -285,23 +342,75 @@ pub const ScheduleView = struct {
     frame_box: i32 = 0, // valueBox binding for exact-frame entry
     editing: bool = false, // the frame box owns the keyboard while true
 
-    cam: Camera = .{},
-    touched: bool = false,
+    vp: Viewport = .{},
 
-    pub fn empty(v: ScheduleView) bool {
+    /// Precompute everything the render loop reads. `asm_sites` is the
+    /// assembly-delivered storage occupancy (empty without an assembly
+    /// doc); the extra sites past the qubit count are the idle atoms.
+    pub fn init(
+        gpa: std.mem.Allocator,
+        s: *const schedule.Hardware,
+        vm: *const viewmodel.ViewModel,
+        asm_sites: []const schedule.Site,
+        font: rl.Font,
+    ) !ScheduleView {
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+
+        const specs = try SpecSheet.build(a, s.cfg);
+        const sites = try viewmodel.allSlmSites(a, s.cfg);
+        const idle = try viewmodel.idleSites(a, s.cfg, asm_sites, vm.num_qubits);
+        const active = try a.alloc(bool, s.placement.len);
+        const active_idx = try a.alloc(usize, s.placement.len);
+        const draw_positions = try a.alloc(Point, s.placement.len);
+        const dims = try viewmodel.buildDimensions(a, s.cfg);
+
+        // Sized once for every stored atom plus every idle atom, so the
+        // per-frame rebuild in occupiedNow cannot fail.
+        var occupied = PointSet.init(gpa);
+        errdefer occupied.deinit();
+
+        try occupied.ensureTotalCapacity(@intCast(s.placement.len + idle.len));
+
+        return .{
+            .arena = arena,
+            .s = s,
+            .vm = vm,
+            .specs = specs,
+            .specs_w = specs.width(font),
+            .sites = sites,
+            .idle = idle,
+            .active = active,
+            .active_idx = active_idx,
+            .draw_positions = draw_positions,
+            .occupied = occupied,
+            .dims = dims,
+        };
+    }
+
+    pub fn deinit(v: *ScheduleView) void {
+        v.occupied.deinit();
+        v.arena.deinit();
+    }
+
+    pub fn empty(v: *const ScheduleView) bool {
         return v.s.placement.len == 0 or v.s.frames.items.len == 0;
+    }
+
+    fn lastFrame(v: *const ScheduleView) usize {
+        return v.s.frames.items.len -| 1;
     }
 
     /// Jump to a frame and stop playback.
     pub fn seek(v: *ScheduleView, frame: usize) void {
-        v.frame = @min(frame, v.last_frame);
+        v.frame = @min(frame, v.lastFrame());
         v.playing = false;
         v.clock = 0;
     }
 
     pub fn fit(v: *ScheduleView, region: rl.Rectangle) void {
-        v.cam.fitToRegion(BBox.fromPoints(v.sites), region);
-        v.touched = false;
+        v.vp.fit(BBox.fromPoints(v.sites), region);
     }
 
     pub fn input(v: *ScheduleView) void {
@@ -322,40 +431,33 @@ pub const ScheduleView = struct {
             const steps: usize = @intFromFloat(v.clock);
             v.clock -= @floatFromInt(steps);
             v.frame += steps;
-            if (v.frame >= v.last_frame) {
-                v.frame = v.last_frame;
+            if (v.frame >= v.lastFrame()) {
+                v.frame = v.lastFrame();
                 v.playing = false;
                 v.clock = 0;
             }
         }
     }
 
-    pub fn drawWorld(v: *ScheduleView, font: rl.Font) void {
-        if (v.empty()) {
-            drawZone(v.cam, v.storage_rect, palette.zone_storage);
-            drawZone(v.cam, v.compute_rect, palette.zone_compute);
-            drawZone(v.cam, v.readout_rect, palette.zone_readout);
-            for (v.sites) |slot| drawSlot(v.cam, slot, &.{}, &.{}, v.idle);
-            if (v.show_dims) v.drawDims(font);
-            rl.drawTextEx(
-                font,
-                "empty schedule",
-                .{ .x = PAD, .y = TAB_H + PAD },
-                FONT,
-                1,
-                palette.text_sub,
-            );
-            return;
-        }
+    const Zones = struct {
+        storage: ZoneRect,
+        compute: ZoneRect,
+        readout: ZoneRect,
+    };
 
-        // Ops executing at this timestep (frames are never empty).
-        const frame_ops = v.s.frames.items[v.frame].items;
-        const primary_op: OpKind = frame_ops[0];
-        const accent = opFill(primary_op);
-        const loaded = v.vm.loaded[v.frame];
+    /// The zone rects, derived from the config; cheap enough to rebuild
+    /// per frame.
+    fn zoneRects(v: *const ScheduleView) Zones {
+        return .{
+            .storage = viewmodel.zoneRect(v.s.cfg.storage_zone.box()),
+            .compute = viewmodel.zoneRect(v.s.cfg.compute_zone.box()),
+            .readout = viewmodel.zoneRect(v.s.cfg.readout_zone.box()),
+        };
+    }
 
-        // Active = involved in any op this frame; a rydberg pulse lights up
-        // every atom inside the pulsed zone.
+    /// Mark every qubit involved in an op this frame; a rydberg pulse
+    /// lights up every atom inside the pulsed zone. Returns that zone.
+    fn computeActive(v: *ScheduleView, frame_ops: []const OpKind, zones: Zones) ?schedule.Zone {
         @memset(v.active, false);
         var rydberg_zone: ?schedule.Zone = null;
         for (frame_ops) |op| switch (op) {
@@ -371,9 +473,9 @@ pub const ScheduleView = struct {
             .rydberg => |r| {
                 rydberg_zone = r.zone;
                 const zr = switch (r.zone) {
-                    .storage => v.storage_rect,
-                    .compute => v.compute_rect,
-                    .readout => v.readout_rect,
+                    .storage => zones.storage,
+                    .compute => zones.compute,
+                    .readout => zones.readout,
                 };
                 for (v.vm.positions[v.frame], 0..) |p, q| {
                     if (p.x >= zr.x0 and p.x <= zr.x1 and
@@ -382,80 +484,133 @@ pub const ScheduleView = struct {
                 }
             },
         };
+        return rydberg_zone;
+    }
 
-        // Moves animate src -> dest across the first 60% of the frame period.
+    /// Fill draw_positions with this frame's positions, movers lerped
+    /// src -> dest across the first 60% of the frame period while playing.
+    fn interpolate(v: *ScheduleView, frame_ops: []const OpKind) void {
         @memcpy(v.draw_positions, v.vm.positions[v.frame]);
         const move_t: f32 = if (v.playing) blk: {
             const lin = @min(v.clock / 0.6, 1.0);
             break :blk lin * lin * (3.0 - 2.0 * lin); // smoothstep
         } else 1.0;
-        if (move_t < 1.0) {
-            for (frame_ops) |op| {
-                if (op != .move) continue;
-                const m = op.move;
-                const sv = toVec(m.src);
-                const ev = toVec(m.dest);
-                v.draw_positions[m.qubit] = .{
-                    .x = @intFromFloat(sv.x + (ev.x - sv.x) * move_t),
-                    .y = @intFromFloat(sv.y + (ev.y - sv.y) * move_t),
-                };
-            }
+        if (move_t >= 1.0) return;
+
+        for (frame_ops) |op| {
+            if (op != .move) continue;
+            const m = op.move;
+            const sv = toVec(m.src);
+            const ev = toVec(m.dest);
+            v.draw_positions[m.qubit] = .{
+                .x = @intFromFloat(sv.x + (ev.x - sv.x) * move_t),
+                .y = @intFromFloat(sv.y + (ev.y - sv.y) * move_t),
+            };
         }
+    }
+
+    /// Rebuild the occupied-trap set for this frame: stored atoms (not
+    /// riding the AOD) plus the idle atoms, which hold their trap in every
+    /// frame. Capacity is ensured at init, so this cannot fail.
+    fn occupiedNow(
+        v: *ScheduleView,
+        positions: []const Point,
+        loaded: []const bool,
+    ) *const PointSet {
+        v.occupied.clearRetainingCapacity();
+        for (positions, loaded) |p, l| {
+            if (!l) v.occupied.putAssumeCapacity(p, {});
+        }
+        for (v.idle) |p| v.occupied.putAssumeCapacity(p, {});
+        return &v.occupied;
+    }
+
+    pub fn drawWorld(v: *ScheduleView, font: rl.Font) void {
+        const zones = v.zoneRects();
+        const is_empty = v.empty();
+        const frame_ops: []const OpKind = if (is_empty) &.{} else v.s.frames.items[v.frame].items;
+        const positions: []const Point = if (is_empty) &.{} else v.vm.positions[v.frame];
+        const loaded: []const bool = if (is_empty) &.{} else v.vm.loaded[v.frame];
+
+        const rydberg_zone = v.computeActive(frame_ops, zones);
+        if (!is_empty) v.interpolate(frame_ops);
 
         drawZone(
-            v.cam,
-            v.storage_rect,
+            v.vp.cam,
+            zones.storage,
             if (rydberg_zone == .storage) palette.zone_active else palette.zone_storage,
         );
         drawZone(
-            v.cam,
-            v.compute_rect,
+            v.vp.cam,
+            zones.compute,
             if (rydberg_zone == .compute) palette.zone_active else palette.zone_compute,
         );
         drawZone(
-            v.cam,
-            v.readout_rect,
+            v.vp.cam,
+            zones.readout,
             if (rydberg_zone == .readout) palette.zone_active else palette.zone_readout,
         );
 
-        drawAodHighlight(v.cam, v.draw_positions, loaded, frame_ops);
+        if (!is_empty) drawAodHighlight(v.vp.cam, v.draw_positions, loaded, frame_ops);
 
-        for (v.sites) |slot| drawSlot(v.cam, slot, v.vm.positions[v.frame], loaded, v.idle);
+        const occupied = v.occupiedNow(positions, loaded);
+        for (v.sites) |slot| drawSlot(v.vp.cam, slot, occupied);
+
+        if (!is_empty) v.drawAtoms(font, frame_ops, loaded, rydberg_zone);
+
+        if (v.show_dims) v.drawDims(font);
+        if (is_empty) drawNotice(font, "empty schedule");
+    }
+
+    /// The moving world: move trails, blockade halos, then the atoms.
+    fn drawAtoms(
+        v: *ScheduleView,
+        font: rl.Font,
+        frame_ops: []const OpKind,
+        loaded: []const bool,
+        rydberg_zone: ?schedule.Zone,
+    ) void {
+        const tint = opFill(frame_ops[0]);
 
         for (frame_ops) |op| {
             if (op != .move) continue;
             const m = op.move;
             rl.drawLineEx(
-                v.cam.worldToScreen(toVec(m.src)),
-                v.cam.worldToScreen(toVec(v.draw_positions[m.qubit])),
+                v.vp.cam.worldToScreen(toVec(m.src)),
+                v.vp.cam.worldToScreen(toVec(v.draw_positions[m.qubit])),
                 2.0,
-                withAlpha(accent, 140),
+                withAlpha(tint, 140),
             );
         }
 
-        // Halo every active pair within the blockade radius of the pulse.
+        // Halo every active pair within the blockade radius of the pulse,
+        // pairing over the gathered active indices rather than all atoms.
         if (rydberg_zone != null) {
-            const db: i64 = v.db_nm;
+            var n_act: usize = 0;
+            for (v.active[0..v.vm.num_qubits], 0..) |is_act, i| {
+                if (is_act) {
+                    v.active_idx[n_act] = i;
+                    n_act += 1;
+                }
+            }
+
+            const db: i64 = v.s.cfg.constraints.db_nm;
             const db2 = db * db;
-            for (v.draw_positions[0..v.vm.num_qubits], 0..) |pa, ia| {
-                if (!v.active[ia]) continue;
-                for (v.draw_positions[0..v.vm.num_qubits], 0..) |pb, ib| {
-                    if (ib <= ia or !v.active[ib]) continue;
+            for (v.active_idx[0..n_act], 0..) |ia, k| {
+                for (v.active_idx[k + 1 .. n_act]) |ib| {
+                    const pa = v.draw_positions[ia];
+                    const pb = v.draw_positions[ib];
                     const dx: i64 = @as(i64, pa.x) - @as(i64, pb.x);
                     const dy: i64 = @as(i64, pa.y) - @as(i64, pb.y);
                     if (dx * dx + dy * dy <= db2)
-                        drawPairHalo(v.cam, pa, pb, palette.op_rydberg);
+                        drawPairHalo(v.vp.cam, pa, pb, palette.op_rydberg);
                 }
             }
         }
 
-        for (v.draw_positions, 0..) |pos, id| {
-            const is_loaded = id < loaded.len and loaded[id];
-            const is_active = id < v.active.len and v.active[id];
-            drawQubit(v.cam, font, pos, id, is_active, is_loaded, accent);
+        for (v.draw_positions, loaded, v.active, 0..) |pos, is_loaded, is_active, id| {
+            drawQubit(v.vp.cam, font, pos, id, is_active, is_loaded, tint);
         }
-
-        if (v.show_dims) v.drawDims(font);
     }
 
     /// Dimension arrows mapping the spec-sheet numbers onto the layout.
@@ -463,19 +618,19 @@ pub const ScheduleView = struct {
     /// while every arrow is still too short for its label.
     fn drawDims(v: *const ScheduleView, font: rl.Font) void {
         var shown: usize = 0;
+
         for (v.dims) |d| {
-            if (drawDimension(v.cam, font, d)) shown += 1;
+            if (drawDimension(v.vp.cam, font, d)) shown += 1;
         }
+
         if (shown == 0 and v.dims.len > 0) {
-            const hint = "dimensions: zoom in";
-            const tw = rl.measureTextEx(font, hint, FONT, 0.5).x;
             const sw: f32 = @floatFromInt(rl.getScreenWidth());
-            rl.drawTextEx(
+            drawTextRight(
                 font,
-                hint,
-                .{ .x = sw - tw - PAD, .y = TAB_H + PAD },
+                "dimensions: zoom in",
+                sw - PAD,
+                CONTENT_Y,
                 FONT,
-                0.5,
                 palette.text_sub,
             );
         }
@@ -483,21 +638,7 @@ pub const ScheduleView = struct {
 
     pub fn drawBar(v: *ScheduleView, font: rl.Font, sw: f32, sh: f32) void {
         const bar_y = sh - BAR_H;
-        rl.drawRectangleRec(
-            .{
-                .x = 0,
-                .y = bar_y,
-                .width = sw,
-                .height = BAR_H,
-            },
-            palette.panel_bg,
-        );
-        rl.drawLineEx(
-            .{ .x = 0, .y = bar_y },
-            .{ .x = sw, .y = bar_y },
-            1.0,
-            palette.divider,
-        );
+        drawChromeStrip(bar_y, sw, BAR_H, bar_y);
 
         const row1_y = bar_y + PAD;
 
@@ -508,7 +649,7 @@ pub const ScheduleView = struct {
             .width = BTN_W,
             .height = BTN_H,
         }, "|<")) v.seek(0);
-        x += BTN_W + 6;
+        x += BTN_W + BTN_GAP;
 
         if (rg.button(.{
             .x = x,
@@ -516,7 +657,7 @@ pub const ScheduleView = struct {
             .width = BTN_W,
             .height = BTN_H,
         }, "<")) v.seek(v.frame -| 1);
-        x += BTN_W + 6;
+        x += BTN_W + BTN_GAP;
 
         const play_label: [:0]const u8 = if (v.playing) "pause" else "play";
         if (rg.button(.{
@@ -528,7 +669,7 @@ pub const ScheduleView = struct {
             v.playing = !v.playing;
             v.clock = 0;
         }
-        x += 2 * BTN_W + 6;
+        x += 2 * BTN_W + BTN_GAP;
 
         if (rg.button(.{
             .x = x,
@@ -552,7 +693,7 @@ pub const ScheduleView = struct {
             null,
             &frame_f,
             0,
-            @floatFromInt(@max(v.last_frame, 1)),
+            @floatFromInt(@max(v.lastFrame(), 1)),
         );
         const scrubbed: usize = @intFromFloat(@round(@max(0, frame_f)));
         if (scrubbed != v.frame) v.seek(scrubbed);
@@ -570,7 +711,7 @@ pub const ScheduleView = struct {
             "",
             &v.frame_box,
             0,
-            @intCast(v.last_frame),
+            @intCast(v.lastFrame()),
             v.editing,
         ) != 0) {
             v.editing = !v.editing;
@@ -578,7 +719,10 @@ pub const ScheduleView = struct {
             if (!v.editing) v.seek(@intCast(@max(0, v.frame_box)));
         }
 
-        // Row 2: playback speed + status line.
+        // Row 2: playback speed + status line, laid out with a cursor so
+        // the columns derive from the measured text instead of magic
+        // offsets. The speed readout gets a fixed worst-case slot so the
+        // status line doesn't jiggle as the digits change.
         const row2_y = row1_y + BTN_H + 8;
         var spd_buf: [16]u8 = undefined;
         const spd_txt = std.fmt.bufPrintSentinel(
@@ -587,19 +731,23 @@ pub const ScheduleView = struct {
             .{v.speed},
             0,
         ) catch "?";
+
+        var bx: f32 = PAD;
         rl.drawTextEx(
             font,
             "speed",
-            .{ .x = PAD, .y = row2_y + 2 },
+            .{ .x = bx, .y = row2_y + 2 },
             FONT,
             1,
             palette.text_sub,
         );
+        bx += rl.measureTextEx(font, "speed", FONT, 1).x + PAD;
+
         _ = rg.sliderBar(
             .{
-                .x = PAD + 90,
+                .x = bx,
                 .y = row2_y,
-                .width = 160,
+                .width = SPEED_W,
                 .height = ROW2_H,
             },
             null,
@@ -608,18 +756,19 @@ pub const ScheduleView = struct {
             0.5,
             60,
         );
+        bx += SPEED_W + PAD;
+
         rl.drawTextEx(
             font,
             spd_txt,
-            .{ .x = PAD + 260, .y = row2_y + 2 },
+            .{ .x = bx, .y = row2_y + 2 },
             FONT,
             1,
             palette.text_sub,
         );
+        bx += rl.measureTextEx(font, "00.0/s", FONT, 1).x + 2 * PAD;
 
-        const frame_ops = v.s.frames.items[v.frame].items;
-        const primary_op: OpKind = frame_ops[0];
-        const accent = opFill(primary_op);
+        const primary_op: OpKind = v.s.frames.items[v.frame].items[0];
         const zone_txt = switch (primary_op) {
             .rydberg => |r| @tagName(r.zone),
             .measure => |m| @tagName(m.zone),
@@ -641,7 +790,7 @@ pub const ScheduleView = struct {
             "  |  frame {d} / {d}  |  move {d}  raman {d}  rydberg {d}  measure {d}",
             .{
                 v.frame,
-                v.last_frame,
+                v.lastFrame(),
                 v.vm.summary.move,
                 v.vm.summary.raman,
                 v.vm.summary.rydberg,
@@ -650,21 +799,19 @@ pub const ScheduleView = struct {
             0,
         ) catch "?";
 
-        const status_x = PAD + 400;
-
         rl.drawTextEx(
             font,
             op_txt,
-            .{ .x = status_x, .y = row2_y + 2 },
+            .{ .x = bx, .y = row2_y + 2 },
             FONT,
             1,
-            accent,
+            opFill(primary_op),
         );
 
         rl.drawTextEx(
             font,
             counts_txt,
-            .{ .x = status_x + op_w, .y = row2_y + 2 },
+            .{ .x = bx + op_w, .y = row2_y + 2 },
             FONT,
             1,
             palette.text_sub,
@@ -676,33 +823,19 @@ pub const ScheduleView = struct {
     /// is sized from the measured text (specs_w), and the schedule's fit
     /// region starts past it, so neither the text nor the grid ever sits
     /// under it.
-    pub fn drawSpecs(v: ScheduleView, font: rl.Font) void {
+    pub fn drawSpecs(v: *const ScheduleView, font: rl.Font) void {
         const row_h: f32 = FONT + 4;
         const h = @as(f32, spec_keys.len) * row_h + 2 * PAD + row_h + 8;
 
         const rec = rl.Rectangle{
-            .x = PAD,
-            .y = TAB_H + PAD,
+            .x = CONTENT_X,
+            .y = CONTENT_Y,
             .width = v.specs_w,
             .height = h,
         };
+        drawPanel(rec, withAlpha(palette.panel_bg, 235));
 
-        rl.drawRectangleRounded(
-            rec,
-            0.06,
-            6,
-            withAlpha(palette.panel_bg, 235),
-        );
-
-        rl.drawRectangleRoundedLinesEx(
-            rec,
-            0.06,
-            6,
-            1.0,
-            palette.divider,
-        );
-
-        var y = TAB_H + 2 * PAD;
+        var y = CONTENT_Y + PAD;
         rl.drawTextEx(
             font,
             v.specs.title,
@@ -773,7 +906,10 @@ pub const SpecSheet = struct {
                 cfg.platform.version,
             }, 0),
             .vals = .{
-                try p(arena, "{d} x {d} max", .{ aod.max_num_row, aod.max_num_col }, 0),
+                try p(arena, "{d} x {d} max", .{
+                    aod.max_num_row,
+                    aod.max_num_col,
+                }, 0),
                 try p(arena, ">= {d:.1} um", .{um(aod.min_sep_nm)}, 0),
                 try p(arena, "{d} x {d}  @ {d:.1} x {d:.1} um", .{
                     st.num_row,
@@ -788,8 +924,14 @@ pub const SpecSheet = struct {
                     um(c0.sep_nm[0]),
                     um(c0.sep_nm[1]),
                 }, 0),
-                try p(arena, "{d:.1} / {d:.1} um", .{ um(cz.dr_nm), um(cz.dw_nm) }, 0),
-                try p(arena, "{d} x {d}", .{ ro.num_row, ro.num_col }, 0),
+                try p(arena, "{d:.1} / {d:.1} um", .{
+                    um(cz.dr_nm),
+                    um(cz.dw_nm),
+                }, 0),
+                try p(arena, "{d} x {d}", .{
+                    ro.num_row,
+                    ro.num_col,
+                }, 0),
                 try p(arena, "{d:.1} um", .{um(con.db_nm)}, 0),
                 try p(arena, "{d:.1} um", .{um(con.dz_nm)}, 0),
             },

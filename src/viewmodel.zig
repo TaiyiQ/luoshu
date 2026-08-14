@@ -43,6 +43,23 @@ fn appendSlmSites(
     };
 }
 
+/// Storage positions of the delivered-but-unused atoms: the assembly
+/// sites past the qubit count, mapped onto the storage grid.
+pub fn idleSites(
+    gpa: std.mem.Allocator,
+    layout: arch.ArchConfig,
+    sites: []const schedule.Site,
+    num_qubits: usize,
+) ![]Point {
+    const extra = if (sites.len > num_qubits) sites[num_qubits..] else &[_]schedule.Site{};
+    const out = try gpa.alloc(Point, extra.len);
+    const grid = layout.storage_zone.grid();
+    for (extra, out) |site, *p| {
+        p.* = .{ .x = grid.x(site.col), .y = grid.y(site.row) };
+    }
+    return out;
+}
+
 /// One zone's extent in world nm as the drawing rect type.
 pub const ZoneRect = struct { x0: i32, y0: i32, x1: i32, y1: i32 };
 
@@ -50,24 +67,13 @@ pub fn zoneRect(b: arch.ZoneBox) ZoneRect {
     return .{ .x0 = b.min[0], .y0 = b.min[1], .x1 = b.max[0], .y1 = b.max[1] };
 }
 
-// ── Dimension annotations ────────────────────────────────────────────────────
-
-/// One CAD-style dimension for the schedule view: a double-headed arrow
-/// between two feature anchors, pushed sideways into a clear lane outside
-/// the traps, labeled with the physical distance it spans.
 pub const Dimension = struct {
     a: Point,
     b: Point,
-    /// World offset from the anchors to the arrow itself; extension lines
-    /// bridge each anchor to its offset end.
     lane_nm: Point,
     label: [:0]const u8,
 };
 
-/// The spacing numbers behind the layout, anchored to the trap sites they
-/// measure: per-zone trap separations, the Rydberg pair distance dr, and
-/// the trap-row-to-trap-row flight gap between neighbouring zones. Labels
-/// live in `arena`.
 pub fn buildDimensions(arena: std.mem.Allocator, layout: arch.ArchConfig) ![]Dimension {
     var dims: std.ArrayList(Dimension) = .empty;
 
@@ -77,8 +83,6 @@ pub fn buildDimensions(arena: std.mem.Allocator, layout: arch.ArchConfig) ![]Dim
     const rg = layout.readout_zone.grid();
 
     try appendSeps(arena, &dims, sg, 0);
-    // Rows 1..2, so the sep-y arrow stays clear of the dr arrow spanning
-    // the paired grids at row 0.
     try appendSeps(arena, &dims, cg, 1);
     try appendSeps(arena, &dims, rg, 0);
 
@@ -102,6 +106,7 @@ pub fn buildDimensions(arena: std.mem.Allocator, layout: arch.ArchConfig) ![]Dim
     }, .{ .x = -sg.sep_nm[0], .y = 0 });
 
     const cbottom = if (cg1.bottomRowY() > cg.bottomRowY()) cg1 else cg;
+
     try appendDim(arena, &dims, "gap", .{
         .x = cbottom.x(0),
         .y = cbottom.bottomRowY(),
@@ -113,9 +118,6 @@ pub fn buildDimensions(arena: std.mem.Allocator, layout: arch.ArchConfig) ![]Dim
     return dims.toOwnedSlice(arena);
 }
 
-/// The two trap separations of one SLM grid: sep-x between the first two
-/// columns of the top row (arrow above the grid), sep-y between rows
-/// `row`..`row + 1` of the first column (arrow left of the grid).
 fn appendSeps(
     arena: std.mem.Allocator,
     dims: *std.ArrayList(Dimension),
@@ -131,6 +133,7 @@ fn appendSeps(
             .y = g.y(0),
         }, .{ .x = 0, .y = -g.sep_nm[1] });
     }
+
     if (g.num_row >= 2) {
         const r = if (row + 1 < g.num_row) row else 0;
         try appendDim(arena, dims, "", .{
@@ -154,25 +157,21 @@ fn appendDim(
     const dx: f64 = @floatFromInt(b.x - a.x);
     const dy: f64 = @floatFromInt(b.y - a.y);
     const dist_um = @sqrt(dx * dx + dy * dy) / 1000.0;
+
     const label = if (name.len == 0)
         try std.fmt.allocPrintSentinel(arena, "{d:.1} um", .{dist_um}, 0)
     else
         try std.fmt.allocPrintSentinel(arena, "{s} {d:.1} um", .{ name, dist_um }, 0);
+
     try dims.append(arena, .{ .a = a, .b = b, .lane_nm = lane_nm, .label = label });
 }
 
 /// One gate with the diagram column the layout pass assigned it.
 pub const LaidGate = struct { gate: circuit.Native, col: usize };
 
-/// Column layout for the circuit diagrams: each gate takes the leftmost
-/// column free on every wire it touches (a CZ blocks its whole
-/// control..target span, keeping its connector clear), so gates on disjoint
-/// wires share a column instead of staggering. With a pipeline, a stage
-/// starts past its predecessor's columns, so stages never share one.
 pub const CircuitLayout = struct {
     gpa: std.mem.Allocator,
     laid: []LaidGate,
-    /// Each stage's first column; empty when laid out flat (no pipeline).
     stage_cols: []usize,
     n_cols: usize,
     num_qubits: usize,
@@ -180,6 +179,7 @@ pub const CircuitLayout = struct {
     pub fn init(gpa: std.mem.Allocator, c: circuit.Circuit, p: ?circuit.Pipeline) !CircuitLayout {
         var laid: std.ArrayList(LaidGate) = .empty;
         defer laid.deinit(gpa);
+
         var stage_cols: std.ArrayList(usize) = .empty;
         defer stage_cols.deinit(gpa);
 
@@ -191,7 +191,9 @@ pub const CircuitLayout = struct {
         if (p) |pipe| {
             for (pipe.stages.items) |stage| {
                 try stage_cols.append(gpa, n_cols);
+
                 @memset(next_free, n_cols);
+
                 for (stage.cz_gates.items) |g| {
                     n_cols = @max(n_cols, try place(gpa, &laid, next_free, .{ .cz = g }));
                 }
@@ -207,6 +209,7 @@ pub const CircuitLayout = struct {
 
         const laid_owned = try laid.toOwnedSlice(gpa);
         errdefer gpa.free(laid_owned);
+
         return .{
             .gpa = gpa,
             .laid = laid_owned,
@@ -235,9 +238,13 @@ pub const CircuitLayout = struct {
             .reset => |g| .{ g.qubit, g.qubit },
         };
         var col: usize = 0;
+
         for (next_free[span[0] .. span[1] + 1]) |f| col = @max(col, f);
+
         @memset(next_free[span[0] .. span[1] + 1], col + 1);
+
         try laid.append(gpa, .{ .gate = gate, .col = col });
+
         return col + 1;
     }
 };
@@ -253,17 +260,10 @@ pub const SlotTables = struct {
     rounds: []const Round,
 
     pub const Round = struct {
-        /// Pipeline stage this round routed; U-only stages never appear.
         stage: usize,
-        /// Round index within the stage, of n_in_stage (non-bipartite
-        /// stage graphs leave SLM-SLM residue for further rounds).
         ri: usize,
         n_in_stage: usize,
-        /// Qubit fixed in each compute-zone SLM column, or null.
         fixed: []const ?usize,
-        /// moveable[t][col] = qubit the AOD holds over `col` at timestep
-        /// t, null when that column's AOD is resting. A non-null entry
-        /// over an occupied SLM column is a CZ firing at t.
         moveable: []const []const ?usize,
     };
 
@@ -286,7 +286,9 @@ pub const SlotTables = struct {
 
             for (seqs, 0..) |seq, ri| {
                 const rows = try alloc.alloc([]const ?usize, seq.moveable.len);
+
                 for (seq.moveable, rows) |src, *dst| dst.* = try alloc.dupe(?usize, src);
+
                 try rounds.append(gpa, .{
                     .stage = si,
                     .ri = ri,
@@ -297,7 +299,8 @@ pub const SlotTables = struct {
             }
         }
 
-        return .{ .arena = arena, .rounds = try alloc.dupe(Round, rounds.items) };
+        const owned = try alloc.dupe(Round, rounds.items);
+        return .{ .arena = arena, .rounds = owned };
     }
 
     pub fn deinit(t: *SlotTables) void {
@@ -397,8 +400,6 @@ pub const ViewModel = struct {
         vm.num_qubits = @max(vm.num_qubits, qubit + 1);
     }
 };
-
-// ── Tests ────────────────────────────────────────────────────────────────────
 
 var test_no_slms: [0]arch.Slm = .{};
 
@@ -537,6 +538,7 @@ test "positions track moves and loaded is monotone between load and store" {
         pt(2000, 500),
         pt(2000, 500),
     };
+
     for (vm.positions, expected_pos) |frame_pos, want| {
         try std.testing.expectEqual(want, frame_pos[0]);
         try std.testing.expectEqual(pt(1000, 0), frame_pos[1]);
@@ -730,6 +732,33 @@ test "buildDimensions anchors seps, dr, and zone gaps to the example config" {
     // Arrows sit in lanes outside the grid: sep-x above, sep-y left.
     try std.testing.expect(dims[0].lane_nm.y < 0 and dims[0].lane_nm.x == 0);
     try std.testing.expect(dims[1].lane_nm.x < 0 and dims[1].lane_nm.y == 0);
+}
+
+test "idleSites maps the extra assembly sites onto the storage grid" {
+    const gpa = std.testing.allocator;
+    var hw = try testHw(gpa, &.{});
+    defer hw.deinit();
+
+    // One qubit occupies the first site; the two extras are idle atoms.
+    const sites = [_]schedule.Site{
+        .{ .row = 0, .col = 0 },
+        .{ .row = 0, .col = 2 },
+        .{ .row = 0, .col = 3 },
+    };
+
+    const idle = try idleSites(gpa, hw.cfg, &sites, 1);
+    defer gpa.free(idle);
+
+    try std.testing.expectEqualSlices(Point, &.{
+        .{ .x = 2000, .y = 0 },
+        .{ .x = 3000, .y = 0 },
+    }, idle);
+
+    // No assembly doc: no sites, no idle atoms.
+    const none = try idleSites(gpa, hw.cfg, &.{}, 1);
+    defer gpa.free(none);
+
+    try std.testing.expectEqual(0, none.len);
 }
 
 test {

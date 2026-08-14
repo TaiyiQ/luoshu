@@ -9,7 +9,9 @@ const viewmodel = @import("viewmodel");
 
 const common = @import("common.zig");
 const palette = common.palette;
-const Camera = common.Camera;
+const drawTextCentered = common.drawTextCentered;
+const labelSize = common.labelSize;
+const Viewport = common.Viewport;
 const BBox = common.BBox;
 const FONT = common.FONT;
 const FONT_LG = common.FONT_LG;
@@ -26,8 +28,7 @@ pub const GUTTER_W: f32 = 80;
 pub const CircuitView = struct {
     lay: viewmodel.CircuitLayout,
     show_stages: bool,
-    cam: Camera = .{},
-    touched: bool = false,
+    vp: Viewport = .{},
 
     fn wireY(q: usize) f32 {
         return @as(f32, @floatFromInt(q)) * WIRE_DY;
@@ -49,39 +50,31 @@ pub const CircuitView = struct {
     }
 
     pub fn fit(v: *CircuitView, region: rl.Rectangle) void {
-        v.cam.fitToRegion(v.bbox(), region);
-        v.touched = false;
+        v.vp.fit(v.bbox(), region);
     }
 
     pub fn draw(v: CircuitView, font: rl.Font, region: rl.Rectangle) void {
-        const cam = v.cam;
+        const cam = v.vp.cam;
         const nq = v.lay.num_qubits;
         const content_w: f32 = @as(f32, @floatFromInt(v.lay.n_cols)) * COL_W;
+        // Bands and dividers span the diagram's vertical bounds.
+        const bounds = v.bbox();
 
         // Alternating stage bands under everything else.
         if (v.show_stages) {
-            const top = cam.worldToScreen(.{ .x = 0, .y = -WIRE_DY }).y;
-            const bot = cam.worldToScreen(.{ .x = 0, .y = wireY(nq -| 1) + WIRE_DY }).y;
             for (v.lay.stage_cols, 0..) |sc, s| {
                 if (s % 2 == 0) continue;
-                const x0 = cam.worldToScreen(.{
-                    .x = @as(f32, @floatFromInt(sc)) * COL_W,
-                    .y = 0,
-                }).x;
+                const x0 = @as(f32, @floatFromInt(sc)) * COL_W;
                 const end_col: f32 = if (s + 1 < v.lay.stage_cols.len)
                     @floatFromInt(v.lay.stage_cols[s + 1])
                 else
                     @floatFromInt(v.lay.n_cols);
-                const x1 = cam.worldToScreen(.{ .x = end_col * COL_W, .y = 0 }).x;
-                rl.drawRectangleRec(
-                    .{
-                        .x = x0,
-                        .y = top,
-                        .width = x1 - x0,
-                        .height = bot - top,
-                    },
-                    palette.stage_band,
-                );
+                rl.drawRectangleRec(cam.rect(.{
+                    .x = x0,
+                    .y = bounds.min_y,
+                    .width = end_col * COL_W - x0,
+                    .height = bounds.max_y - bounds.min_y,
+                }), palette.stage_band);
             }
         }
 
@@ -102,8 +95,8 @@ pub const CircuitView = struct {
         if (v.show_stages) {
             for (v.lay.stage_cols[@min(1, v.lay.stage_cols.len)..]) |sc| {
                 const x = @as(f32, @floatFromInt(sc)) * COL_W;
-                const a = cam.worldToScreen(.{ .x = x, .y = -WIRE_DY });
-                const b = cam.worldToScreen(.{ .x = x, .y = wireY(nq -| 1) + WIRE_DY });
+                const a = cam.worldToScreen(.{ .x = x, .y = bounds.min_y });
+                const b = cam.worldToScreen(.{ .x = x, .y = bounds.max_y });
                 rl.drawLineEx(a, b, 1.0, palette.divider);
             }
         }
@@ -159,7 +152,7 @@ pub const CircuitView = struct {
         box: f32,
         fs: f32,
     ) void {
-        const c = v.cam.worldToScreen(.{
+        const c = v.vp.cam.worldToScreen(.{
             .x = colX(col),
             .y = wireY(q),
         });
@@ -171,18 +164,7 @@ pub const CircuitView = struct {
         };
         rl.drawRectangleRounded(rec, 0.2, 4, fill);
         if (box >= 14) {
-            const tw = rl.measureTextEx(font, label, fs, 0).x;
-            rl.drawTextEx(
-                font,
-                label,
-                .{
-                    .x = c.x - tw / 2,
-                    .y = c.y - fs / 2,
-                },
-                fs,
-                0,
-                palette.bg,
-            );
+            drawTextCentered(font, label, c.x, c.y - fs / 2, fs, palette.bg);
         }
     }
 
@@ -205,11 +187,11 @@ pub const CircuitView = struct {
             palette.divider,
         );
 
-        const spacing = WIRE_DY * v.cam.zoom;
+        const spacing = WIRE_DY * v.vp.cam.zoom;
 
         if (spacing < 1) return;
 
-        const fs = std.math.clamp(FONT * v.cam.zoom, 12.0, FONT_LG);
+        const fs = labelSize(v.vp.cam.zoom);
         const step: usize = if (spacing >= fs + 2)
             1
         else
@@ -217,7 +199,7 @@ pub const CircuitView = struct {
 
         var q: usize = 0;
         while (q < v.lay.num_qubits) : (q += step) {
-            const sy = v.cam.worldToScreen(.{ .x = 0, .y = wireY(q) }).y;
+            const sy = v.vp.cam.worldToScreen(.{ .x = 0, .y = wireY(q) }).y;
             if (sy < region.y + fs / 2 or sy > region.y + region.height) continue;
             var buf: [12]u8 = undefined;
             const label = std.fmt.bufPrintSentinel(&buf, "q{d}", .{q}, 0) catch "?";
@@ -236,7 +218,7 @@ pub const CircuitView = struct {
     fn drawStageLabels(v: CircuitView, font: rl.Font, region: rl.Rectangle) void {
         if (!v.show_stages) return;
         for (v.lay.stage_cols, 0..) |sc, s| {
-            const sx = v.cam.worldToScreen(.{
+            const sx = v.vp.cam.worldToScreen(.{
                 .x = @as(f32, @floatFromInt(sc)) * COL_W,
                 .y = 0,
             }).x;
