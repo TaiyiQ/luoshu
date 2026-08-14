@@ -11,7 +11,7 @@ const common = @import("common.zig");
 const palette = common.palette;
 const drawTextCentered = common.drawTextCentered;
 const labelSize = common.labelSize;
-const Camera = common.Camera;
+const Viewport = common.Viewport;
 const BBox = common.BBox;
 const FONT = common.FONT;
 const FONT_LG = common.FONT_LG;
@@ -28,8 +28,7 @@ pub const GUTTER_W: f32 = 80;
 pub const CircuitView = struct {
     lay: viewmodel.CircuitLayout,
     show_stages: bool,
-    cam: Camera = .{},
-    touched: bool = false,
+    vp: Viewport = .{},
 
     fn wireY(q: usize) f32 {
         return @as(f32, @floatFromInt(q)) * WIRE_DY;
@@ -51,12 +50,11 @@ pub const CircuitView = struct {
     }
 
     pub fn fit(v: *CircuitView, region: rl.Rectangle) void {
-        v.cam.fitToRegion(v.bbox(), region);
-        v.touched = false;
+        v.vp.fit(v.bbox(), region);
     }
 
     pub fn draw(v: CircuitView, font: rl.Font, region: rl.Rectangle) void {
-        const cam = v.cam;
+        const cam = v.vp.cam;
         const nq = v.lay.num_qubits;
         const content_w: f32 = @as(f32, @floatFromInt(v.lay.n_cols)) * COL_W;
 
@@ -153,7 +151,7 @@ pub const CircuitView = struct {
         box: f32,
         fs: f32,
     ) void {
-        const c = v.cam.worldToScreen(.{
+        const c = v.vp.cam.worldToScreen(.{
             .x = colX(col),
             .y = wireY(q),
         });
@@ -188,11 +186,11 @@ pub const CircuitView = struct {
             palette.divider,
         );
 
-        const spacing = WIRE_DY * v.cam.zoom;
+        const spacing = WIRE_DY * v.vp.cam.zoom;
 
         if (spacing < 1) return;
 
-        const fs = labelSize(v.cam.zoom);
+        const fs = labelSize(v.vp.cam.zoom);
         const step: usize = if (spacing >= fs + 2)
             1
         else
@@ -200,7 +198,7 @@ pub const CircuitView = struct {
 
         var q: usize = 0;
         while (q < v.lay.num_qubits) : (q += step) {
-            const sy = v.cam.worldToScreen(.{ .x = 0, .y = wireY(q) }).y;
+            const sy = v.vp.cam.worldToScreen(.{ .x = 0, .y = wireY(q) }).y;
             if (sy < region.y + fs / 2 or sy > region.y + region.height) continue;
             var buf: [12]u8 = undefined;
             const label = std.fmt.bufPrintSentinel(&buf, "q{d}", .{q}, 0) catch "?";
@@ -219,7 +217,7 @@ pub const CircuitView = struct {
     fn drawStageLabels(v: CircuitView, font: rl.Font, region: rl.Rectangle) void {
         if (!v.show_stages) return;
         for (v.lay.stage_cols, 0..) |sc, s| {
-            const sx = v.cam.worldToScreen(.{
+            const sx = v.vp.cam.worldToScreen(.{
                 .x = @as(f32, @floatFromInt(sc)) * COL_W,
                 .y = 0,
             }).x;

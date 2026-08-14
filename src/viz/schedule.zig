@@ -18,6 +18,7 @@ const drawPanel = common.drawPanel;
 const drawTextCentered = common.drawTextCentered;
 const drawTextRight = common.drawTextRight;
 const Camera = common.Camera;
+const Viewport = common.Viewport;
 const BBox = common.BBox;
 
 const FONT = common.FONT;
@@ -309,19 +310,18 @@ fn drawQubit(
 /// buffers the render loop fills each frame. World drawing and the
 /// transport bar both live here so run() stays a thin view switcher.
 pub const ScheduleView = struct {
+    // Owns everything init precomputes: spec strings, dimensions, trap
+    // sites, idle positions, and the per-frame scratch buffers.
+    arena: std.heap.ArenaAllocator,
+
     s: *const schedule.Hardware,
     vm: *const viewmodel.ViewModel,
     specs: SpecSheet,
     specs_w: f32,
-    storage_rect: ZoneRect,
-    compute_rect: ZoneRect,
-    readout_rect: ZoneRect,
     sites: []const Point,
     idle: []const Point,
     active: []bool,
     draw_positions: []Point,
-    last_frame: usize,
-    db_nm: u32,
     dims: []const viewmodel.Dimension,
     show_specs: bool = true,
     show_dims: bool = true,
@@ -333,23 +333,64 @@ pub const ScheduleView = struct {
     frame_box: i32 = 0, // valueBox binding for exact-frame entry
     editing: bool = false, // the frame box owns the keyboard while true
 
-    cam: Camera = .{},
-    touched: bool = false,
+    vp: Viewport = .{},
+
+    /// Precompute everything the render loop reads. `asm_sites` is the
+    /// assembly-delivered storage occupancy (empty without an assembly
+    /// doc); the extra sites past the qubit count are the idle atoms.
+    pub fn init(
+        gpa: std.mem.Allocator,
+        s: *const schedule.Hardware,
+        vm: *const viewmodel.ViewModel,
+        asm_sites: []const schedule.Site,
+        font: rl.Font,
+    ) !ScheduleView {
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        errdefer arena.deinit();
+        const a = arena.allocator();
+
+        const specs = try SpecSheet.build(a, s.cfg);
+        const sites = try viewmodel.allSlmSites(a, s.cfg);
+        const idle = try viewmodel.idleSites(a, s.cfg, asm_sites, vm.num_qubits);
+        const active = try a.alloc(bool, s.placement.len);
+        const draw_positions = try a.alloc(Point, s.placement.len);
+        const dims = try viewmodel.buildDimensions(a, s.cfg);
+
+        return .{
+            .arena = arena,
+            .s = s,
+            .vm = vm,
+            .specs = specs,
+            .specs_w = specs.width(font),
+            .sites = sites,
+            .idle = idle,
+            .active = active,
+            .draw_positions = draw_positions,
+            .dims = dims,
+        };
+    }
+
+    pub fn deinit(v: *ScheduleView) void {
+        v.arena.deinit();
+    }
 
     pub fn empty(v: ScheduleView) bool {
         return v.s.placement.len == 0 or v.s.frames.items.len == 0;
     }
 
+    fn lastFrame(v: *const ScheduleView) usize {
+        return v.s.frames.items.len -| 1;
+    }
+
     /// Jump to a frame and stop playback.
     pub fn seek(v: *ScheduleView, frame: usize) void {
-        v.frame = @min(frame, v.last_frame);
+        v.frame = @min(frame, v.lastFrame());
         v.playing = false;
         v.clock = 0;
     }
 
     pub fn fit(v: *ScheduleView, region: rl.Rectangle) void {
-        v.cam.fitToRegion(BBox.fromPoints(v.sites), region);
-        v.touched = false;
+        v.vp.fit(BBox.fromPoints(v.sites), region);
     }
 
     pub fn input(v: *ScheduleView) void {
@@ -370,8 +411,8 @@ pub const ScheduleView = struct {
             const steps: usize = @intFromFloat(v.clock);
             v.clock -= @floatFromInt(steps);
             v.frame += steps;
-            if (v.frame >= v.last_frame) {
-                v.frame = v.last_frame;
+            if (v.frame >= v.lastFrame()) {
+                v.frame = v.lastFrame();
                 v.playing = false;
                 v.clock = 0;
             }
@@ -379,11 +420,17 @@ pub const ScheduleView = struct {
     }
 
     pub fn drawWorld(v: *ScheduleView, font: rl.Font) void {
+        // Zone extents derive from the config; cheap enough to rebuild
+        // per frame.
+        const storage_rect = viewmodel.zoneRect(v.s.cfg.storage_zone.box());
+        const compute_rect = viewmodel.zoneRect(v.s.cfg.compute_zone.box());
+        const readout_rect = viewmodel.zoneRect(v.s.cfg.readout_zone.box());
+
         if (v.empty()) {
-            drawZone(v.cam, v.storage_rect, palette.zone_storage);
-            drawZone(v.cam, v.compute_rect, palette.zone_compute);
-            drawZone(v.cam, v.readout_rect, palette.zone_readout);
-            for (v.sites) |slot| drawSlot(v.cam, slot, &.{}, &.{}, v.idle);
+            drawZone(v.vp.cam, storage_rect, palette.zone_storage);
+            drawZone(v.vp.cam, compute_rect, palette.zone_compute);
+            drawZone(v.vp.cam, readout_rect, palette.zone_readout);
+            for (v.sites) |slot| drawSlot(v.vp.cam, slot, &.{}, &.{}, v.idle);
             if (v.show_dims) v.drawDims(font);
             drawNotice(font, "empty schedule");
             return;
@@ -412,9 +459,9 @@ pub const ScheduleView = struct {
             .rydberg => |r| {
                 rydberg_zone = r.zone;
                 const zr = switch (r.zone) {
-                    .storage => v.storage_rect,
-                    .compute => v.compute_rect,
-                    .readout => v.readout_rect,
+                    .storage => storage_rect,
+                    .compute => compute_rect,
+                    .readout => readout_rect,
                 };
                 for (v.vm.positions[v.frame], 0..) |p, q| {
                     if (p.x >= zr.x0 and p.x <= zr.x1 and
@@ -444,31 +491,31 @@ pub const ScheduleView = struct {
         }
 
         drawZone(
-            v.cam,
-            v.storage_rect,
+            v.vp.cam,
+            storage_rect,
             if (rydberg_zone == .storage) palette.zone_active else palette.zone_storage,
         );
         drawZone(
-            v.cam,
-            v.compute_rect,
+            v.vp.cam,
+            compute_rect,
             if (rydberg_zone == .compute) palette.zone_active else palette.zone_compute,
         );
         drawZone(
-            v.cam,
-            v.readout_rect,
+            v.vp.cam,
+            readout_rect,
             if (rydberg_zone == .readout) palette.zone_active else palette.zone_readout,
         );
 
-        drawAodHighlight(v.cam, v.draw_positions, loaded, frame_ops);
+        drawAodHighlight(v.vp.cam, v.draw_positions, loaded, frame_ops);
 
-        for (v.sites) |slot| drawSlot(v.cam, slot, v.vm.positions[v.frame], loaded, v.idle);
+        for (v.sites) |slot| drawSlot(v.vp.cam, slot, v.vm.positions[v.frame], loaded, v.idle);
 
         for (frame_ops) |op| {
             if (op != .move) continue;
             const m = op.move;
             rl.drawLineEx(
-                v.cam.worldToScreen(toVec(m.src)),
-                v.cam.worldToScreen(toVec(v.draw_positions[m.qubit])),
+                v.vp.cam.worldToScreen(toVec(m.src)),
+                v.vp.cam.worldToScreen(toVec(v.draw_positions[m.qubit])),
                 2.0,
                 withAlpha(accent, 140),
             );
@@ -476,7 +523,7 @@ pub const ScheduleView = struct {
 
         // Halo every active pair within the blockade radius of the pulse.
         if (rydberg_zone != null) {
-            const db: i64 = v.db_nm;
+            const db: i64 = v.s.cfg.constraints.db_nm;
             const db2 = db * db;
             for (v.draw_positions[0..v.vm.num_qubits], 0..) |pa, ia| {
                 if (!v.active[ia]) continue;
@@ -485,7 +532,7 @@ pub const ScheduleView = struct {
                     const dx: i64 = @as(i64, pa.x) - @as(i64, pb.x);
                     const dy: i64 = @as(i64, pa.y) - @as(i64, pb.y);
                     if (dx * dx + dy * dy <= db2)
-                        drawPairHalo(v.cam, pa, pb, palette.op_rydberg);
+                        drawPairHalo(v.vp.cam, pa, pb, palette.op_rydberg);
                 }
             }
         }
@@ -493,7 +540,7 @@ pub const ScheduleView = struct {
         for (v.draw_positions, 0..) |pos, id| {
             const is_loaded = id < loaded.len and loaded[id];
             const is_active = id < v.active.len and v.active[id];
-            drawQubit(v.cam, font, pos, id, is_active, is_loaded, accent);
+            drawQubit(v.vp.cam, font, pos, id, is_active, is_loaded, accent);
         }
 
         if (v.show_dims) v.drawDims(font);
@@ -505,7 +552,7 @@ pub const ScheduleView = struct {
     fn drawDims(v: *const ScheduleView, font: rl.Font) void {
         var shown: usize = 0;
         for (v.dims) |d| {
-            if (drawDimension(v.cam, font, d)) shown += 1;
+            if (drawDimension(v.vp.cam, font, d)) shown += 1;
         }
         if (shown == 0 and v.dims.len > 0) {
             const sw: f32 = @floatFromInt(rl.getScreenWidth());
@@ -584,7 +631,7 @@ pub const ScheduleView = struct {
             null,
             &frame_f,
             0,
-            @floatFromInt(@max(v.last_frame, 1)),
+            @floatFromInt(@max(v.lastFrame(), 1)),
         );
         const scrubbed: usize = @intFromFloat(@round(@max(0, frame_f)));
         if (scrubbed != v.frame) v.seek(scrubbed);
@@ -602,7 +649,7 @@ pub const ScheduleView = struct {
             "",
             &v.frame_box,
             0,
-            @intCast(v.last_frame),
+            @intCast(v.lastFrame()),
             v.editing,
         ) != 0) {
             v.editing = !v.editing;
@@ -673,7 +720,7 @@ pub const ScheduleView = struct {
             "  |  frame {d} / {d}  |  move {d}  raman {d}  rydberg {d}  measure {d}",
             .{
                 v.frame,
-                v.last_frame,
+                v.lastFrame(),
                 v.vm.summary.move,
                 v.vm.summary.raman,
                 v.vm.summary.rydberg,

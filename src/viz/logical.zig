@@ -12,7 +12,7 @@ const drawNotice = common.drawNotice;
 const drawTextCentered = common.drawTextCentered;
 const drawTextRight = common.drawTextRight;
 const labelSize = common.labelSize;
-const Camera = common.Camera;
+const Viewport = common.Viewport;
 const BBox = common.BBox;
 const FONT = common.FONT;
 const FONT_LG = common.FONT_LG;
@@ -32,8 +32,7 @@ const ROW_LABEL_W: f32 = 70;
 /// stage and round.
 pub const LogicalView = struct {
     tables: *const viewmodel.SlotTables,
-    cam: Camera = .{},
-    touched: bool = false,
+    vp: Viewport = .{},
 
     const slm_fill = withAlpha(palette.op_load, 70);
     const ride_fill = withAlpha(palette.accent, 45);
@@ -48,7 +47,12 @@ pub const LogicalView = struct {
     }
 
     fn bbox(v: LogicalView) BBox {
-        if (v.empty()) return .default;
+        if (v.empty()) return .{
+            .min_x = -10,
+            .min_y = -10,
+            .max_x = 10,
+            .max_y = 10,
+        };
         var w: f32 = 1;
         var y: f32 = 0;
         for (v.tables.rounds) |round| {
@@ -64,8 +68,7 @@ pub const LogicalView = struct {
     }
 
     pub fn fit(v: *LogicalView, region: rl.Rectangle) void {
-        v.cam.fitToRegion(v.bbox(), region);
-        v.touched = false;
+        v.vp.fit(v.bbox(), region);
     }
 
     pub fn draw(v: LogicalView, font: rl.Font, region: rl.Rectangle) void {
@@ -78,7 +81,7 @@ pub const LogicalView = struct {
         // and anything outside the region don't hover.
         const mouse = rl.getMousePosition();
         const mw: ?rl.Vector2 = if (rl.checkCollisionPointRec(mouse, region))
-            v.cam.screenToWorld(mouse)
+            v.vp.cam.screenToWorld(mouse)
         else
             null;
 
@@ -103,8 +106,8 @@ pub const LogicalView = struct {
         round: viewmodel.SlotTables.Round,
         ty: f32,
     ) void {
-        const s = v.cam.worldToScreen(.{ .x = 0, .y = ty });
-        const fs = std.math.clamp(FONT_LG * v.cam.zoom, 14, FONT_LG);
+        const s = v.vp.cam.worldToScreen(.{ .x = 0, .y = ty });
+        const fs = std.math.clamp(FONT_LG * v.vp.cam.zoom, 14, FONT_LG);
         var buf: [48]u8 = undefined;
         const txt = std.fmt.bufPrintSentinel(
             &buf,
@@ -130,7 +133,7 @@ pub const LogicalView = struct {
         ty: f32,
         mw: ?rl.Vector2,
     ) void {
-        const cam = v.cam;
+        const cam = v.vp.cam;
         const n_slots = round.fixed.len;
         const n_rows = 1 + round.moveable.len;
         const cell_h = CELL_H * cam.zoom;
@@ -242,7 +245,7 @@ pub const LogicalView = struct {
         show_text: bool,
         fs: f32,
     ) void {
-        rl.drawRectangleRec(v.cam.rect(.{
+        rl.drawRectangleRec(v.vp.cam.rect(.{
             .x = wx,
             .y = wy,
             .width = CELL_W,
@@ -251,7 +254,7 @@ pub const LogicalView = struct {
         if (!show_text) return;
         var buf: [12]u8 = undefined;
         const txt = std.fmt.bufPrintSentinel(&buf, "{d}", .{q}, 0) catch "?";
-        const c = v.cam.worldToScreen(.{
+        const c = v.vp.cam.worldToScreen(.{
             .x = wx + CELL_W / 2,
             .y = wy + CELL_H / 2,
         });
@@ -260,11 +263,11 @@ pub const LogicalView = struct {
 
     // The ASCII table's `·`: an empty slot.
     fn drawDot(v: LogicalView, wx: f32, wy: f32) void {
-        const c = v.cam.worldToScreen(.{
+        const c = v.vp.cam.worldToScreen(.{
             .x = wx + CELL_W / 2,
             .y = wy + CELL_H / 2,
         });
-        rl.drawCircleV(c, @max(1.0, 2.5 * v.cam.zoom), palette.qdot);
+        rl.drawCircleV(c, @max(1.0, 2.5 * v.vp.cam.zoom), palette.qdot);
     }
 };
 

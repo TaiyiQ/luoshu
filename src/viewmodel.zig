@@ -43,6 +43,23 @@ fn appendSlmSites(
     };
 }
 
+/// Storage positions of the delivered-but-unused atoms: the assembly
+/// sites past the qubit count, mapped onto the storage grid.
+pub fn idleSites(
+    gpa: std.mem.Allocator,
+    layout: arch.ArchConfig,
+    sites: []const schedule.Site,
+    num_qubits: usize,
+) ![]Point {
+    const extra = if (sites.len > num_qubits) sites[num_qubits..] else &[_]schedule.Site{};
+    const out = try gpa.alloc(Point, extra.len);
+    const grid = layout.storage_zone.grid();
+    for (extra, out) |site, *p| {
+        p.* = .{ .x = grid.x(site.col), .y = grid.y(site.row) };
+    }
+    return out;
+}
+
 /// One zone's extent in world nm as the drawing rect type.
 pub const ZoneRect = struct { x0: i32, y0: i32, x1: i32, y1: i32 };
 
@@ -537,6 +554,7 @@ test "positions track moves and loaded is monotone between load and store" {
         pt(2000, 500),
         pt(2000, 500),
     };
+
     for (vm.positions, expected_pos) |frame_pos, want| {
         try std.testing.expectEqual(want, frame_pos[0]);
         try std.testing.expectEqual(pt(1000, 0), frame_pos[1]);
@@ -730,6 +748,30 @@ test "buildDimensions anchors seps, dr, and zone gaps to the example config" {
     // Arrows sit in lanes outside the grid: sep-x above, sep-y left.
     try std.testing.expect(dims[0].lane_nm.y < 0 and dims[0].lane_nm.x == 0);
     try std.testing.expect(dims[1].lane_nm.x < 0 and dims[1].lane_nm.y == 0);
+}
+
+test "idleSites maps the extra assembly sites onto the storage grid" {
+    const gpa = std.testing.allocator;
+    var hw = try testHw(gpa, &.{});
+    defer hw.deinit();
+
+    // One qubit occupies the first site; the two extras are idle atoms.
+    const sites = [_]schedule.Site{
+        .{ .row = 0, .col = 0 },
+        .{ .row = 0, .col = 2 },
+        .{ .row = 0, .col = 3 },
+    };
+    const idle = try idleSites(gpa, hw.cfg, &sites, 1);
+    defer gpa.free(idle);
+    try std.testing.expectEqualSlices(Point, &.{
+        .{ .x = 2000, .y = 0 },
+        .{ .x = 3000, .y = 0 },
+    }, idle);
+
+    // No assembly doc: no sites, no idle atoms.
+    const none = try idleSites(gpa, hw.cfg, &.{}, 1);
+    defer gpa.free(none);
+    try std.testing.expectEqual(0, none.len);
 }
 
 test {
