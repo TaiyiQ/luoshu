@@ -30,10 +30,7 @@ pub const palette = struct {
     pub const op_rydberg = rl.Color{ .r = 239, .g = 159, .b = 118, .a = 255 };
     pub const op_load = rl.Color{ .r = 147, .g = 154, .b = 183, .a = 255 };
     pub const op_store = rl.Color{ .r = 231, .g = 130, .b = 132, .a = 255 };
-    /// Faint wash behind every other stage, so stage extents read at a
-    /// glance; content draws over it.
     pub const stage_band = rl.Color{ .r = 198, .g = 208, .b = 245, .a = 10 };
-    /// Dimension annotations: spacing arrows and their labels.
     pub const dimension = rl.Color{ .r = 229, .g = 200, .b = 144, .a = 255 };
 };
 
@@ -46,9 +43,6 @@ pub fn withAlpha(c: rl.Color, a: u8) rl.Color {
     };
 }
 
-// UI font sizes. Every piece of text uses one of these two, and the
-// row heights / offsets around text derive from them, so a bump here
-// rescales the whole visualizer. Untyped so they coerce to f32 or i32.
 pub const FONT = 24;
 pub const FONT_LG = 28;
 
@@ -124,8 +118,8 @@ pub const Camera = struct {
         };
     }
 
-    /// Fit `bbox` into `region`, a screen-space rectangle (so views can
-    /// center content between the tab bar and the transport bar).
+    /// Fit bbox into region, a screen-space rectangle.
+    /// Center content between the tab bar and the transport bar.
     pub fn fitToRegion(self: *Camera, bbox: BBox, region: rl.Rectangle) void {
         const dx = bbox.max_x - bbox.min_x;
         const dy = bbox.max_y - bbox.min_y;
@@ -138,8 +132,7 @@ pub const Camera = struct {
     }
 };
 
-/// A view's pan/zoom state: the camera plus whether the user has touched
-/// it - fits (initial, resize, `r`) keep re-framing only untouched views.
+/// A view's pan/zoom state: the camera plus whether the user has touched it.
 pub const Viewport = struct {
     cam: Camera = .{},
     touched: bool = false,
@@ -149,8 +142,6 @@ pub const Viewport = struct {
         vp.touched = false;
     }
 };
-
-// ── Shared chrome helpers ────────────────────────────────────────────────
 
 /// Screen-space origin of pinned view content, just under the tab bar.
 pub const CONTENT_X: f32 = PAD;
@@ -219,8 +210,9 @@ pub fn drawPanel(rec: rl.Rectangle, bg: rl.Color) void {
     rl.drawRectangleRoundedLinesEx(rec, 0.06, 6, 1.0, palette.divider);
 }
 
-/// Full-width chrome strip with its divider rule: the tab bar (divider
-/// along its bottom edge) and the transport bar (divider along its top).
+/// Full-width chrome strip with its divider rule:
+/// - tab bar
+/// - transport bar
 pub fn drawChromeStrip(y: f32, sw: f32, h: f32, divider_y: f32) void {
     rl.drawRectangleRec(
         .{
@@ -245,8 +237,7 @@ pub fn drawChromeStrip(y: f32, sw: f32, h: f32, divider_y: f32) void {
     );
 }
 
-/// Placeholder line for a view with nothing to show, pinned at the
-/// content origin.
+/// Placeholder line for a view with nothing to show.
 pub fn drawNotice(font: rl.Font, txt: [:0]const u8) void {
     rl.drawTextEx(
         font,
