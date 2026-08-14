@@ -41,8 +41,9 @@ pub const SlmOrder = struct {
         visited[from] = true;
         queue.append(self.gpa, from) catch return false;
 
-        while (queue.items.len > 0) {
-            const u = queue.orderedRemove(0);
+        var head: usize = 0;
+        while (head < queue.items.len) : (head += 1) {
+            const u = queue.items[head];
 
             if (u == to) return true;
 
@@ -97,6 +98,10 @@ pub fn dsatur(gpa: std.mem.Allocator, g: *Graph, aod_nodes: []const usize, order
         }
     }
 
+    // countSaturation scratch; color values stay below the edge count.
+    const sat_seen = try gpa.alloc(bool, g.m);
+    defer gpa.free(sat_seen);
+
     var colored: std.ArrayList(ColoredEdge) = .empty;
     defer colored.deinit(gpa);
 
@@ -107,8 +112,21 @@ pub fn dsatur(gpa: std.mem.Allocator, g: *Graph, aod_nodes: []const usize, order
         var e = g.edges[v];
         while (e) |edge| : (e = edge.next) try adj.append(gpa, edge.y);
 
-        const Ctx = struct { g: *Graph, v: usize, order: *const SlmOrder, cov: []const usize };
-        std.sort.heap(usize, adj.items, Ctx{ .g = g, .v = v, .order = order, .cov = cov_degree }, struct {
+        const Ctx = struct {
+            g: *Graph,
+            v: usize,
+            order: *const SlmOrder,
+            cov: []const usize,
+            seen: []bool,
+        };
+
+        std.sort.heap(usize, adj.items, Ctx{
+            .g = g,
+            .v = v,
+            .order = order,
+            .cov = cov_degree,
+            .seen = sat_seen,
+        }, struct {
             fn less(ctx: Ctx, a: usize, b: usize) bool {
                 if (a == b) return false;
 
@@ -116,8 +134,8 @@ pub fn dsatur(gpa: std.mem.Allocator, g: *Graph, aod_nodes: []const usize, order
                 if (ctx.order.mustPrecede(a, b)) return true;
                 if (ctx.order.mustPrecede(b, a)) return false;
 
-                const sat_a = countSaturation(ctx.g, ctx.v, a);
-                const sat_b = countSaturation(ctx.g, ctx.v, b);
+                const sat_a = countSaturation(ctx.g, ctx.v, a, ctx.seen);
+                const sat_b = countSaturation(ctx.g, ctx.v, b, ctx.seen);
                 if (sat_a != sat_b) return sat_a > sat_b;
 
                 if (ctx.cov[a] != ctx.cov[b]) return ctx.cov[a] > ctx.cov[b];
@@ -201,31 +219,37 @@ fn leastAdmissible(
     }
 }
 
-fn countSaturation(g: *Graph, u: usize, v: usize) usize {
-    var seen = std.AutoHashMap(i32, void).init(g.gpa);
-    defer seen.deinit();
+/// Distinct colors incident to u and v, their shared edge aside. `seen` is
+/// caller-owned scratch indexed by color.
+fn countSaturation(g: *Graph, u: usize, v: usize, seen: []bool) usize {
+    @memset(seen, false);
+    var count: usize = 0;
 
     var e = g.edges[u];
     while (e) |edge| : (e = edge.next) {
-        const w = edge.y;
-        if (w != v) {
-            if (edge.color) |c| {
-                _ = seen.getOrPut(c) catch {};
+        if (edge.y == v) continue;
+        if (edge.color) |c| {
+            const i: usize = @intCast(c);
+            if (!seen[i]) {
+                seen[i] = true;
+                count += 1;
             }
         }
     }
 
     e = g.edges[v];
     while (e) |edge| : (e = edge.next) {
-        const w = edge.y;
-        if (w != u) {
-            if (edge.color) |c| {
-                _ = seen.getOrPut(c) catch {};
+        if (edge.y == u) continue;
+        if (edge.color) |c| {
+            const i: usize = @intCast(c);
+            if (!seen[i]) {
+                seen[i] = true;
+                count += 1;
             }
         }
     }
 
-    return seen.count();
+    return count;
 }
 
 test {
@@ -326,7 +350,14 @@ test "leastAdmissible errors when every color inverts the slm order" {
     const colored = [_]ColoredEdge{.{ .aod = 0, .slm = 1, .color = 0 }};
     const rank_of = [_]usize{ 0, 0, 0 };
 
-    try std.testing.expectError(error.CyclicAodOrder, leastAdmissible(0, 2, 0, &rank_of, &colored, &order));
+    try std.testing.expectError(error.CyclicAodOrder, leastAdmissible(
+        0,
+        2,
+        0,
+        &rank_of,
+        &colored,
+        &order,
+    ));
 }
 
 test "a shared color class must mirror the aod ranks" {
