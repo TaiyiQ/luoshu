@@ -54,22 +54,18 @@ const View = enum(i32) {
 
     const count: i32 = @typeInfo(View).@"enum".fields.len;
 
-    /// The tab bar's ";"-joined labels, derived from the field names.
-    const labels = blk: {
-        var s: [:0]const u8 = "";
-        for (@typeInfo(View).@"enum".fields, 0..) |f, i| {
-            s = if (i == 0) f.name else s ++ ";" ++ f.name;
-        }
-        break :blk s;
-    };
+    // Tab-bar labels for toggleGroup; must match the field order above.
+    const labels = "circuit;stages;logical;schedule";
 
     fn next(v: View) View {
-        return @enumFromInt(@mod(@intFromEnum(v) + 1, count));
+        return switch (v) {
+            .circuit => .stages,
+            .stages => .logical,
+            .logical => .schedule,
+            .schedule => .circuit,
+        };
     }
 };
-
-// Keys 1-4 select views in declaration order.
-const view_keys = [_]rl.KeyboardKey{ .one, .two, .three, .four };
 
 /// Screen region a view's world fills: the tab bar owns the top, the
 /// schedule's transport bar the bottom, and the spec panel (while shown,
@@ -97,8 +93,6 @@ fn regionFor(view: View, sw: f32, sh: f32, specs_pad: f32) rl.Rectangle {
         },
     };
 }
-
-// ── Shortcut help ────────────────────────────────────────────────────────────
 
 const shortcuts = [_]struct { key: [:0]const u8, desc: [:0]const u8 }{
     .{ .key = "1-4", .desc = "switch view" },
@@ -160,8 +154,6 @@ fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
         y += row_h;
     }
 }
-
-// ── Tab bar + entry point ────────────────────────────────────────────────────
 
 fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
     drawChromeStrip(0, sw, TAB_H, TAB_H);
@@ -273,13 +265,12 @@ pub fn run(
             fitted = true;
         }
 
-        // ── Input ──────────────────────────────────────────────────
         const prev_view = view;
         if (!sched.editing) {
-            for (view_keys, 0..) |key, i| {
-                if (rl.isKeyPressed(key)) view = @enumFromInt(i);
-            }
-
+            if (rl.isKeyPressed(.one)) view = .circuit;
+            if (rl.isKeyPressed(.two)) view = .stages;
+            if (rl.isKeyPressed(.three)) view = .logical;
+            if (rl.isKeyPressed(.four)) view = .schedule;
             if (rl.isKeyPressed(.tab)) view = view.next();
             if (rl.isKeyPressed(.slash)) show_help = !show_help;
 
@@ -357,7 +348,6 @@ pub fn run(
 
         if (view == .schedule) sched.update(dt);
 
-        // ── Draw ───────────────────────────────────────────────────
         rl.beginDrawing();
         defer rl.endDrawing();
         rl.clearBackground(palette.bg);
