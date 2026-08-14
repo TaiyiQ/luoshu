@@ -26,6 +26,7 @@ const logical_view = @import("logical.zig");
 const palette = common.palette;
 const styleGui = common.styleGui;
 const drawPanel = common.drawPanel;
+const drawChromeStrip = common.drawChromeStrip;
 const drawTextRight = common.drawTextRight;
 const Viewport = common.Viewport;
 const FONT = common.FONT;
@@ -163,19 +164,7 @@ fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
 // ── Tab bar + entry point ────────────────────────────────────────────────────
 
 fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
-    rl.drawRectangleRec(.{
-        .x = 0,
-        .y = 0,
-        .width = sw,
-        .height = TAB_H,
-    }, palette.panel_bg);
-
-    rl.drawLineEx(
-        .{ .x = 0, .y = TAB_H },
-        .{ .x = sw, .y = TAB_H },
-        1.0,
-        palette.divider,
-    );
+    drawChromeStrip(0, sw, TAB_H, TAB_H);
 
     var idx: i32 = @intFromEnum(view.*);
     _ = rg.toggleGroup(

@@ -180,7 +180,10 @@ pub fn drawTextCentered(
     rl.drawTextEx(
         font,
         txt,
-        .{ .x = x - w / 2, .y = y },
+        .{
+            .x = x - w / 2,
+            .y = y,
+        },
         fs,
         1,
         color,
@@ -200,7 +203,10 @@ pub fn drawTextRight(
     rl.drawTextEx(
         font,
         txt,
-        .{ .x = x - w, .y = y },
+        .{
+            .x = x - w,
+            .y = y,
+        },
         fs,
         1,
         color,
@@ -213,13 +219,42 @@ pub fn drawPanel(rec: rl.Rectangle, bg: rl.Color) void {
     rl.drawRectangleRoundedLinesEx(rec, 0.06, 6, 1.0, palette.divider);
 }
 
+/// Full-width chrome strip with its divider rule: the tab bar (divider
+/// along its bottom edge) and the transport bar (divider along its top).
+pub fn drawChromeStrip(y: f32, sw: f32, h: f32, divider_y: f32) void {
+    rl.drawRectangleRec(
+        .{
+            .x = 0,
+            .y = y,
+            .width = sw,
+            .height = h,
+        },
+        palette.panel_bg,
+    );
+    rl.drawLineEx(
+        .{
+            .x = 0,
+            .y = divider_y,
+        },
+        .{
+            .x = sw,
+            .y = divider_y,
+        },
+        1.0,
+        palette.divider,
+    );
+}
+
 /// Placeholder line for a view with nothing to show, pinned at the
 /// content origin.
 pub fn drawNotice(font: rl.Font, txt: [:0]const u8) void {
     rl.drawTextEx(
         font,
         txt,
-        .{ .x = CONTENT_X, .y = CONTENT_Y },
+        .{
+            .x = CONTENT_X,
+            .y = CONTENT_Y,
+        },
         FONT,
         1,
         palette.text_sub,
