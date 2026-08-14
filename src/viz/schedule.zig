@@ -38,6 +38,9 @@ const Point = schedule.Point;
 const OpKind = schedule.OpKind;
 const ZoneRect = viewmodel.ZoneRect;
 
+/// Set of occupied trap positions.
+const PointSet = std.AutoHashMap(Point, void);
+
 const ATOM_R: f32 = 300.0;
 const ATOM_R_LOADED: f32 = 450.0;
 
@@ -73,7 +76,7 @@ fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
 
 /// One trap site, filled when `occupied` (the frame's occupancy set from
 /// occupiedNow) holds an atom at its position.
-fn drawSlot(cam: Camera, slot: Point, occupied: *const std.AutoHashMap(Point, void)) void {
+fn drawSlot(cam: Camera, slot: Point, occupied: *const PointSet) void {
     const screen = cam.worldToScreen(toVec(slot));
     const radius = ATOM_R * cam.zoom;
 
@@ -320,7 +323,7 @@ pub const ScheduleView = struct {
     active: []bool,
     active_idx: []usize,
     draw_positions: []Point,
-    occupied: std.AutoHashMap(Point, void),
+    occupied: PointSet,
     dims: []const viewmodel.Dimension,
     show_specs: bool = true,
     show_dims: bool = true,
@@ -358,7 +361,7 @@ pub const ScheduleView = struct {
 
         // Sized once for every stored atom plus every idle atom, so the
         // per-frame rebuild in occupiedNow cannot fail.
-        var occupied = std.AutoHashMap(Point, void).init(gpa);
+        var occupied = PointSet.init(gpa);
         errdefer occupied.deinit();
         try occupied.ensureTotalCapacity(@intCast(s.placement.len + idle.len));
 
@@ -500,7 +503,7 @@ pub const ScheduleView = struct {
         v: *ScheduleView,
         positions: []const Point,
         loaded: []const bool,
-    ) *const std.AutoHashMap(Point, void) {
+    ) *const PointSet {
         v.occupied.clearRetainingCapacity();
         for (positions, loaded) |p, l| {
             if (!l) v.occupied.putAssumeCapacity(p, {});
