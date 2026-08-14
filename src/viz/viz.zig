@@ -26,6 +26,8 @@ const logical_view = @import("logical.zig");
 
 const palette = common.palette;
 const styleGui = common.styleGui;
+const drawPanel = common.drawPanel;
+const drawTextRight = common.drawTextRight;
 const Camera = common.Camera;
 const FONT = common.FONT;
 const FONT_LG = common.FONT_LG;
@@ -100,8 +102,7 @@ fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
         .width = w,
         .height = h,
     };
-    rl.drawRectangleRounded(rec, 0.04, 6, palette.panel_bg);
-    rl.drawRectangleRoundedLinesEx(rec, 0.04, 6, 1.0, palette.divider);
+    drawPanel(rec, palette.panel_bg);
 
     var y = rec.y + PAD;
     rl.drawTextEx(
@@ -114,15 +115,7 @@ fn drawHelp(font: rl.Font, sw: f32, sh: f32) void {
     );
     y += row_h + PAD;
     for (shortcuts) |sc| {
-        const kw = rl.measureTextEx(font, sc.key, FONT, 0.5).x;
-        rl.drawTextEx(
-            font,
-            sc.key,
-            .{ .x = rec.x + key_w - kw, .y = y },
-            FONT,
-            0.5,
-            palette.accent,
-        );
+        drawTextRight(font, sc.key, rec.x + key_w, y, FONT, palette.accent);
         rl.drawTextEx(
             font,
             sc.desc,
@@ -144,6 +137,7 @@ fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
         .width = sw,
         .height = TAB_H,
     }, palette.panel_bg);
+
     rl.drawLineEx(
         .{ .x = 0, .y = TAB_H },
         .{ .x = sw, .y = TAB_H },
@@ -165,13 +159,13 @@ fn drawTabs(font: rl.Font, view: *View, sw: f32) void {
     view.* = @enumFromInt(std.math.clamp(idx, 0, 3));
 
     const hint = "1-4 view   r fit   ? shortcuts";
-    const tw = rl.measureTextEx(font, hint, FONT, 0.5).x;
-    rl.drawTextEx(
+
+    drawTextRight(
         font,
         hint,
-        .{ .x = sw - tw - PAD, .y = (TAB_H - FONT) / 2 },
+        sw - PAD,
+        (TAB_H - FONT) / 2,
         FONT,
-        0.5,
         palette.text_sub,
     );
 }

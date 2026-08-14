@@ -9,6 +9,8 @@ const viewmodel = @import("viewmodel");
 
 const common = @import("common.zig");
 const palette = common.palette;
+const drawTextCentered = common.drawTextCentered;
+const labelSize = common.labelSize;
 const Camera = common.Camera;
 const BBox = common.BBox;
 const FONT = common.FONT;
@@ -60,28 +62,20 @@ pub const CircuitView = struct {
 
         // Alternating stage bands under everything else.
         if (v.show_stages) {
-            const top = cam.worldToScreen(.{ .x = 0, .y = -WIRE_DY }).y;
-            const bot = cam.worldToScreen(.{ .x = 0, .y = wireY(nq -| 1) + WIRE_DY }).y;
+            const band_h = wireY(nq -| 1) + 2 * WIRE_DY;
             for (v.lay.stage_cols, 0..) |sc, s| {
                 if (s % 2 == 0) continue;
-                const x0 = cam.worldToScreen(.{
-                    .x = @as(f32, @floatFromInt(sc)) * COL_W,
-                    .y = 0,
-                }).x;
+                const x0 = @as(f32, @floatFromInt(sc)) * COL_W;
                 const end_col: f32 = if (s + 1 < v.lay.stage_cols.len)
                     @floatFromInt(v.lay.stage_cols[s + 1])
                 else
                     @floatFromInt(v.lay.n_cols);
-                const x1 = cam.worldToScreen(.{ .x = end_col * COL_W, .y = 0 }).x;
-                rl.drawRectangleRec(
-                    .{
-                        .x = x0,
-                        .y = top,
-                        .width = x1 - x0,
-                        .height = bot - top,
-                    },
-                    palette.stage_band,
-                );
+                rl.drawRectangleRec(cam.rect(.{
+                    .x = x0,
+                    .y = -WIRE_DY,
+                    .width = end_col * COL_W - x0,
+                    .height = band_h,
+                }), palette.stage_band);
             }
         }
 
@@ -171,18 +165,7 @@ pub const CircuitView = struct {
         };
         rl.drawRectangleRounded(rec, 0.2, 4, fill);
         if (box >= 14) {
-            const tw = rl.measureTextEx(font, label, fs, 0).x;
-            rl.drawTextEx(
-                font,
-                label,
-                .{
-                    .x = c.x - tw / 2,
-                    .y = c.y - fs / 2,
-                },
-                fs,
-                0,
-                palette.bg,
-            );
+            drawTextCentered(font, label, c.x, c.y - fs / 2, fs, palette.bg);
         }
     }
 
@@ -209,7 +192,7 @@ pub const CircuitView = struct {
 
         if (spacing < 1) return;
 
-        const fs = std.math.clamp(FONT * v.cam.zoom, 12.0, FONT_LG);
+        const fs = labelSize(v.cam.zoom);
         const step: usize = if (spacing >= fs + 2)
             1
         else

@@ -65,7 +65,10 @@ pub const ROW2_H: f32 = 24;
 pub const FRAME_BOX_W: f32 = 110;
 
 pub fn toVec(p: Point) rl.Vector2 {
-    return .{ .x = @floatFromInt(p.x), .y = @floatFromInt(p.y) };
+    return .{
+        .x = @floatFromInt(p.x),
+        .y = @floatFromInt(p.y),
+    };
 }
 
 pub const BBox = struct {
@@ -75,17 +78,11 @@ pub const BBox = struct {
     max_y: f32,
 
     pub fn fromPoints(points: []const Point) BBox {
-        if (points.len == 0) return .{
-            .min_x = -10,
-            .min_y = -10,
-            .max_x = 10,
-            .max_y = 10,
-        };
         var b = BBox{
             .min_x = std.math.floatMax(f32),
             .min_y = std.math.floatMax(f32),
-            .max_x = std.math.floatMin(f32),
-            .max_y = std.math.floatMin(f32),
+            .max_x = -std.math.floatMax(f32),
+            .max_y = -std.math.floatMax(f32),
         };
         for (points) |p| {
             const v = toVec(p);
@@ -116,6 +113,17 @@ pub const Camera = struct {
         };
     }
 
+    /// Map a world-space rectangle to screen space.
+    pub fn rect(self: Camera, world: rl.Rectangle) rl.Rectangle {
+        const tl = self.worldToScreen(.{ .x = world.x, .y = world.y });
+        return .{
+            .x = tl.x,
+            .y = tl.y,
+            .width = world.width * self.zoom,
+            .height = world.height * self.zoom,
+        };
+    }
+
     /// Fit `bbox` into `region`, a screen-space rectangle (so views can
     /// center content between the tab bar and the transport bar).
     pub fn fitToRegion(self: *Camera, bbox: BBox, region: rl.Rectangle) void {
@@ -130,8 +138,95 @@ pub const Camera = struct {
     }
 };
 
-// raygui reads style colors as 0xRRGGBBAA ints; setting them on .default
-// propagates the base properties to every control.
+/// A view's pan/zoom state: the camera plus whether the user has touched
+/// it - fits (initial, resize, `r`) keep re-framing only untouched views.
+pub const Viewport = struct {
+    cam: Camera = .{},
+    touched: bool = false,
+
+    pub fn fit(vp: *Viewport, bbox: BBox, region: rl.Rectangle) void {
+        vp.cam.fitToRegion(bbox, region);
+        vp.touched = false;
+    }
+};
+
+// ── Shared chrome helpers ────────────────────────────────────────────────
+
+/// Screen-space origin of pinned view content, just under the tab bar.
+pub const CONTENT_X: f32 = PAD;
+pub const CONTENT_Y: f32 = TAB_H + PAD;
+
+/// Gap between adjacent transport-bar buttons.
+pub const BTN_GAP: f32 = 6;
+
+/// Smallest label size the zoom clamp allows.
+pub const LABEL_MIN: f32 = 12;
+
+/// Zoom-scaled label font size, clamped readable at any zoom.
+pub fn labelSize(zoom: f32) f32 {
+    return std.math.clamp(FONT * zoom, LABEL_MIN, FONT_LG);
+}
+
+/// Draw `txt` horizontally centered on `x`, top edge at `y`.
+pub fn drawTextCentered(
+    font: rl.Font,
+    txt: [:0]const u8,
+    x: f32,
+    y: f32,
+    fs: f32,
+    color: rl.Color,
+) void {
+    const w = rl.measureTextEx(font, txt, fs, 1).x;
+    rl.drawTextEx(
+        font,
+        txt,
+        .{ .x = x - w / 2, .y = y },
+        fs,
+        1,
+        color,
+    );
+}
+
+/// Draw `txt` with its right edge at `x`, top edge at `y`.
+pub fn drawTextRight(
+    font: rl.Font,
+    txt: [:0]const u8,
+    x: f32,
+    y: f32,
+    fs: f32,
+    color: rl.Color,
+) void {
+    const w = rl.measureTextEx(font, txt, fs, 1).x;
+    rl.drawTextEx(
+        font,
+        txt,
+        .{ .x = x - w, .y = y },
+        fs,
+        1,
+        color,
+    );
+}
+
+/// Rounded panel with the standard border.
+pub fn drawPanel(rec: rl.Rectangle, bg: rl.Color) void {
+    rl.drawRectangleRounded(rec, 0.06, 6, bg);
+    rl.drawRectangleRoundedLinesEx(rec, 0.06, 6, 1.0, palette.divider);
+}
+
+/// Placeholder line for a view with nothing to show, pinned at the
+/// content origin.
+pub fn drawNotice(font: rl.Font, txt: [:0]const u8) void {
+    rl.drawTextEx(
+        font,
+        txt,
+        .{ .x = CONTENT_X, .y = CONTENT_Y },
+        FONT,
+        1,
+        palette.text_sub,
+    );
+}
+
+// Raygui reads style colors.
 pub fn styleGui(font: rl.Font) void {
     const int = rl.colorToInt;
     rg.setFont(font);

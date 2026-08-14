@@ -13,18 +13,24 @@ const common = @import("common.zig");
 const palette = common.palette;
 const withAlpha = common.withAlpha;
 const toVec = common.toVec;
+const drawNotice = common.drawNotice;
+const drawPanel = common.drawPanel;
+const drawTextCentered = common.drawTextCentered;
+const drawTextRight = common.drawTextRight;
 const Camera = common.Camera;
 const BBox = common.BBox;
 
 const FONT = common.FONT;
 const FONT_LG = common.FONT_LG;
 const PAD = common.PAD;
-const TAB_H = common.TAB_H;
 const BAR_H = common.BAR_H;
 const BTN_W = common.BTN_W;
 const BTN_H = common.BTN_H;
+const BTN_GAP = common.BTN_GAP;
 const ROW2_H = common.ROW2_H;
 const FRAME_BOX_W = common.FRAME_BOX_W;
+const CONTENT_X = common.CONTENT_X;
+const CONTENT_Y = common.CONTENT_Y;
 
 const Point = schedule.Point;
 const OpKind = schedule.OpKind;
@@ -44,20 +50,12 @@ fn opFill(op: OpKind) rl.Color {
 }
 
 fn drawZone(cam: Camera, r: ZoneRect, fill: rl.Color) void {
-    const tl = cam.worldToScreen(.{
+    const rec = cam.rect(.{
         .x = @floatFromInt(r.x0),
         .y = @floatFromInt(r.y0),
+        .width = @floatFromInt(r.x1 - r.x0),
+        .height = @floatFromInt(r.y1 - r.y0),
     });
-    const br = cam.worldToScreen(.{
-        .x = @floatFromInt(r.x1),
-        .y = @floatFromInt(r.y1),
-    });
-    const rec = rl.Rectangle{
-        .x = tl.x,
-        .y = tl.y,
-        .width = br.x - tl.x,
-        .height = br.y - tl.y,
-    };
     rl.drawRectangleRounded(rec, 0.06, 8, fill);
     rl.drawRectangleRoundedLinesEx(rec, 0.06, 8, 1.0, palette.zone_border);
 }
@@ -160,7 +158,7 @@ fn drawDimension(cam: Camera, font: rl.Font, d: viewmodel.Dimension) bool {
     const dy = qb.y - qa.y;
     const len = @sqrt(dx * dx + dy * dy);
     const horizontal = @abs(dx) >= @abs(dy);
-    const label_w = rl.measureTextEx(font, d.label, FONT, 0.5).x;
+    const label_w = rl.measureTextEx(font, d.label, FONT, 1).x;
     // A horizontal label sits over its arrow; a vertical arrow only has
     // to clear the label's height beside it.
     const needed: f32 = if (horizontal) label_w + 2 * DIM_HEAD else FONT + DIM_HEAD;
@@ -169,8 +167,19 @@ fn drawDimension(cam: Camera, font: rl.Font, d: viewmodel.Dimension) bool {
     const line = withAlpha(palette.dimension, 200);
     const ext = withAlpha(palette.dimension, 90);
 
-    rl.drawLineEx(cam.worldToScreen(toVec(d.a)), overshoot(cam.worldToScreen(toVec(d.a)), qa), 1.0, ext);
-    rl.drawLineEx(cam.worldToScreen(toVec(d.b)), overshoot(cam.worldToScreen(toVec(d.b)), qb), 1.0, ext);
+    rl.drawLineEx(
+        cam.worldToScreen(toVec(d.a)),
+        overshoot(cam.worldToScreen(toVec(d.a)), qa),
+        1.0,
+        ext,
+    );
+
+    rl.drawLineEx(
+        cam.worldToScreen(toVec(d.b)),
+        overshoot(cam.worldToScreen(toVec(d.b)), qb),
+        1.0,
+        ext,
+    );
 
     rl.drawLineEx(qa, qb, 1.5, line);
     const u = rl.Vector2{ .x = dx / len, .y = dy / len };
@@ -178,12 +187,30 @@ fn drawDimension(cam: Camera, font: rl.Font, d: viewmodel.Dimension) bool {
     drawArrowHead(qa, u, perp, line);
     drawArrowHead(qb, .{ .x = -u.x, .y = -u.y }, perp, line);
 
-    const mid = rl.Vector2{ .x = (qa.x + qb.x) / 2, .y = (qa.y + qb.y) / 2 };
-    const pos: rl.Vector2 = if (horizontal)
-        .{ .x = mid.x - label_w / 2, .y = mid.y - FONT - 4 }
-    else
-        .{ .x = mid.x - label_w - DIM_HEAD - 4, .y = mid.y - FONT / 2 };
-    rl.drawTextEx(font, d.label, pos, FONT, 0.5, palette.dimension);
+    const mid = rl.Vector2{
+        .x = (qa.x + qb.x) / 2,
+        .y = (qa.y + qb.y) / 2,
+    };
+
+    if (horizontal) {
+        drawTextCentered(
+            font,
+            d.label,
+            mid.x,
+            mid.y - FONT - 4,
+            FONT,
+            palette.dimension,
+        );
+    } else {
+        drawTextRight(
+            font,
+            d.label,
+            mid.x - DIM_HEAD - 4,
+            mid.y - FONT / 2,
+            FONT,
+            palette.dimension,
+        );
+    }
     return true;
 }
 
@@ -198,10 +225,31 @@ fn overshoot(from: rl.Vector2, to: rl.Vector2) rl.Vector2 {
 
 /// Open V arrowhead with its tip at `tip`; `in` points along the shaft.
 fn drawArrowHead(tip: rl.Vector2, in: rl.Vector2, perp: rl.Vector2, color: rl.Color) void {
-    const base = rl.Vector2{ .x = tip.x + in.x * DIM_HEAD, .y = tip.y + in.y * DIM_HEAD };
+    const base = rl.Vector2{
+        .x = tip.x + in.x * DIM_HEAD,
+        .y = tip.y + in.y * DIM_HEAD,
+    };
+
     const s = DIM_HEAD * 0.4;
-    rl.drawLineEx(tip, .{ .x = base.x + perp.x * s, .y = base.y + perp.y * s }, 1.5, color);
-    rl.drawLineEx(tip, .{ .x = base.x - perp.x * s, .y = base.y - perp.y * s }, 1.5, color);
+
+    rl.drawLineEx(
+        tip,
+        .{
+            .x = base.x + perp.x * s,
+            .y = base.y + perp.y * s,
+        },
+        1.5,
+        color,
+    );
+    rl.drawLineEx(
+        tip,
+        .{
+            .x = base.x - perp.x * s,
+            .y = base.y - perp.y * s,
+        },
+        1.5,
+        color,
+    );
 }
 
 /// Halo enclosing a pair of atoms sitting within the blockade radius during
@@ -337,14 +385,7 @@ pub const ScheduleView = struct {
             drawZone(v.cam, v.readout_rect, palette.zone_readout);
             for (v.sites) |slot| drawSlot(v.cam, slot, &.{}, &.{}, v.idle);
             if (v.show_dims) v.drawDims(font);
-            rl.drawTextEx(
-                font,
-                "empty schedule",
-                .{ .x = PAD, .y = TAB_H + PAD },
-                FONT,
-                1,
-                palette.text_sub,
-            );
+            drawNotice(font, "empty schedule");
             return;
         }
 
@@ -467,17 +508,8 @@ pub const ScheduleView = struct {
             if (drawDimension(v.cam, font, d)) shown += 1;
         }
         if (shown == 0 and v.dims.len > 0) {
-            const hint = "dimensions: zoom in";
-            const tw = rl.measureTextEx(font, hint, FONT, 0.5).x;
             const sw: f32 = @floatFromInt(rl.getScreenWidth());
-            rl.drawTextEx(
-                font,
-                hint,
-                .{ .x = sw - tw - PAD, .y = TAB_H + PAD },
-                FONT,
-                0.5,
-                palette.text_sub,
-            );
+            drawTextRight(font, "dimensions: zoom in", sw - PAD, CONTENT_Y, FONT, palette.text_sub);
         }
     }
 
@@ -508,7 +540,7 @@ pub const ScheduleView = struct {
             .width = BTN_W,
             .height = BTN_H,
         }, "|<")) v.seek(0);
-        x += BTN_W + 6;
+        x += BTN_W + BTN_GAP;
 
         if (rg.button(.{
             .x = x,
@@ -516,7 +548,7 @@ pub const ScheduleView = struct {
             .width = BTN_W,
             .height = BTN_H,
         }, "<")) v.seek(v.frame -| 1);
-        x += BTN_W + 6;
+        x += BTN_W + BTN_GAP;
 
         const play_label: [:0]const u8 = if (v.playing) "pause" else "play";
         if (rg.button(.{
@@ -528,7 +560,7 @@ pub const ScheduleView = struct {
             v.playing = !v.playing;
             v.clock = 0;
         }
-        x += 2 * BTN_W + 6;
+        x += 2 * BTN_W + BTN_GAP;
 
         if (rg.button(.{
             .x = x,
@@ -681,28 +713,14 @@ pub const ScheduleView = struct {
         const h = @as(f32, spec_keys.len) * row_h + 2 * PAD + row_h + 8;
 
         const rec = rl.Rectangle{
-            .x = PAD,
-            .y = TAB_H + PAD,
+            .x = CONTENT_X,
+            .y = CONTENT_Y,
             .width = v.specs_w,
             .height = h,
         };
+        drawPanel(rec, withAlpha(palette.panel_bg, 235));
 
-        rl.drawRectangleRounded(
-            rec,
-            0.06,
-            6,
-            withAlpha(palette.panel_bg, 235),
-        );
-
-        rl.drawRectangleRoundedLinesEx(
-            rec,
-            0.06,
-            6,
-            1.0,
-            palette.divider,
-        );
-
-        var y = TAB_H + 2 * PAD;
+        var y = CONTENT_Y + PAD;
         rl.drawTextEx(
             font,
             v.specs.title,
