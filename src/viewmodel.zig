@@ -314,7 +314,11 @@ pub const SlotTables = struct {
             }
         }
 
-        return .{ .arena = arena, .rounds = try alloc.dupe(Round, rounds.items) };
+        // Dupe before building the literal: `.arena = arena` snapshots the
+        // arena's state, so an allocation evaluated later in the literal
+        // can grow a buffer the snapshot never sees - and never frees.
+        const owned = try alloc.dupe(Round, rounds.items);
+        return .{ .arena = arena, .rounds = owned };
     }
 
     pub fn deinit(t: *SlotTables) void {
