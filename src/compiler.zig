@@ -171,39 +171,48 @@ pub fn compile(
         // now all atoms are back at their storage positions. A stage may hold
         // a run of U's per qubit, and same-qubit pulses cannot share a timestep,
         // so the k-th pulse on each qubit fires in the stage's k-th raman wave.
-        const pulses = try gpa.alloc(schedule.RamanGate, stage.u_gates.items.len);
+        const Pulse = struct {
+            wave: usize,
+            gate: schedule.RamanGate,
+        };
+
+        const pulses = try gpa.alloc(Pulse, stage.u_gates.items.len);
         defer gpa.free(pulses);
 
-        const wave = try gpa.alloc(usize, stage.u_gates.items.len);
-        defer gpa.free(wave);
-
-        const batch = try gpa.alloc(schedule.RamanGate, stage.u_gates.items.len);
         @memset(rank, 0);
-        defer gpa.free(batch);
 
         var n: usize = 0;
-        var n_waves: usize = 0;
-
         for (stage.u_gates.items) |gate| {
             const p = lowerU(&frame_phase[gate.qubit], gate) orelse continue;
-            pulses[n] = p;
-            wave[n] = rank[gate.qubit];
+
+            pulses[n] = .{
+                .wave = rank[gate.qubit],
+                .gate = p,
+            };
+
             n += 1;
+
             rank[gate.qubit] += 1;
-            n_waves = @max(n_waves, rank[gate.qubit]);
         }
 
-        for (0..n_waves) |w| {
-            var m: usize = 0;
-
-            for (pulses[0..n], wave[0..n]) |p, pw| {
-                if (pw == w) {
-                    batch[m] = p;
-                    m += 1;
-                }
+        // Waves group contiguously, gate order within a wave holds.
+        std.mem.sort(Pulse, pulses[0..n], {}, struct {
+            fn lt(_: void, a: Pulse, b: Pulse) bool {
+                return a.wave < b.wave;
             }
+        }.lt);
 
-            try hw.raman(batch[0..m]);
+        const batch = try gpa.alloc(schedule.RamanGate, n);
+        defer gpa.free(batch);
+
+        for (pulses[0..n], batch) |p, *b| b.* = p.gate;
+
+        var start: usize = 0;
+        while (start < n) {
+            var end = start + 1;
+            while (end < n and pulses[end].wave == pulses[start].wave) end += 1;
+            try hw.raman(batch[start..end]);
+            start = end;
         }
     }
 
