@@ -57,10 +57,11 @@ pub const CircuitView = struct {
         const cam = v.vp.cam;
         const nq = v.lay.num_qubits;
         const content_w: f32 = @as(f32, @floatFromInt(v.lay.n_cols)) * COL_W;
+        // Bands and dividers span the diagram's vertical bounds.
+        const bounds = v.bbox();
 
         // Alternating stage bands under everything else.
         if (v.show_stages) {
-            const band_h = wireY(nq -| 1) + 2 * WIRE_DY;
             for (v.lay.stage_cols, 0..) |sc, s| {
                 if (s % 2 == 0) continue;
                 const x0 = @as(f32, @floatFromInt(sc)) * COL_W;
@@ -70,9 +71,9 @@ pub const CircuitView = struct {
                     @floatFromInt(v.lay.n_cols);
                 rl.drawRectangleRec(cam.rect(.{
                     .x = x0,
-                    .y = -WIRE_DY,
+                    .y = bounds.min_y,
                     .width = end_col * COL_W - x0,
-                    .height = band_h,
+                    .height = bounds.max_y - bounds.min_y,
                 }), palette.stage_band);
             }
         }
@@ -94,8 +95,8 @@ pub const CircuitView = struct {
         if (v.show_stages) {
             for (v.lay.stage_cols[@min(1, v.lay.stage_cols.len)..]) |sc| {
                 const x = @as(f32, @floatFromInt(sc)) * COL_W;
-                const a = cam.worldToScreen(.{ .x = x, .y = -WIRE_DY });
-                const b = cam.worldToScreen(.{ .x = x, .y = wireY(nq -| 1) + WIRE_DY });
+                const a = cam.worldToScreen(.{ .x = x, .y = bounds.min_y });
+                const b = cam.worldToScreen(.{ .x = x, .y = bounds.max_y });
                 rl.drawLineEx(a, b, 1.0, palette.divider);
             }
         }
