@@ -1,8 +1,10 @@
 #!/bin/bash
 # A/B bench: current tree vs a baseline git ref (default HEAD~1).
 #
-#   ./bench-ab.sh [ref]      # e.g. ./bench-ab.sh 10bc8e2
-#   RUNS=5 ./bench-ab.sh     # repetitions per circuit (default 20)
+#   ./bench-ab.sh [suite] [ref]   # suite: all | qasm | mqt | graph
+#   ./bench-ab.sh mqt             # one suite vs HEAD~1
+#   ./bench-ab.sh 10bc8e2         # ref alone: all suites vs that ref
+#   RUNS=5 ./bench-ab.sh          # repetitions per circuit (default 20)
 #
 # ReleaseFast binaries; the baseline builds once in a throwaway git
 # worktree and is cached per commit in zig-out/ab/. Time = min
@@ -13,9 +15,15 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 RUNS=${RUNS:-20}
+CIRCUITS=(ex/qasmbench/*.qasm ex/mqt/*.qasm ex/graph/graph-90-9.qasm)
+case "${1:-}" in
+    qasm)  CIRCUITS=(ex/qasmbench/*.qasm); shift ;;
+    mqt)   CIRCUITS=(ex/mqt/*.qasm); shift ;;
+    graph) CIRCUITS=(ex/graph/*.qasm); shift ;;
+    all)   shift ;;
+esac
 SHA=$(git rev-parse --short "${1:-HEAD~1}")
 AB=zig-out/ab
-CIRCUITS=(ex/qasmbench/*.qasm ex/graph/graph-90-9.qasm)
 mkdir -p "$AB"
 
 echo ">> building current tree"

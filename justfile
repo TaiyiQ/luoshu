@@ -5,8 +5,8 @@ build:
 bench:
 	zig build run
 
-ab ref='HEAD~1':
-	./bench-ab.sh {{ref}}
+ab *args:
+	./bench-ab.sh {{args}}
 
 test:
 	zig build test --summary all
