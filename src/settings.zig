@@ -109,7 +109,7 @@ test "shipped settings file parses" {
     defer arena_state.deinit();
 
     const s = try load(arena_state.allocator(), std.testing.io, default_path);
-    try std.testing.expectEqualStrings("cfg/arch.toml", s.options.arch.?);
+    try std.testing.expect(s.options.arch == null); // built-in default suffices
     try std.testing.expect(s.benchmark.circuits.len > 0);
     try std.testing.expect(s.benchmark.out_dir != null);
 }

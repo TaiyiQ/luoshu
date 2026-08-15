@@ -281,7 +281,7 @@ test "assembly: qft-5 compiles legally from assembly.json" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
 
-    const asm_doc = try assembly.load(gpa, io, "cfg/assembly.json");
+    const asm_doc = try assembly.load(gpa, io, "testdata/assembly.json");
     defer asm_doc.deinit(gpa);
 
     var circ = try buildQft5(gpa);

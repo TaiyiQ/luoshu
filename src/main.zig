@@ -15,22 +15,20 @@ const cli = @import("cli");
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const opts = try cli.parseArgs(arena, init.io, init.minimal.args);
-    trace.enabled = opts.verbose;
+    trace.enabled = opts.settings.verbose;
 
-    const cfg = arch.load(init.gpa, init.io, opts.arch_path) catch |err|
-        cli.fatal("cannot load architecture '{s}': {t}", .{ opts.arch_path, err });
+    const cfg = arch.load(init.gpa, init.io, opts.settings.arch) catch |err|
+        cli.fatal("cannot load architecture '{s}': {t}", .{ opts.settings.arch, err });
     defer cfg.deinit(init.gpa);
-    if (opts.verbose) cfg.print();
+    if (opts.settings.verbose) cfg.print();
 
     // Loaded once; checked against each circuit's qubit count in compileOne.
     var asm_doc: ?assembly.Assembly = null;
     defer if (asm_doc) |a| a.deinit(init.gpa);
-    if (opts.asm_path) |path| {
+    if (opts.settings.assembly) |path| {
         asm_doc = assembly.load(init.gpa, init.io, path) catch |err|
             cli.fatal("cannot load assembly '{s}': {t}", .{ path, err });
     }
-
-    if (opts.out_dir) |dir| try std.Io.Dir.cwd().createDirPath(init.io, dir);
 
     var name_w: usize = 0;
     for (opts.jobs) |j| name_w = @max(name_w, j.qasm.len);
@@ -74,7 +72,7 @@ fn compileOne(
     if (asm_doc) |a| {
         // The detailed diagnostic (which field disagrees) prints in check.
         assembly.check(a, cfg, pipeline.num_qubits) catch |err|
-            cli.fatal("assembly '{s}' rejected: {t}", .{ opts.asm_path.?, err });
+            cli.fatal("assembly '{s}' rejected: {t}", .{ opts.settings.assembly.?, err });
     }
 
     const initial_sites = if (asm_doc) |a| a.sites else null;
@@ -87,6 +85,7 @@ fn compileOne(
     if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
 
     if (job.out) |path| {
+        try createParentDir(init.io, path);
         try serialize.writeHardware(init.gpa, init.io, path, &sch);
     }
 
@@ -97,12 +96,19 @@ fn compileOne(
     metrics.max_degree = route_stats.max_degree;
 
     if (job.bench) |path| {
+        try createParentDir(init.io, path);
         serialize.writeBench(init.gpa, init.io, path, metrics) catch |err|
             cli.fatal("cannot write bench '{s}': {t}", .{ path, err });
     }
 
     // Circuit, stages, logical, and schedule views as tabs in one window.
-    if (opts.viz) try viz.run(init.gpa, sch, asm_doc, circ, pipeline);
+    if (opts.settings.viz) try viz.run(init.gpa, sch, asm_doc, circ, pipeline);
 
     return metrics;
+}
+
+/// Out paths may point into directories that don't exist yet (the benchmark
+/// out_dir, or an --out with a fresh parent).
+fn createParentDir(io: std.Io, path: []const u8) !void {
+    if (std.fs.path.dirname(path)) |dir| try std.Io.Dir.cwd().createDirPath(io, dir);
 }

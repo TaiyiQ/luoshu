@@ -26,7 +26,7 @@ Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule f
 `cfg/` holds the run configuration:
 
 - `cfg/arch.toml`: the neutral-atom architecture (zones, SLM grids, AOD limits, constraints).
-- `cfg/assembly.json`: storage occupancy handoff from the atom-rearrangement package.
+- `cfg/assembly.json`: storage occupancy handoff from the atom-rearrangement package — edit it to experiment with different initial placements (tests pin their own copy under `testdata/`).
 - `cfg/settings.toml`: encodes the CLI arguments (`[options]`), so a bare `gatecomp` needs no flags. Command-line flags always win over settings values.
 
 ## Benchmark

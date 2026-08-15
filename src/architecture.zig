@@ -42,9 +42,6 @@ const RawAod = struct {
 const RawConstraints = struct {
     db_um: f64,
     dz_um: f64,
-    one_qubit_gate_fidelity: f64,
-    two_qubit_gate_fidelity: f64,
-    readout_fidelity: f64,
 };
 
 const RawArchConfig = struct {
@@ -117,7 +114,7 @@ pub const ZoneBox = struct {
     max: [2]i32,
 
     fn fromGrid(g: Grid) ZoneBox {
-        const hx = @divTrunc(g.sep_nm[0], 2);
+        const hx = g.halfSepX();
         const hy = @divTrunc(g.sep_nm[1], 2);
         return .{
             .min = .{ g.x(0) - hx, g.y(0) - hy },
@@ -198,9 +195,6 @@ pub const ReadoutZone = struct {
 pub const Constraints = struct {
     db_nm: u32,
     dz_nm: u32,
-    one_qubit_gate_fidelity: f64,
-    two_qubit_gate_fidelity: f64,
-    readout_fidelity: f64,
 };
 
 pub const ArchConfig = struct {
@@ -270,11 +264,6 @@ pub const ArchConfig = struct {
             s.constraints.db_nm,
             s.constraints.dz_nm,
         });
-        std.debug.print("  Fidelities:   1Q={d:.3}  2Q={d:.3}  readout={d:.3}\n", .{
-            s.constraints.one_qubit_gate_fidelity,
-            s.constraints.two_qubit_gate_fidelity,
-            s.constraints.readout_fidelity,
-        });
     }
 };
 
@@ -305,7 +294,6 @@ pub const ConfigError = error{
     InvalidSlmGrid,
     ZoneGapTooSmall,
     BlockadeGeometry,
-    InvalidFidelity,
 };
 
 /// Suppresses validation diagnostics; same pattern as verify.quiet (tests
@@ -386,20 +374,6 @@ pub fn validate(cfg: ArchConfig) ConfigError!void {
             cfg.compute_zone.dr_nm, cfg.constraints.db_nm, cfg.compute_zone.dw_nm,
         });
         return error.BlockadeGeometry;
-    }
-
-    const fids = [_]f64{
-        cfg.constraints.one_qubit_gate_fidelity,
-        cfg.constraints.two_qubit_gate_fidelity,
-        cfg.constraints.readout_fidelity,
-    };
-    for (fids) |f| {
-        if (!(f > 0 and f <= 1)) {
-            cfail("fidelities must lie in (0, 1], got 1Q={d} 2Q={d} readout={d}", .{
-                fids[0], fids[1], fids[2],
-            });
-            return error.InvalidFidelity;
-        }
     }
 }
 
@@ -545,9 +519,6 @@ fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
         .constraints = .{
             .db_nm = umToNm(raw.constraints.db_um),
             .dz_nm = umToNm(raw.constraints.dz_um),
-            .one_qubit_gate_fidelity = raw.constraints.one_qubit_gate_fidelity,
-            .two_qubit_gate_fidelity = raw.constraints.two_qubit_gate_fidelity,
-            .readout_fidelity = raw.constraints.readout_fidelity,
         },
     };
 }
@@ -617,6 +588,13 @@ pub fn testConfig() ArchConfig {
             .one_qubit_gate_fidelity = 1,
             .two_qubit_gate_fidelity = 1,
             .readout_fidelity = 1,
+            .db_nm = 3000,
+            .dz_nm = 3000,
+            .one_qubit_gate_fidelity = 0.999,
+            .two_qubit_gate_fidelity = 0.995,
+            .readout_fidelity = 0.99,
+            .db_nm = 300,
+            .dz_nm = 100,
         },
     };
 }
