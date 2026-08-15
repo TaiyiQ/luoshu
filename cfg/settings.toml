@@ -16,8 +16,8 @@ arch = "cfg/arch.toml"
 out_dir = "zig-out/bench"
 circuits = [
     "ex/graph/graph-10-9.qasm",
-    "ex/graph/graph-50-5.qasm",
-    "ex/graph/graph-50-9.qasm",
-    "ex/graph/graph-60-5.qasm",
-    "ex/graph/graph-90-9.qasm",
+#    "ex/graph/graph-50-5.qasm",
+#    "ex/graph/graph-50-9.qasm",
+#    "ex/graph/graph-60-5.qasm",
+#    "ex/graph/graph-90-9.qasm",
 ]

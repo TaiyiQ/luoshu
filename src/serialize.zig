@@ -161,6 +161,28 @@ pub fn benchToJson(gpa: std.mem.Allocator, m: bench.Metrics) ![]u8 {
         .{ m.total_move_nm, m.max_move_nm },
     );
 
+    try w.writeAll("  \"time_us\": {\n");
+    try w.print("    \"loading\": {d:.3},\n", .{m.loading_us});
+    try w.print("    \"shuttling\": {d:.3},\n", .{m.shuttling_us});
+    try w.print("    \"routing\": {d:.3},\n", .{m.routingUs()});
+    try w.print("    \"gate\": {d:.3},\n", .{m.gateUs()});
+    try w.print("    \"total\": {d:.3}\n", .{m.totalUs()});
+    try w.writeAll("  },\n");
+
+    try w.writeAll("  \"timing_model\": {\n");
+    try w.print("    \"shuttle_nm_per_us\": {d:.3},\n", .{m.timing.shuttle_nm_per_us});
+    try w.print("    \"load_us\": {d:.3},\n", .{m.timing.load_us});
+    try w.print("    \"store_us\": {d:.3},\n", .{m.timing.store_us});
+    try w.print("    \"rydberg_us\": {d:.3},\n", .{m.timing.rydberg_us});
+    try w.print("    \"raman_us\": {d:.3}\n", .{m.timing.raman_us});
+    try w.writeAll("  },\n");
+
+    if (m.compile_ns) |ns|
+        try w.print("  \"compile_ns\": {d}\n", .{ns})
+    else
+        try w.writeAll("  \"compile_ns\": null\n");
+
+    try w.writeAll("}");
     try s.objectField("time_us");
     try s.beginObject();
     try fieldFmt(&s, "loading", "{d:.3}", .{m.loading_us});
@@ -177,6 +199,26 @@ pub fn benchToJson(gpa: std.mem.Allocator, m: bench.Metrics) ![]u8 {
     try fieldFmt(&s, "store_us", "{d:.3}", .{m.timing.store_us});
     try fieldFmt(&s, "rydberg_us", "{d:.3}", .{m.timing.rydberg_us});
     try fieldFmt(&s, "raman_us", "{d:.3}", .{m.timing.raman_us});
+    try s.endObject();
+
+    try field(&s, "compile_ns", m.compile_ns);
+    try s.endObject();
+    try s.objectField("time_us");
+    try s.beginObject();
+    try fieldFmt(&s, "loading", "{d:.3}", .{m.loading_us});
+    try fieldFmt(&s, "shuttling", "{d:.3}", .{m.shuttling_us});
+    try fieldFmt(&s, "routing", "{d:.3}", .{m.routingUs()});
+    try fieldFmt(&s, "gate", "{d:.3}", .{m.gateUs()});
+    try fieldFmt(&s, "total", "{d:.3}", .{m.totalUs()});
+    try s.endObject();
+
+    try s.objectField("timing_model");
+    try s.beginObject();
+    try fieldFmt(&s, "shuttle_nm_per_us", "{d:.3}", .{bench.Timing.shuttle_nm_per_us});
+    try fieldFmt(&s, "load_us", "{d:.3}", .{bench.Timing.load_us});
+    try fieldFmt(&s, "store_us", "{d:.3}", .{bench.Timing.store_us});
+    try fieldFmt(&s, "rydberg_us", "{d:.3}", .{bench.Timing.rydberg_us});
+    try fieldFmt(&s, "raman_us", "{d:.3}", .{bench.Timing.raman_us});
     try s.endObject();
 
     try field(&s, "compile_ns", m.compile_ns);
