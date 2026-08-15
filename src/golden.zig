@@ -17,7 +17,9 @@ const compiler = @import("compiler");
 const serialize = @import("serialize");
 const verify = @import("verify");
 
-pub const arch_path = "cfg/arch.toml";
+/// Pinned copy of the architecture config: cfg/arch.toml is user-editable
+/// for experiments, so the goldens compile against this frozen twin.
+pub const arch_path = "testdata/arch.toml";
 
 /// One tag per golden circuit. Cases name their circuit by tag and
 /// buildCircuit dispatches exhaustively, so an unused builder or a case

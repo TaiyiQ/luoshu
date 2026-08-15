@@ -667,7 +667,7 @@ test "buildDimensions anchors seps, dr, and zone gaps to the example config" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
 
-    const cfg = try arch.load(std.testing.allocator, std.testing.io, "cfg/arch.toml");
+    const cfg = try arch.load(std.testing.allocator, std.testing.io, "testdata/arch.toml");
     defer cfg.deinit(std.testing.allocator);
 
     const dims = try buildDimensions(arena_state.allocator(), cfg);

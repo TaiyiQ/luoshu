@@ -666,6 +666,8 @@ test "validate rejects an out-of-range fidelity" {
 
 test "the example config loads and validates" {
     const cfg = try load(std.testing.allocator, std.testing.io, "cfg/arch.toml");
+test "the pinned config loads and derives zone offsets" {
+    const cfg = try load(std.testing.allocator, std.testing.io, "testdata/arch.toml");
     defer cfg.deinit(std.testing.allocator);
 
     // gap_um anchors on trap rows: storage's last row (10 rows @ 3um ends
@@ -674,6 +676,13 @@ test "the example config loads and validates" {
     // Compute's bottom row (origin 47um + slm offset 2um + 9 rows @ 12um
     // = 157um) + 20um gap puts the readout origin at 177um.
     try std.testing.expectEqual(177_000, cfg.readout_zone.offset_nm[1]);
+}
+
+// No geometry assertions: cfg/arch.toml is user-editable for experiments,
+// so this only guards against shipping a config that fails to load.
+test "the shipped config loads and validates" {
+    const cfg = try load(std.testing.allocator, std.testing.io, "cfg/arch.toml");
+    cfg.deinit(std.testing.allocator);
 }
 
 test "umToNm rounds to the nearest nanometre" {
@@ -710,7 +719,7 @@ test "zone grids compose the zone offset with the SLM offset" {
 }
 
 test "corridorY lies in the trap-free lane between storage and compute" {
-    const cfg = try load(std.testing.allocator, std.testing.io, "cfg/arch.toml");
+    const cfg = try load(std.testing.allocator, std.testing.io, "testdata/arch.toml");
     defer cfg.deinit(std.testing.allocator);
 
     const cy = cfg.corridorY();
