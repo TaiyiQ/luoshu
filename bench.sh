@@ -51,7 +51,7 @@ peak_mem() { # <binary> <circuit> -> bytes
         awk '/peak memory footprint/ {print $1}'
 }
 
-echo ">> $RUNS runs per circuit; base = $SHA; +% = new is better"
+echo ">> $RUNS runs per circuit; base = $SHA"
 printf '%-20s %9s %9s %8s %9s %9s %8s\n' \
     circuit 'base(ms)' 'new(ms)' time 'base(MB)' 'new(MB)' mem
 
