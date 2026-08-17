@@ -132,8 +132,8 @@ fn compileOne(
     return metrics;
 }
 
-/// Out paths may point into directories that don't exist yet (the benchmark
-/// out_dir, or an --out with a fresh parent).
+/// Job outputs land under the configured out directory, which may not
+/// exist yet.
 fn createParentDir(io: std.Io, path: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| try std.Io.Dir.cwd().createDirPath(io, dir);
 }

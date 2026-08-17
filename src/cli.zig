@@ -5,8 +5,7 @@ const usage =
     \\usage: gatecomp <circuit.qasm>... [options]
     \\
     \\Compiles each circuit given. Several circuits run as a suite: a
-    \\metrics table prints per circuit, the visualizer stays closed, and
-    \\outputs land under out_dir when it is set.
+    \\metrics table prints per circuit and the visualizer stays closed.
     \\
     \\options:
     \\  --config <file>     settings TOML encoding these options
@@ -15,12 +14,8 @@ const usage =
     \\  --asm <file>        storage occupancy JSON from the upstream
     \\                      atom-rearrangement package; omitting it uses
     \\                      procedural placement
-    \\  --out <path>        write the hardware schedule as JSON
-    \\                      (single circuit runs only)
-    \\  --bench <path>      write schedule benchmark metrics as JSON
-    \\                      (single circuit runs only)
-    \\  --out-dir <dir>     directory for per-circuit outputs in a suite
-    \\                      run: <name>.hardware.json and <name>.bench.json
+    \\  --out <dir>         directory for the job outputs: each circuit
+    \\                      writes <name>-schedule.json and <name>-bench.json
     \\  --viz               open the schedule visualizer (off by default)
     \\  -v, --verbose       trace the compiler passes to stderr
     \\  -h, --help          show this help
@@ -78,14 +73,8 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
             const v = it.next() orelse fatal("--asm expects a file", .{});
             flags.assembly = try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--out")) {
-            const v = it.next() orelse fatal("--out expects a path", .{});
+            const v = it.next() orelse fatal("--out expects a directory", .{});
             flags.out = try arena.dupe(u8, v);
-        } else if (std.mem.eql(u8, arg, "--bench")) {
-            const v = it.next() orelse fatal("--bench expects a path", .{});
-            flags.bench = try arena.dupe(u8, v);
-        } else if (std.mem.eql(u8, arg, "--out-dir")) {
-            const v = it.next() orelse fatal("--out-dir expects a directory", .{});
-            flags.out_dir = try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--viz")) {
             flags.viz = true;
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
@@ -108,30 +97,13 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
 
     const jobs = try arena.alloc(Job, circuits.items.len);
 
-    if (circuits.items.len == 1) {
-        jobs[0] = .{
-            .qasm = circuits.items[0],
-            .out = cfg.out,
-            .bench = cfg.bench,
-        };
-
-        return .{
-            .jobs = jobs,
-            .settings = cfg,
-        };
-    }
-
-    // Suite run: out/bench name a single output file, whatever their source.
-    if (cfg.out != null or cfg.bench != null)
-        fatal("out/bench apply to a single circuit; suites use out_dir", .{});
-
     for (circuits.items, jobs) |qasm, *job| {
         job.* = .{ .qasm = qasm };
 
-        if (cfg.out_dir) |dir| {
+        if (cfg.out) |dir| {
             const stem = std.fs.path.stem(qasm);
-            job.out = try std.fmt.allocPrint(arena, "{s}/{s}.hardware.json", .{ dir, stem });
-            job.bench = try std.fmt.allocPrint(arena, "{s}/{s}.bench.json", .{ dir, stem });
+            job.out = try std.fmt.allocPrint(arena, "{s}/{s}-schedule.json", .{ dir, stem });
+            job.bench = try std.fmt.allocPrint(arena, "{s}/{s}-bench.json", .{ dir, stem });
         }
     }
 

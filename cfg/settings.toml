@@ -3,8 +3,6 @@
 [options]
 # arch = "cfg/arch.toml"            # architecture TOML (the built-in default)
 # assembly = "cfg/assembly.json"    # storage occupancy from atom-rearrangement
-# out = "schedule.json"             # hardware schedule JSON (single circuit only)
-# bench = "bench.json"              # benchmark metrics JSON (single circuit only)
-# out_dir = "zig-out/bench"         # per-circuit outputs for suite runs
+# out = "zig-out/bench"             # directory for per-circuit job outputs
 # viz = true                        # open the schedule visualizer (off by default)
 # verbose = true                    # trace compiler passes to stderr

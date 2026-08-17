@@ -34,8 +34,8 @@ Everything under `cfg/` is user-editable; tests and golden snapshots pin their o
 ## Benchmark
 
 Passing several circuits runs them as a suite: the visualizer stays closed, each
-circuit writes `<out_dir>/<name>.hardware.json` and `<name>.bench.json` when
-`out_dir` is set, and a schedule-quality table prints:
+circuit writes `<out>/<name>-schedule.json` and `<name>-bench.json` when the
+`out` directory is set, and a schedule-quality table prints:
 
 ```shell
 > ./gatecomp ex/graph/*.qasm

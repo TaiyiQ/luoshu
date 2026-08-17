@@ -14,9 +14,9 @@ pub const default_path = "cfg/settings.toml";
 pub const Options = struct {
     arch: ?[]const u8 = null,
     assembly: ?[]const u8 = null,
+    /// Directory the job outputs land in; each circuit writes
+    /// <stem>-schedule.json and <stem>-bench.json. Null writes nothing.
     out: ?[]const u8 = null,
-    bench: ?[]const u8 = null,
-    out_dir: ?[]const u8 = null,
     viz: ?bool = null,
     verbose: ?bool = null,
 };
@@ -32,8 +32,6 @@ pub const Resolved = struct {
     arch: []const u8 = "cfg/arch.toml",
     assembly: ?[]const u8 = null,
     out: ?[]const u8 = null,
-    bench: ?[]const u8 = null,
-    out_dir: ?[]const u8 = null,
     viz: bool = false,
     verbose: bool = false,
 };
@@ -62,8 +60,6 @@ fn apply(r: *Resolved, o: Options) void {
     if (o.arch) |v| r.arch = v;
     if (o.assembly) |v| r.assembly = v;
     if (o.out) |v| r.out = v;
-    if (o.bench) |v| r.bench = v;
-    if (o.out_dir) |v| r.out_dir = v;
     if (o.viz) |v| r.viz = v;
     if (o.verbose) |v| r.verbose = v;
 }
@@ -85,8 +81,6 @@ fn dupe(arena: std.mem.Allocator, s: Settings) !Settings {
     if (s.options.arch) |v| out.options.arch = try arena.dupe(u8, v);
     if (s.options.assembly) |v| out.options.assembly = try arena.dupe(u8, v);
     if (s.options.out) |v| out.options.out = try arena.dupe(u8, v);
-    if (s.options.bench) |v| out.options.bench = try arena.dupe(u8, v);
-    if (s.options.out_dir) |v| out.options.out_dir = try arena.dupe(u8, v);
     return out;
 }
 
@@ -101,7 +95,7 @@ test "shipped settings file parses" {
     const s = try load(arena_state.allocator(), std.testing.io, default_path);
     // Every key ships commented out: the built-in defaults suffice.
     try std.testing.expect(s.options.arch == null);
-    try std.testing.expect(s.options.out_dir == null);
+    try std.testing.expect(s.options.out == null);
 }
 
 test "missing keys fall back to defaults" {
