@@ -4,8 +4,8 @@ Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule f
 
 ## Requirements
 
-- [zig](https://ziglang.org/) ≥ 0.16 (dependencies are fetched by `zig build`)
-- [just](https://github.com/casey/just) — optional, mostly for developers.
+- [zig](https://ziglang.org/)
+- [just](https://github.com/casey/just)
 
 ## Usage
 
@@ -29,14 +29,16 @@ Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule f
 - `cfg/assembly.json`: storage occupancy handoff from the atom-rearrangement package — edit it to experiment with different initial placements.
 
 Everything under `cfg/` is user-editable; tests and golden snapshots pin their own copies under `testdata/`, so experiments never break the suite.
-- `cfg/settings.toml`: encodes the CLI arguments (`[options]`), so a bare `gatecomp` needs no flags. Command-line flags always win over settings values.
+- `cfg/settings.toml`: encodes the CLI flags (`[options]`), so a plain `gatecomp <circuit>.qasm` needs none. Command-line flags always win over settings values.
 
 ## Benchmark
 
-`[benchmark]` in `cfg/settings.toml` lists circuits to compile when no `<circuit>.qasm` is given:
+Passing several circuits runs them as a suite: the visualizer stays closed, each
+circuit writes `<out_dir>/<name>.hardware.json` and `<name>.bench.json` when
+`out_dir` is set, and a schedule-quality table prints:
 
 ```shell
-> just bench
+> ./gatecomp ex/graph/*.qasm
 
 circuit                   qubits  frames           cz    colors  cz/pulse  shuttle_us  loading_us  total_us  compile_ms
 -----------------------------------------------------------------------------------------------------------------------
@@ -48,3 +50,7 @@ ex/graph/graph-90-9.qasm      90     392      135/135      13/6     10.38     23
 -----------------------------------------------------------------------------------------------------------------------
 5 circuits                                    390/390     54/28               58910.0     11440.0   70360.8      111.74
 ```
+
+The suite table measures the quality of the compiled schedules; `bench.sh`
+(`just bench <suite> <ref>`) measures the compiler instead — an A/B of compile
+time and peak memory between the working tree and a baseline commit.

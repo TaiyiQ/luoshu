@@ -1,6 +1,6 @@
 //! Run settings loaded from a TOML file (default: cfg/settings.toml).
-//! The file encodes the CLI arguments so a bare `gatecomp` invocation is
-//! reproducible. `resolve` layers the three sources: command-line flags
+//! The file encodes the CLI flags so a plain `gatecomp <circuit>` run
+//! needs none. `resolve` layers the three sources: command-line flags
 //! beat file values beat the built-in defaults on `Resolved`.
 
 const std = @import("std");
@@ -16,20 +16,13 @@ pub const Options = struct {
     assembly: ?[]const u8 = null,
     out: ?[]const u8 = null,
     bench: ?[]const u8 = null,
+    out_dir: ?[]const u8 = null,
     viz: ?bool = null,
     verbose: ?bool = null,
 };
 
-/// Mirrors the [benchmark] table: circuits compiled when no <circuit.qasm>
-/// is named on the command line, plus where their outputs land.
-pub const Benchmark = struct {
-    out_dir: ?[]const u8 = null,
-    circuits: []const []const u8 = &.{},
-};
-
 pub const Settings = struct {
     options: Options = .{},
-    benchmark: Benchmark = .{},
 };
 
 /// Options with every layer applied. The field defaults are the built-in
@@ -40,9 +33,9 @@ pub const Resolved = struct {
     assembly: ?[]const u8 = null,
     out: ?[]const u8 = null,
     bench: ?[]const u8 = null,
+    out_dir: ?[]const u8 = null,
     viz: bool = false,
     verbose: bool = false,
-    benchmark: Benchmark = .{},
 };
 
 /// Loads the settings file and layers `flags` on top. An explicit `path`
@@ -59,7 +52,7 @@ pub fn resolve(arena: std.mem.Allocator, io: std.Io, flags: Options, path: ?[]co
 }
 
 fn merge(cfg: Settings, flags: Options) Resolved {
-    var r = Resolved{ .benchmark = cfg.benchmark };
+    var r = Resolved{};
     apply(&r, cfg.options);
     apply(&r, flags);
     return r;
@@ -70,6 +63,7 @@ fn apply(r: *Resolved, o: Options) void {
     if (o.assembly) |v| r.assembly = v;
     if (o.out) |v| r.out = v;
     if (o.bench) |v| r.bench = v;
+    if (o.out_dir) |v| r.out_dir = v;
     if (o.viz) |v| r.viz = v;
     if (o.verbose) |v| r.verbose = v;
 }
@@ -92,11 +86,7 @@ fn dupe(arena: std.mem.Allocator, s: Settings) !Settings {
     if (s.options.assembly) |v| out.options.assembly = try arena.dupe(u8, v);
     if (s.options.out) |v| out.options.out = try arena.dupe(u8, v);
     if (s.options.bench) |v| out.options.bench = try arena.dupe(u8, v);
-    if (s.benchmark.out_dir) |v| out.benchmark.out_dir = try arena.dupe(u8, v);
-
-    const circuits = try arena.alloc([]const u8, s.benchmark.circuits.len);
-    for (s.benchmark.circuits, circuits) |src, *dst| dst.* = try arena.dupe(u8, src);
-    out.benchmark.circuits = circuits;
+    if (s.options.out_dir) |v| out.options.out_dir = try arena.dupe(u8, v);
     return out;
 }
 
@@ -109,12 +99,12 @@ test "shipped settings file parses" {
     defer arena_state.deinit();
 
     const s = try load(arena_state.allocator(), std.testing.io, default_path);
-    try std.testing.expect(s.options.arch == null); // built-in default suffices
-    try std.testing.expect(s.benchmark.circuits.len > 0);
-    try std.testing.expect(s.benchmark.out_dir != null);
+    // Every key ships commented out: the built-in defaults suffice.
+    try std.testing.expect(s.options.arch == null);
+    try std.testing.expect(s.options.out_dir == null);
 }
 
-test "missing tables fall back to defaults" {
+test "missing keys fall back to defaults" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -127,7 +117,6 @@ test "missing tables fall back to defaults" {
 
     try std.testing.expect(s.options.arch == null);
     try std.testing.expect(s.options.verbose.?);
-    try std.testing.expectEqual(@as(usize, 0), s.benchmark.circuits.len);
 }
 
 test "merge precedence: flag beats file beats built-in" {
