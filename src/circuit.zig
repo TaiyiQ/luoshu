@@ -1,14 +1,12 @@
-//! Front-end IR: the `Circuit` gate list (built by the QASM parser in
-//! qasm.zig) and `decompose`, which stages it into a `Pipeline`. Depends on
-//! nothing but std; the back-end passes (route, schedule) are orchestrated
-//! over the resulting `Pipeline` by the driver in compiler.zig.
+//! Front-end IR: the `Circuit` gate list built by the QASM parser.
+//! Decompose stages it into a Pipeline.
+//! Back-end passes (route, schedule) are orchestrated
+//! over the resulting pipeline by the driver in compiler.zig.
 
 const std = @import("std");
 
 const PI = std.math.pi;
 
-/// Qubit ids are u32 end-to-end (front-end gates through hardware ops);
-/// only counts and array indices are usize.
 pub const U = struct {
     qubit: u32,
     theta: f64,
@@ -21,9 +19,6 @@ pub const Cz = struct {
     target: u32,
 };
 
-/// A non-unitary reset of a qubit to |0⟩. Recorded in the front-end circuit
-/// (so the original-circuit drawing shows it) but not lowered into the
-/// hardware schedule: `decompose` skips it.
 pub const Reset = struct {
     qubit: u32,
 };
@@ -110,8 +105,7 @@ pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
         const q: [2]u32 = switch (gate) {
             .u => |g| .{ g.qubit, g.qubit },
             .cz => |g| .{ g.control, g.target },
-            // Reset is a front-end-only op: it carries no unitary, so it is
-            // not scheduled onto the hardware pipeline.
+            // TODO: implement proper reseting.
             .reset => continue,
         };
         const from = @max(cursors[q[0]], cursors[q[1]]);

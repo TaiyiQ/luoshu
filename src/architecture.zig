@@ -554,77 +554,81 @@ fn convertConfig(raw: RawArchConfig, alloc: std.mem.Allocator) !ArchConfig {
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-const test_slm = Slm{
-    .slm_id = 0,
-    .num_row = 2,
-    .num_col = 4,
-    .sep_nm = .{ 3000, 1000 },
-    .offset_nm = .{ 0, 0 },
-};
+// Shared baseline for tests across modules: unit-separation 2x4 storage and
+// readout grids, three stacked zones at y 0/5000/9000, and a Rydberg pair
+// whose padded box spans x 0..4000, y 4800..7200. Callers mutate the
+// returned value to vary the knobs they exercise. The SLM fixtures are
+// module-level `var`s because ComputeZone.slms is a mutable slice.
+pub var test_no_slms: [0]Slm = .{};
 
-var test_compute_slms = [2]Slm{
+pub var test_compute_slms = [2]Slm{
     .{
         .slm_id = 1,
-        .num_row = 2,
+        .num_row = 1,
         .num_col = 2,
-        .sep_nm = .{ 10000, 10000 },
-        .offset_nm = .{ 0, 0 },
+        .sep_nm = .{ 2000, 2000 },
+        .offset_nm = .{ 1000, 800 },
     },
     .{
         .slm_id = 2,
-        .num_row = 2,
+        .num_row = 1,
         .num_col = 2,
-        .sep_nm = .{ 10000, 10000 },
-        .offset_nm = .{ 0, 2000 },
+        .sep_nm = .{ 2000, 2000 },
+        .offset_nm = .{ 1000, 1200 },
     },
 };
 
-fn testCfg() ArchConfig {
+pub fn testConfig() ArchConfig {
+    const slm = Slm{
+        .slm_id = 0,
+        .num_row = 2,
+        .num_col = 4,
+        .sep_nm = .{ 1000, 1000 },
+        .offset_nm = .{ 0, 0 },
+    };
     return .{
         .platform = .{ .name = "test", .version = "0" },
         .aod = .{
             .aod_id = 0,
-            .min_sep_nm = 1500,
+            .min_sep_nm = 100,
             .max_num_row = 4,
-            .max_num_col = 8,
+            .max_num_col = 4,
         },
         .storage_zone = .{
             .zone_id = 0,
             .offset_nm = .{ 0, 0 },
-            .slm = test_slm,
+            .slm = slm,
         },
         .compute_zone = .{
             .zone_id = 1,
-            .offset_nm = .{ 0, 10000 },
-            .dr_nm = 2000,
-            .dw_nm = 10000,
+            .offset_nm = .{ 0, 5000 },
+            .dr_nm = 200,
+            .dw_nm = 1000,
             .slms = &test_compute_slms,
         },
         .readout_zone = .{
             .zone_id = 2,
-            // The compute box (grid extent + half-sep padding) reaches
-            // y=27000; this leaves a 3500nm derived gap, above dz=3000.
-            .offset_nm = .{ 0, 31000 },
-            .slm = test_slm,
+            .offset_nm = .{ 0, 9000 },
+            .slm = slm,
         },
         .constraints = .{
-            .db_nm = 3000,
-            .dz_nm = 3000,
-            .one_qubit_gate_fidelity = 0.999,
-            .two_qubit_gate_fidelity = 0.995,
-            .readout_fidelity = 0.99,
+            .db_nm = 300,
+            .dz_nm = 100,
+            .one_qubit_gate_fidelity = 1,
+            .two_qubit_gate_fidelity = 1,
+            .readout_fidelity = 1,
         },
     };
 }
 
 test "validate accepts a well-formed config" {
-    try validate(testCfg());
+    try validate(testConfig());
 }
 
 test "validate rejects mismatched Rydberg pair SLMs" {
     var slms = test_compute_slms;
     slms[1].num_col = 1;
-    var cfg = testCfg();
+    var cfg = testConfig();
     cfg.compute_zone.slms = &slms;
     quiet = true;
     defer quiet = false;
@@ -632,7 +636,7 @@ test "validate rejects mismatched Rydberg pair SLMs" {
 }
 
 test "validate rejects a single compute SLM" {
-    var cfg = testCfg();
+    var cfg = testConfig();
     cfg.compute_zone.slms = test_compute_slms[0..1];
     quiet = true;
     defer quiet = false;
@@ -640,7 +644,7 @@ test "validate rejects a single compute SLM" {
 }
 
 test "validate rejects zero trap separation" {
-    var cfg = testCfg();
+    var cfg = testConfig();
     cfg.storage_zone.slm.sep_nm[0] = 0;
     quiet = true;
     defer quiet = false;
@@ -648,7 +652,7 @@ test "validate rejects zero trap separation" {
 }
 
 test "validate rejects overlapping zones" {
-    var cfg = testCfg();
+    var cfg = testConfig();
     cfg.compute_zone.offset_nm = .{ 0, 500 }; // on top of the storage grid
     quiet = true;
     defer quiet = false;
@@ -656,25 +660,26 @@ test "validate rejects overlapping zones" {
 }
 
 test "validate rejects zones closer than the configured gap" {
-    var cfg = testCfg();
-    // Storage box ends at y=1500, the compute box starts 5000 below its
-    // origin: a 2500nm derived gap, under dz=3000.
-    cfg.compute_zone.offset_nm = .{ 0, 9000 };
+    var cfg = testConfig();
+    // Storage box ends at y=1500; the compute box (pair offset 800 minus
+    // 1000 half-sep padding) starts at 1750-200=1550: a 50nm derived gap,
+    // under dz=100.
+    cfg.compute_zone.offset_nm = .{ 0, 1750 };
     quiet = true;
     defer quiet = false;
     try std.testing.expectError(error.ZoneGapTooSmall, validate(cfg));
 }
 
 test "validate rejects broken blockade geometry" {
-    var cfg = testCfg();
-    cfg.compute_zone.dw_nm = 2000; // site spacing inside the blockade radius
+    var cfg = testConfig();
+    cfg.compute_zone.dw_nm = 300; // site spacing at the blockade radius
     quiet = true;
     defer quiet = false;
     try std.testing.expectError(error.BlockadeGeometry, validate(cfg));
 }
 
 test "validate rejects an out-of-range fidelity" {
-    var cfg = testCfg();
+    var cfg = testConfig();
     cfg.constraints.readout_fidelity = 1.5;
     quiet = true;
     defer quiet = false;
@@ -719,11 +724,11 @@ test "Grid maps rows and columns to absolute nm coordinates" {
 }
 
 test "zone grids compose the zone offset with the SLM offset" {
-    const cfg = testCfg();
-    // Compute SLM 1 sits 2000 nm above the zone's bottom-left corner.
+    const cfg = testConfig();
+    // Compute SLM 1 sits at (1000, 1200) from the zone's bottom-left corner.
     const g = cfg.compute_zone.grid(1);
-    try std.testing.expectEqual(0, g.x(0));
-    try std.testing.expectEqual(12000, g.y(0)); // zone y 10000 + slm offset 2000
+    try std.testing.expectEqual(1000, g.x(0));
+    try std.testing.expectEqual(6200, g.y(0)); // zone y 5000 + slm offset 1200
 }
 
 test "corridorY lies in the trap-free lane between storage and compute" {

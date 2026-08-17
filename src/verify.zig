@@ -479,79 +479,14 @@ fn checkBlockade(t: usize, cfg: arch.ArchConfig, pos: []const Point, zone: sched
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-// Rydberg site pair whose padded box spans x 0..4000, y 4800..7200 with the
-// compute zone at y 5000 — covering the y=6000 positions the zone tests use.
-var test_compute_slms = [2]arch.Slm{
-    .{
-        .slm_id = 1,
-        .num_row = 1,
-        .num_col = 2,
-        .sep_nm = .{ 2000, 2000 },
-        .offset_nm = .{ 1000, 800 },
-    },
-    .{
-        .slm_id = 2,
-        .num_row = 1,
-        .num_col = 2,
-        .sep_nm = .{ 2000, 2000 },
-        .offset_nm = .{ 1000, 1200 },
-    },
-};
-
-// Minimal hand-built config: storage box at y -500..1500, compute box at
-// y 4800..7200, readout box at y 8500..10500, blockade radius 300nm.
-fn testCfg() arch.ArchConfig {
-    const slm = arch.Slm{
-        .slm_id = 0,
-        .num_row = 2,
-        .num_col = 4,
-        .sep_nm = .{ 1000, 1000 },
-        .offset_nm = .{ 0, 0 },
-    };
-
-    return .{
-        .platform = .{
-            .name = "test",
-            .version = "0",
-        },
-        .aod = .{
-            .aod_id = 0,
-            .min_sep_nm = 100,
-            .max_num_row = 4,
-            .max_num_col = 4,
-        },
-        .storage_zone = .{
-            .zone_id = 0,
-            .offset_nm = .{ 0, 0 },
-            .slm = slm,
-        },
-        .compute_zone = .{
-            .zone_id = 1,
-            .offset_nm = .{ 0, 5000 },
-            .dr_nm = 200,
-            .dw_nm = 1000,
-            .slms = &test_compute_slms,
-        },
-        .readout_zone = .{
-            .zone_id = 2,
-            .offset_nm = .{ 0, 9000 },
-            .slm = slm,
-        },
-        .constraints = .{
-            .db_nm = 300,
-            .dz_nm = 100,
-            .one_qubit_gate_fidelity = 1,
-            .two_qubit_gate_fidelity = 1,
-            .readout_fidelity = 1,
-        },
-    };
-}
-
+// arch.testConfig: storage box at y -500..1500, compute box at y 4800..7200
+// (Rydberg pair box x 0..4000, covering the y=6000 positions the zone tests
+// use), readout box at y 8500..10500, blockade radius 300nm.
 fn makeHw(gpa: std.mem.Allocator, initial: []const Point) !schedule.Hardware {
     var hw = schedule.Hardware{
         .gpa = gpa,
         .arena = .init(gpa),
-        .cfg = testCfg(),
+        .cfg = arch.testConfig(),
     };
     hw.initial = try hw.arena.allocator().dupe(Point, initial);
     return hw;
@@ -879,7 +814,7 @@ test "catches AOD columns closer than the minimum separation" {
         },
     });
 
-    // 50nm between the two AOD columns; testCfg's min_sep_nm is 100.
+    // 50nm between the two AOD columns; arch.testConfig's min_sep_nm is 100.
     try addFrame(&hw, &.{
         .{
             .move = .{
@@ -899,7 +834,7 @@ test "catches AOD columns closer than the minimum separation" {
 test "catches more AOD columns than the hardware has" {
     const gpa = std.testing.allocator;
 
-    // Five distinct columns; testCfg's AOD is 4x4.
+    // Five distinct columns; arch.testConfig's AOD is 4x4.
     var hw = try makeHw(gpa, &.{
         pt(0, 0),
         pt(1000, 0),

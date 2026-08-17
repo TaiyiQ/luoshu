@@ -118,3 +118,7 @@ pub const Graph = struct {
         }
     }
 };
+
+test {
+    std.testing.refAllDecls(@This());
+}

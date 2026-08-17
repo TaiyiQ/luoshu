@@ -801,7 +801,7 @@ pub const QasmParser = struct {
     // and `qubit` are excluded: they declare registers, handled separately.
     fn isClassicalType(word: []const u8) bool {
         const kws = [_][]const u8{
-            "int",  "uint",     "float",   "double", "angle",
+            "int",  "uint",     "float",   "double",  "angle",
             "bool", "duration", "stretch", "complex",
         };
         for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;

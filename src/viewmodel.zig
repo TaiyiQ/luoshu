@@ -404,53 +404,15 @@ pub const ViewModel = struct {
 var test_no_slms: [0]arch.Slm = .{};
 
 fn testHw(gpa: std.mem.Allocator, initial: []const Point) !schedule.Hardware {
-    const slm = arch.Slm{
-        .slm_id = 0,
-        .num_row = 1,
-        .num_col = 4,
-        .sep_nm = .{ 1000, 1000 },
-        .offset_nm = .{ 0, 0 },
-    };
+    var cfg = arch.testConfig();
+    cfg.storage_zone.slm.num_row = 1;
+    cfg.readout_zone.slm.num_row = 1;
+    cfg.compute_zone.slms = &arch.test_no_slms;
 
     var hw = schedule.Hardware{
         .gpa = gpa,
         .arena = .init(gpa),
-        .cfg = .{
-            .platform = .{
-                .name = "test",
-                .version = "0",
-            },
-            .aod = .{
-                .aod_id = 0,
-                .min_sep_nm = 100,
-                .max_num_row = 4,
-                .max_num_col = 4,
-            },
-            .storage_zone = .{
-                .zone_id = 0,
-                .offset_nm = .{ 0, 0 },
-                .slm = slm,
-            },
-            .compute_zone = .{
-                .zone_id = 1,
-                .offset_nm = .{ 0, 5000 },
-                .dr_nm = 200,
-                .dw_nm = 1000,
-                .slms = &test_no_slms,
-            },
-            .readout_zone = .{
-                .zone_id = 2,
-                .offset_nm = .{ 0, 9000 },
-                .slm = slm,
-            },
-            .constraints = .{
-                .db_nm = 300,
-                .dz_nm = 100,
-                .one_qubit_gate_fidelity = 1,
-                .two_qubit_gate_fidelity = 1,
-                .readout_fidelity = 1,
-            },
-        },
+        .cfg = cfg,
     };
 
     const a = hw.arena.allocator();
