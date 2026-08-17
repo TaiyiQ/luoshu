@@ -2,6 +2,7 @@ const std = @import("std");
 const resting = @import("resting");
 const trace = @import("trace");
 const color = @import("color");
+const serialize = @import("serialize");
 
 const Graph = @import("graph").Graph;
 
@@ -181,7 +182,12 @@ fn groupByComponent(gpa: std.mem.Allocator, g: Graph, nodes: []const usize) ![]u
 
 /// Left-to-right SLM layout: topological sort of the partial order built
 /// during coloring. Isolated qubits (degree 0) are not placed.
-fn topoSort(gpa: std.mem.Allocator, adj: []std.ArrayList(usize), aod_set: []const bool, g: Graph) ![]usize {
+fn topoSort(
+    gpa: std.mem.Allocator,
+    adj: []std.ArrayList(usize),
+    aod_set: []const bool,
+    g: Graph,
+) ![]usize {
     var n_slm: usize = 0;
     for (0..g.n) |i| {
         if (!aod_set[i] and g.degree[i] > 0) n_slm += 1;
@@ -368,9 +374,25 @@ pub const snapshot_cases = [_]SnapshotCase{
     .{ .kind = .graph_10_0, .path = "testdata/graph-10-0.json", .known_incomplete = true },
 };
 
+/// Routes the graph built for `kind` and serialises the result: the payload
+/// of the route-level snapshots, shared by the snapshot test below and
+/// `zig build update-snapshots`.
+pub fn snapshotJson(gpa: std.mem.Allocator, kind: SnapshotKind) ![]u8 {
+    var g = try buildSnapshotGraph(kind, gpa);
+    defer g.deinit();
+
+    var seq = try computeSequence(gpa, &g);
+    defer seq.deinit();
+
+    return serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
+}
+
 test "snapshots: routed graphs match testdata/" {
+    const gpa = std.testing.allocator;
     for (snapshot_cases) |case| {
-        try @import("snapshot.zig").snapshotTest(std.testing.allocator, std.testing.io, case);
+        const actual = try snapshotJson(gpa, case.kind);
+        defer gpa.free(actual);
+        try serialize.expectMatchesFile(gpa, std.testing.io, case.path, actual);
     }
 }
 

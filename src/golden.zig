@@ -6,8 +6,7 @@
 //! Snapshots pin stability, not correctness: any change to MIS/coloring/
 //! choreography shows up as a reviewable diff. Regenerate with `zig build
 //! update-snapshots`. Correctness comes from verify.verify, which runs in
-//! every case, so a blessed snapshot is always a legal schedule (except a
-//! documented Case.known_violation).
+//! every case, so a blessed snapshot is always a legal schedule.
 
 const std = @import("std");
 const arch = @import("arch");
@@ -47,11 +46,6 @@ pub const Case = struct {
     kind: Kind,
     sequence_path: []const u8,
     hardware_path: []const u8,
-
-    /// A legality violation the verifier is expected to report for this
-    /// circuit — a known routing bug, asserted so the test fails loudly
-    /// the day routing is fixed (then: regenerate goldens, clear this).
-    known_violation: ?anyerror = null,
 };
 
 /// Walked by the per-case tests below and by `zig build update-snapshots`,
@@ -152,8 +146,9 @@ pub fn buildCycle6(gpa: std.mem.Allocator) !circuit.Circuit {
 // split-into-rounds fallback in the driver; coloring against the fixed AOD
 // sequence (arXiv:2405.08068) rejects conflicting colors during coloring,
 // so it routes in a single pickup. Kept as the regression case for that
-// coloring. The odd 5-cycle leaves one SLM-SLM edge uncovered (dropped CZ),
-// the known non-bipartite routing gap.
+// coloring. A single round still leaves one SLM-SLM edge uncovered (the odd
+// cycle is non-bipartite); the driver reroutes the residue in a further
+// round, so every CZ lands in the schedule.
 pub fn buildCyclicAod(gpa: std.mem.Allocator) !circuit.Circuit {
     var c = circuit.Circuit.init(gpa, 6);
     errdefer c.deinit();
@@ -213,42 +208,15 @@ pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
     return gpa.dupe(u8, buf.written());
 }
 
-fn expectMatchesFile(
+/// Runs `case` through the full pipeline and returns both snapshot payloads,
+/// verifying the schedule on the way so an illegal one can never be blessed
+/// as a golden baseline. Shared by the per-case tests and
+/// `zig build update-snapshots`, so the two can never drift.
+pub fn caseJson(
     gpa: std.mem.Allocator,
-    io: std.Io,
-    path: []const u8,
-    actual: []const u8,
-) !void {
-    const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
-        if (err == error.FileNotFound) {
-            std.debug.print(
-                "\nSnapshot missing: {s}\n" ++
-                    "  Run `zig build update-snapshots` to generate it.\n",
-                .{path},
-            );
-        }
-        return err;
-    };
-    defer file.close(io);
-
-    const stat = try file.stat(io);
-    const expected = try gpa.alloc(u8, stat.size);
-    defer gpa.free(expected);
-    _ = try file.readPositionalAll(io, expected, 0);
-
-    if (!std.mem.eql(u8, actual, expected)) {
-        std.debug.print(
-            "\nSnapshot mismatch: {s}\n--- expected ---\n{s}\n--- actual ---\n{s}\n",
-            .{ path, expected, actual },
-        );
-        return error.SnapshotMismatch;
-    }
-}
-
-fn goldenCase(case: Case) !void {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-
+    cfg: arch.ArchConfig,
+    case: Case,
+) !struct { seq: []u8, hw: []u8 } {
     var circ = try buildCircuit(case.kind, gpa);
     defer circ.deinit();
 
@@ -256,26 +224,30 @@ fn goldenCase(case: Case) !void {
     defer pipe.deinit();
 
     const seq_json = try sequencesJson(gpa, &pipe);
-    defer gpa.free(seq_json);
-    try expectMatchesFile(gpa, io, case.sequence_path, seq_json);
-
-    const cfg = try arch.load(gpa, io, arch_path);
-    defer cfg.deinit(gpa);
+    errdefer gpa.free(seq_json);
 
     var hw = try compiler.compile(gpa, &pipe, cfg, null, null);
     defer hw.deinit();
 
-    if (case.known_violation) |expected| {
-        verify.quiet = true;
-        defer verify.quiet = false;
-        try std.testing.expectError(expected, verify.verify(gpa, &hw));
-    } else {
-        try verify.verify(gpa, &hw);
-    }
+    try verify.verify(gpa, &hw);
 
     const hw_json = try serialize.hardwareToJson(gpa, &hw);
-    defer gpa.free(hw_json);
-    try expectMatchesFile(gpa, io, case.hardware_path, hw_json);
+    return .{ .seq = seq_json, .hw = hw_json };
+}
+
+fn goldenCase(case: Case) !void {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    const cfg = try arch.load(gpa, io, arch_path);
+    defer cfg.deinit(gpa);
+
+    const json = try caseJson(gpa, cfg, case);
+    defer gpa.free(json.seq);
+    defer gpa.free(json.hw);
+
+    try serialize.expectMatchesFile(gpa, io, case.sequence_path, json.seq);
+    try serialize.expectMatchesFile(gpa, io, case.hardware_path, json.hw);
 }
 
 test "golden: bell" {

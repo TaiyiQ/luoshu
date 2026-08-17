@@ -119,7 +119,7 @@ pub fn build(b: *std.Build) void {
     serialize_mod.addImport("schedule", schedule_mod);
     serialize_mod.addImport("bench", bench_mod);
     exe.root_module.addImport("serialize", serialize_mod);
-    route_mod.addImport("serialize", serialize_mod); // for snapshot.zig (route's test helper)
+    route_mod.addImport("serialize", serialize_mod); // route's snapshot tests
 
     const compiler_mod = b.addModule("compiler", .{
         .root_source_file = b.path("src/compiler.zig"),
@@ -234,11 +234,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     update_exe.root_module.addImport("arch", arch_mod);
-    update_exe.root_module.addImport("circuit", circuit_mod);
-    update_exe.root_module.addImport("compiler", compiler_mod);
     update_exe.root_module.addImport("route", route_mod);
     update_exe.root_module.addImport("serialize", serialize_mod);
-    update_exe.root_module.addImport("verify", verify_mod);
     update_exe.root_module.addImport("golden", golden_mod);
 
     const update_run = b.addRunArtifact(update_exe);
