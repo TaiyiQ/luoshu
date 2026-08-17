@@ -8,7 +8,7 @@ const usage =
     \\metrics table prints per circuit and the visualizer stays closed.
     \\
     \\options:
-    \\  --config <file>     settings TOML encoding these options
+    \\  --cfg <file>        settings TOML encoding these options
     \\                      (default: cfg/settings.toml, may be absent)
     \\  --arch <file>       architecture TOML (default: cfg/arch.toml)
     \\  --asm <file>        storage occupancy JSON from the upstream
@@ -63,8 +63,8 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             std.debug.print(usage, .{});
             std.process.exit(0);
-        } else if (std.mem.eql(u8, arg, "--config")) {
-            const v = it.next() orelse fatal("--config expects a file", .{});
+        } else if (std.mem.eql(u8, arg, "--cfg")) {
+            const v = it.next() orelse fatal("--cfg expects a file", .{});
             config_path = try arena.dupe(u8, v);
         } else if (std.mem.eql(u8, arg, "--arch")) {
             const v = it.next() orelse fatal("--arch expects a file", .{});
