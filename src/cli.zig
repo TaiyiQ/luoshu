@@ -34,9 +34,11 @@ pub const Options = struct {
     /// Compilations to run: one job for the single positional argument, or
     /// one per circuit in the settings [benchmark] list when none is given.
     jobs: []const Job,
+
     /// True when jobs came from the settings [benchmark] list: outputs
     /// derive from out_dir and the visualization is skipped.
     benchmark: bool = false,
+
     /// Layered run settings: flags over the config TOML over built-in
     /// defaults. Jobs already carry the out/bench paths derived from it.
     settings: settings.Resolved,
@@ -54,6 +56,7 @@ pub fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
 pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !Options {
     var it = try std.process.Args.Iterator.initAllocator(args, arena);
     defer it.deinit();
+
     _ = it.next(); // argv[0]
 
     var qasm_path: ?[]const u8 = null;
@@ -62,6 +65,7 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
 
     while (it.next()) |argument| {
         const arg = std.mem.sliceTo(argument, 0);
+
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             std.debug.print(usage, .{});
             std.process.exit(0);
@@ -94,12 +98,24 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
     }
 
     const cfg = settings.resolve(arena, io, flags, config_path) catch |err|
-        fatal("cannot load config '{s}': {t}", .{ config_path orelse settings.default_path, err });
+        fatal("cannot load config '{s}': {t}", .{
+            config_path orelse settings.default_path,
+            err,
+        });
 
     if (qasm_path) |p| {
         const jobs = try arena.alloc(Job, 1);
-        jobs[0] = .{ .qasm = p, .out = cfg.out, .bench = cfg.bench };
-        return .{ .jobs = jobs, .settings = cfg };
+
+        jobs[0] = .{
+            .qasm = p,
+            .out = cfg.out,
+            .bench = cfg.bench,
+        };
+
+        return .{
+            .jobs = jobs,
+            .settings = cfg,
+        };
     }
 
     if (cfg.benchmark.circuits.len == 0)
@@ -108,16 +124,25 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
         fatal("--out/--bench name a single output file; a benchmark run writes per-circuit files under out_dir", .{});
 
     const jobs = try arena.alloc(Job, cfg.benchmark.circuits.len);
+
     for (cfg.benchmark.circuits, jobs) |qasm, *job| {
         job.* = .{ .qasm = qasm };
+
         if (cfg.benchmark.out_dir) |dir| {
             const stem = std.fs.path.stem(qasm);
             job.out = try std.fmt.allocPrint(arena, "{s}/{s}.hardware.json", .{ dir, stem });
             job.bench = try std.fmt.allocPrint(arena, "{s}/{s}.bench.json", .{ dir, stem });
         }
     }
-    var opts = Options{ .jobs = jobs, .benchmark = true, .settings = cfg };
-    opts.settings.viz = false; // batch run: metrics, not windows
+
+    var opts = Options{
+        .jobs = jobs,
+        .benchmark = true,
+        .settings = cfg,
+    };
+
+    opts.settings.viz = false;
+
     return opts;
 }
 

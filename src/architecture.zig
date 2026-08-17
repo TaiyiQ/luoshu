@@ -93,8 +93,8 @@ pub const Grid = struct {
         return g.origin_nm[1] + @as(i32, @intCast(row)) * g.sep_nm[1];
     }
 
-    /// Half the column separation — clearance offset that places an atom in
-    /// the trap-free lane between columns.
+    /// Half the column separation — offset that places an
+    /// atom in the trap-free lane between columns.
     pub fn halfSepX(g: Grid) i32 {
         return @divTrunc(g.sep_nm[0], 2);
     }

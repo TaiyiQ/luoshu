@@ -14,17 +14,20 @@ const cli = @import("cli");
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
+
     const opts = try cli.parseArgs(arena, init.io, init.minimal.args);
+
     trace.enabled = opts.settings.verbose;
 
     const cfg = arch.load(init.gpa, init.io, opts.settings.arch) catch |err|
         cli.fatal("cannot load architecture '{s}': {t}", .{ opts.settings.arch, err });
     defer cfg.deinit(init.gpa);
+
     if (opts.settings.verbose) cfg.print();
 
-    // Loaded once; checked against each circuit's qubit count in compileOne.
     var asm_doc: ?assembly.Assembly = null;
     defer if (asm_doc) |a| a.deinit(init.gpa);
+
     if (opts.settings.assembly) |path| {
         asm_doc = assembly.load(init.gpa, init.io, path) catch |err|
             cli.fatal("cannot load assembly '{s}': {t}", .{ path, err });
@@ -32,6 +35,7 @@ pub fn main(init: std.process.Init) !void {
 
     var name_w: usize = 0;
     for (opts.jobs) |j| name_w = @max(name_w, j.qasm.len);
+
     const table = bench.Table.init(name_w);
     if (opts.benchmark) table.header();
 
@@ -57,14 +61,27 @@ fn compileOne(
     var diag: ?qasm.Diagnostic = null;
     var warnings: std.ArrayList(qasm.Diagnostic) = .empty;
     defer warnings.deinit(init.gpa);
+
     var circ = qasm.loadDiag(init.gpa, init.io, job.qasm, &diag, &warnings) catch |err| {
         if (diag) |d|
-            cli.fatal("{s}:{d}:{d}: {t}: {s}", .{ job.qasm, d.line, d.col, err, d.reason });
+            cli.fatal("{s}:{d}:{d}: {t}: {s}", .{
+                job.qasm,
+                d.line,
+                d.col,
+                err,
+                d.reason,
+            });
         cli.fatal("cannot load circuit '{s}': {t}", .{ job.qasm, err });
     };
     defer circ.deinit();
+
     for (warnings.items) |w|
-        std.debug.print("gatecomp: {s}:{d}:{d}: warning: {s}\n", .{ job.qasm, w.line, w.col, w.reason });
+        std.debug.print("gatecomp: {s}:{d}:{d}: warning: {s}\n", .{
+            job.qasm,
+            w.line,
+            w.col,
+            w.reason,
+        });
 
     var pipeline = try circuit.decompose(init.gpa, circ);
     defer pipeline.deinit();
@@ -72,7 +89,10 @@ fn compileOne(
     if (asm_doc) |a| {
         // The detailed diagnostic (which field disagrees) prints in check.
         assembly.check(a, cfg, pipeline.num_qubits) catch |err|
-            cli.fatal("assembly '{s}' rejected: {t}", .{ opts.settings.assembly.?, err });
+            cli.fatal("assembly '{s}' rejected: {t}", .{
+                opts.settings.assembly.?,
+                err,
+            });
     }
 
     const initial_sites = if (asm_doc) |a| a.sites else null;
