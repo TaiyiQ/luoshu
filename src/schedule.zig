@@ -678,6 +678,7 @@ fn occupiedStorageX(
     for (returning) |q| ret_set[q] = true;
 
     var occ = std.AutoHashMap(i32, void).init(gpa);
+    errdefer occ.deinit();
 
     for (placement, 0..) |atom, i| {
         if (ret_set[i]) continue;
@@ -1087,6 +1088,49 @@ test "moveAodCompute pairs each timeframe's qubits within blockade range" {
     try hw.moveAodCompute(&fixed, &moveable);
 
     try expectRydbergPairsWithinBlockade(cfg, &hw, &fixed, &moveable);
+}
+
+// Full driver-shaped schedule for the allocation-failure checks.
+fn buildFullSchedule(gpa: std.mem.Allocator) !void {
+    var cfg = testShuttleCfg();
+    cfg.storage_zone.slm.num_col = 16;
+
+    var hw = try Hardware.init(gpa, cfg, 12, &.{
+        .{ .row = 2, .col = 0 },
+        .{ .row = 2, .col = 1 },
+        .{ .row = 2, .col = 2 },
+        .{ .row = 2, .col = 3 },
+        .{ .row = 2, .col = 4 },
+        .{ .row = 2, .col = 5 },
+        .{ .row = 2, .col = 6 },
+        .{ .row = 2, .col = 7 },
+        .{ .row = 2, .col = 8 },
+        .{ .row = 2, .col = 9 },
+        .{ .row = 2, .col = 10 },
+        .{ .row = 2, .col = 11 },
+    });
+    defer hw.deinit();
+
+    const fixed = [_]?usize{ 0, 2 };
+    var t0 = [_]?usize{ 1, null };
+    var t1 = [_]?usize{ null, 1 };
+    var moveable = [_][]?usize{ &t0, &t1 };
+
+    try hw.moveSlmCompute(&fixed);
+    try hw.moveAodCompute(&fixed, &moveable);
+    try hw.moveAodStorage(&moveable);
+    try hw.moveSlmStorage(&fixed);
+    try hw.raman(&.{.{ .qubit = 1, .angle = 1.0, .phase = 0.0 }});
+    try hw.moveReadout();
+    try hw.measure(.readout);
+}
+
+test "schedule construction frees scratch on every allocation failure" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        buildFullSchedule,
+        .{},
+    );
 }
 
 test {
