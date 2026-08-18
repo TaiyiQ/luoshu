@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 #
-# A/B bench: current tree vs a baseline git ref.
+# A/B wall-clock bench: current tree vs a baseline git ref.
 #
-#   ./bench.sh <suite> <commit>      # suite: qasm | mqt | graph
-#   ./bench.sh mqt ab12
-#   RUNS=5 ./bench.sh qasm 10bc8e2
+#   ./script/bench-wallclock.sh <suite> <commit>      # suite: qasm | mqt | graph
+#   ./script/bench-wallclock.sh mqt ab12
+#   RUNS=5 ./script/bench-wallclock.sh qasm 10bc8e2
 #
 # ReleaseFast binaries; the baseline builds once in a throwaway git
 # worktree and is cached per commit in zig-out/ab/. Time = min
 # compile_ns over RUNS. Mem = peak memory footprint (/usr/bin/time -l),
 # one run. Positive % = new binary is better. Flags any circuit whose
-# bench JSON (minus compile_ns) differs between the two binaries.
+# bench JSON (minus compile_ns) differs between the two binaries; use
+# script/bench-hardware.sh to quantify a flagged difference.
 
 set -euo pipefail
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 [[ -z ${1:-} ]] && echo "usage: $0 <suite> <ref>   suite: qasm | mqt | graph" && exit 1
 [[ -z ${2:-} ]] && echo "usage: $0 <suite> <ref>   ref: baseline git commit" && exit 1
@@ -23,7 +24,7 @@ case "$1" in
     qasm)  CIRCUITS=(ex/qasmbench/*.qasm) ;;
     mqt)   CIRCUITS=(ex/mqt/*.qasm) ;;
     graph) CIRCUITS=(ex/graph/*.qasm) ;;
-    *)     echo "unknown suite: $1 (want all | qasm | mqt | graph)" && exit 1 ;;
+    *)     echo "unknown suite: $1 (want qasm | mqt | graph)" && exit 1 ;;
 esac
 
 RUNS=${RUNS:-20}
@@ -49,10 +50,18 @@ build_binaries() {
 }
 
 min_ns() { # <binary> <circuit> <json-out>
-    local i
+    local i old stem
+    stem=$(basename "$2" .qasm)
+    # Pre-merge binaries take --bench <file>; current ones --out <dir>.
+    old=$("$1" -h 2>&1 | grep -c -- '--bench ' || true)
 
     for ((i = 0; i < RUNS; i++)); do
-        "$1" "$2" --bench "$3" 2>/dev/null
+        if [[ $old -gt 0 ]]; then
+            "$1" "$2" --bench "$3" 2>/dev/null
+        else
+            "$1" "$2" --out "$AB" 2>/dev/null
+            mv "$AB/$stem-bench.json" "$3"
+        fi
         jq .compile_ns "$3"
     done | sort -n | head -1
 }
