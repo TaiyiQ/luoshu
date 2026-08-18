@@ -6,8 +6,10 @@
 #   ./script/bench-hardware.sh mqt ab12
 #
 # Compares the modeled neutral-atom hardware cost of the emitted
-# schedules: route = time_us.routing (loading + shuttling, the routing
-# overhead) and total = time_us.total (end-to-end schedule runtime).
+# schedules: shut = time_us.shuttling (per-frame max move / speed) and
+# route = time_us.routing (loading + shuttling), so route - shut is the
+# load/store cost. Gate pulses are negligible next to shuttling, which
+# is why there is no total column — it would just repeat route.
 # These are deterministic properties of the schedule, so each circuit
 # runs once per binary — no timing loop, full suites sweep fast.
 # ReleaseFast binaries; the baseline builds once in a throwaway git
@@ -66,11 +68,11 @@ bench_json() { # <binary> <circuit> <json-out>
 
 run_bench() {
     local base="$AB/gatecomp-$SHA" new="$AB/gatecomp-new"
-    local c same brt nrt btt ntt
+    local c same bsh nsh brt nrt
 
     echo ">> base = $SHA"
     printf '%-20s %10s %10s %8s %10s %10s %8s\n' \
-        circuit 'base(us)' 'new(us)' route 'base(us)' 'new(us)' total
+        circuit 'base(us)' 'new(us)' shut 'base(us)' 'new(us)' route
 
     for c in "${CIRCUITS[@]}"; do
         same=''
@@ -78,10 +80,10 @@ run_bench() {
         bench_json "$base" "$c" "$AB/base.json"
         bench_json "$new" "$c" "$AB/new.json"
 
+        bsh=$(jq '.time_us.shuttling // 0' "$AB/base.json")
+        nsh=$(jq '.time_us.shuttling // 0' "$AB/new.json")
         brt=$(jq '.time_us.routing // 0' "$AB/base.json")
         nrt=$(jq '.time_us.routing // 0' "$AB/new.json")
-        btt=$(jq '.time_us.total // 0' "$AB/base.json")
-        ntt=$(jq '.time_us.total // 0' "$AB/new.json")
 
         diff <(jq -S 'del(.compile_ns)' "$AB/base.json") \
              <(jq -S 'del(.compile_ns)' "$AB/new.json") \
@@ -89,15 +91,15 @@ run_bench() {
 
         awk -v c="$(basename "$c" .qasm)" \
 			-v s="$same" \
+			-v bsh="$bsh" \
+			-v nsh="$nsh" \
 			-v brt="$brt" \
 			-v nrt="$nrt" \
-			-v btt="$btt" \
-			-v ntt="$ntt" \
             'function pct(b, n) { return n > 0 ? (b / n - 1) * 100 : 0 }
             BEGIN {
                 printf "%-20s %10.1f %10.1f %+7.1f%% %10.1f %10.1f %+7.1f%%%s\n",
-                    c, brt, nrt, pct(brt, nrt),
-                    btt, ntt, pct(btt, ntt), s
+                    c, bsh, nsh, pct(bsh, nsh),
+                    brt, nrt, pct(brt, nrt), s
             }'
     done
 }
