@@ -2,8 +2,11 @@ build:
 	zig build
 	cp ./zig-out/bin/gatecomp .
 
-bench:
+run:
 	zig build run
+
+bench *args:
+	./bench.sh {{args}}
 
 test:
 	zig build test --summary all

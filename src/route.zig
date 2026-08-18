@@ -193,9 +193,6 @@ fn topoSort(
         if (!aod_set[i] and g.degree[i] > 0) n_slm += 1;
     }
 
-    var out = try std.ArrayList(usize).initCapacity(gpa, n_slm);
-    defer out.deinit(gpa);
-
     var in_degree = try gpa.alloc(usize, g.n);
     @memset(in_degree, 0);
     defer gpa.free(in_degree);
@@ -204,22 +201,22 @@ fn topoSort(
         for (list.items) |j| in_degree[j] += 1;
     }
 
-    var queue: std.ArrayList(usize) = .empty;
-    defer queue.deinit(gpa);
+    // Kahn's with a queue: nodes leave in arrival order, so the queue
+    // read behind a cursor is already the sorted output.
+    var out = try std.ArrayList(usize).initCapacity(gpa, n_slm);
+    defer out.deinit(gpa);
 
     for (0..g.n) |i| {
         if (!aod_set[i] and g.degree[i] > 0 and in_degree[i] == 0) {
-            try queue.append(gpa, i);
+            try out.append(gpa, i);
         }
     }
 
-    while (queue.items.len > 0) {
-        const u = queue.orderedRemove(0);
-        try out.append(gpa, u);
-
-        for (adj[u].items) |w| {
+    var head: usize = 0;
+    while (head < out.items.len) : (head += 1) {
+        for (adj[out.items[head]].items) |w| {
             in_degree[w] -= 1;
-            if (in_degree[w] == 0) try queue.append(gpa, w);
+            if (in_degree[w] == 0) try out.append(gpa, w);
         }
     }
 
@@ -230,13 +227,12 @@ fn topoSort(
     return out.toOwnedSlice(gpa);
 }
 
-// `timesteps[t][k]` is the SLM partner of aod_nodes[k] (left-to-right column
-// order) at timestep t, or null if that AOD is resting.
+// `timesteps[t][k]` is the SLM partner of aod_nodes[k]
+// at timestep t, or null if that AOD is resting.
 fn activePerTimestep(
     gpa: std.mem.Allocator,
     g: *Graph,
     aod_nodes: []const usize,
-    slm_order: []const usize,
 ) ![]const []const ?usize {
     const max_c = try g.maxColor();
     const steps = @as(usize, @intCast(max_c + 1));
@@ -244,26 +240,18 @@ fn activePerTimestep(
     const timesteps = try gpa.alloc([]?usize, steps);
     errdefer gpa.free(timesteps);
 
-    for (0..steps) |t_usize| {
-        const t: i32 = @intCast(t_usize);
+    for (timesteps) |*active| {
+        active.* = try gpa.alloc(?usize, aod_nodes.len);
+        @memset(active.*, null);
+    }
 
-        const active = try gpa.alloc(?usize, aod_nodes.len);
-        @memset(active, null);
-
-        for (aod_nodes, 0..) |v, i| {
-            var e = g.edges[v];
-            while (e) |edge| : (e = edge.next) {
-                if (edge.color == t) {
-                    for (slm_order) |slm| {
-                        if (slm == edge.y) {
-                            active[i] = slm;
-                        }
-                    }
-                }
-            }
+    // Every colored edge of an AOD names its SLM partner and, via the color,
+    // the timestep they gate in: one pass over the AOD lists fills the table.
+    for (aod_nodes, 0..) |v, i| {
+        var e = g.edges[v];
+        while (e) |edge| : (e = edge.next) {
+            if (edge.color) |c| timesteps[@intCast(c)][i] = edge.y;
         }
-
-        timesteps[t_usize] = active;
     }
 
     return timesteps;
@@ -275,32 +263,28 @@ pub fn computeSequence(gpa: std.mem.Allocator, g: *Graph) !Sequence {
     const arena_alloc = arena.allocator();
 
     // AOD qubits. Their order is final: aod_nodes[0] is the rightmost column.
-    const aod_nodes = try maxIndependentSet(gpa, g.*);
-    defer gpa.free(aod_nodes);
+    const aod_nodes = try maxIndependentSet(arena_alloc, g.*);
     trace.print(">> AOD ordered nodes: {any}\n", .{aod_nodes});
 
     // aod_set[q] = q flies; membership view of aod_nodes for topoSort.
-    const aod_set = try gpa.alloc(bool, g.n);
-    defer gpa.free(aod_set);
+    const aod_set = try arena_alloc.alloc(bool, g.n);
     @memset(aod_set, false);
     for (aod_nodes) |q| aod_set[q] = true;
 
     // Color edges against the fixed AOD order, accumulating the SLM
     // partial order as colors commit.
-    var order = try color.SlmOrder.init(gpa, g.n);
-    defer order.deinit();
+    var order = try color.SlmOrder.init(arena_alloc, g.n);
     try color.dsatur(gpa, g, aod_nodes, &order);
     g.edgeColors();
 
-    const slm_order = try topoSort(gpa, order.adj, aod_set, g.*);
-    defer gpa.free(slm_order);
+    const slm_order = try topoSort(arena_alloc, order.adj, aod_set, g.*);
     trace.print(">> Topological Order of SLM Qubits\n{any}\n", .{slm_order});
 
     // Downstream stages work with the physical left-to-right order.
     const aod_lr = try arena_alloc.dupe(usize, aod_nodes);
     std.mem.reverse(usize, aod_lr);
 
-    const timesteps = try activePerTimestep(arena_alloc, g, aod_lr, slm_order);
+    const timesteps = try activePerTimestep(arena_alloc, g, aod_lr);
     const gaps = try resting.computePositions(arena_alloc, slm_order, timesteps);
     const fixed = try resting.placeControlQubits(arena_alloc, slm_order, gaps);
     const moveable = try resting.scheduleTargetQubits(arena_alloc, aod_lr, fixed, timesteps);
