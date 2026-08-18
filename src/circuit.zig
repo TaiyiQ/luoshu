@@ -44,7 +44,7 @@ pub const Pipeline = struct {
     stages: std.ArrayList(Stage),
     num_qubits: usize,
 
-    fn init(gpa: std.mem.Allocator, n: usize) !Pipeline {
+    fn init(gpa: std.mem.Allocator, n: usize) Pipeline {
         return .{
             .gpa = gpa,
             .stages = .empty,
@@ -82,7 +82,7 @@ pub const Pipeline = struct {
 /// a gate may join an earlier stage of its kind, which is safe
 /// exactly because disjoint gates commute.
 pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
-    var pipe = try Pipeline.init(gpa, c.n);
+    var pipe = Pipeline.init(gpa, c.n);
     errdefer pipe.deinit();
 
     // Earliest stage of the wanted kind at or past `from`. A stage's kind
@@ -139,66 +139,31 @@ pub const Circuit = struct {
     }
 
     pub fn h(s: *Circuit, q: u32) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = PI / 2.0,
-            .phi = 0.0,
-            .lambda = PI,
-        } });
+        try s.u(q, PI / 2.0, 0.0, PI);
     }
 
     pub fn x(s: *Circuit, q: u32) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = PI,
-            .phi = 0.0,
-            .lambda = PI,
-        } });
+        try s.u(q, PI, 0.0, PI);
     }
 
     pub fn y(s: *Circuit, q: u32) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = PI,
-            .phi = PI / 2.0,
-            .lambda = PI / 2.0,
-        } });
+        try s.u(q, PI, PI / 2.0, PI / 2.0);
     }
 
     pub fn z(s: *Circuit, q: u32) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = 0.0,
-            .phi = 0.0,
-            .lambda = PI,
-        } });
+        try s.u(q, 0.0, 0.0, PI);
     }
 
     pub fn rx(s: *Circuit, q: u32, theta: f64) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = theta,
-            .phi = -PI / 2.0,
-            .lambda = PI / 2.0,
-        } });
+        try s.u(q, theta, -PI / 2.0, PI / 2.0);
     }
 
     pub fn ry(s: *Circuit, q: u32, theta: f64) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = theta,
-            .phi = 0.0,
-            .lambda = 0.0,
-        } });
+        try s.u(q, theta, 0.0, 0.0);
     }
 
     pub fn rz(s: *Circuit, q: u32, angle: f64) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = 0.0,
-            .phi = 0.0,
-            .lambda = angle,
-        } });
+        try s.u(q, 0.0, 0.0, angle);
     }
 
     pub fn u(s: *Circuit, q: u32, theta: f64, phi: f64, lambda: f64) !void {
@@ -236,12 +201,7 @@ pub const Circuit = struct {
     }
 
     pub fn sx(s: *Circuit, q: u32) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = PI / 2.0,
-            .phi = -PI / 2.0,
-            .lambda = PI / 2.0,
-        } });
+        try s.u(q, PI / 2.0, -PI / 2.0, PI / 2.0);
     }
 };
 
