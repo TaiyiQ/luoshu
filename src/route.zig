@@ -230,18 +230,17 @@ fn topoSort(
 // `timesteps[t][k]` is the SLM partner of aod_nodes[k]
 // at timestep t, or null if that AOD is resting.
 fn activePerTimestep(
-    gpa: std.mem.Allocator,
+    arena: std.mem.Allocator,
     g: *Graph,
     aod_nodes: []const usize,
 ) ![]const []const ?usize {
     const max_c = try g.maxColor();
     const steps = @as(usize, @intCast(max_c + 1));
 
-    const timesteps = try gpa.alloc([]?usize, steps);
-    errdefer gpa.free(timesteps);
+    const timesteps = try arena.alloc([]?usize, steps);
 
     for (timesteps) |*active| {
-        active.* = try gpa.alloc(?usize, aod_nodes.len);
+        active.* = try arena.alloc(?usize, aod_nodes.len);
         @memset(active.*, null);
     }
 

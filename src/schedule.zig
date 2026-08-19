@@ -107,10 +107,6 @@ pub const Hardware = struct {
     // Current timestep. Never touch directly: emit() stamps it, step() advances it.
     t: u32 = 0,
 
-    // Place qubits in storage zone. With `initial_sites` (the occupancy
-    // delivered by the upstream Atom Assembly / Atom Rearrangement package)
-    // qubit ids follow the given site order; without it, a procedural
-    // fallback fills the center half of the grid, compute-facing row first.
     pub fn init(
         gpa: std.mem.Allocator,
         cfg: arch.ArchConfig,
@@ -118,6 +114,7 @@ pub const Hardware = struct {
         initial_sites: ?[]const Site,
     ) !Hardware {
         const grid = cfg.storage_zone.grid();
+
         const num_col = grid.num_col;
         const num_row = grid.num_row;
 
@@ -152,7 +149,11 @@ pub const Hardware = struct {
         // here instead of indexing past `sites` below.
         if (num_qubits > sites.items.len) return error.TooManyQubits;
 
-        var hw = Hardware{ .gpa = gpa, .arena = .init(gpa), .cfg = cfg };
+        var hw = Hardware{
+            .gpa = gpa,
+            .arena = .init(gpa),
+            .cfg = cfg,
+        };
         errdefer hw.arena.deinit();
         const a = hw.arena.allocator();
 
@@ -160,8 +161,10 @@ pub const Hardware = struct {
         for (plc, 0..) |*p, i| {
             p.* = .{ .id = @intCast(i), .pos = sites.items[i] };
         }
+
         hw.placement = plc;
         hw.initial = try a.alloc(Point, hw.placement.len);
+
         for (hw.placement, hw.initial) |atom, *p| p.* = atom.pos;
 
         return hw;
@@ -188,12 +191,22 @@ pub const Hardware = struct {
 
     // Load an atom into the AOD at its current position.
     fn loadAtom(s: *Hardware, a: *const Atom) !void {
-        try s.emit(.{ .load = .{ .qubit = a.id, .position = a.pos } });
+        try s.emit(.{
+            .load = .{
+                .qubit = a.id,
+                .position = a.pos,
+            },
+        });
     }
 
     // Deposit an atom into the SLM at its current position (leaves the AOD).
     fn storeAtom(s: *Hardware, a: *const Atom) !void {
-        try s.emit(.{ .store = .{ .qubit = a.id, .position = a.pos } });
+        try s.emit(.{
+            .store = .{
+                .qubit = a.id,
+                .position = a.pos,
+            },
+        });
     }
 
     // Displace an atom; its placement position tracks the move.
@@ -210,52 +223,64 @@ pub const Hardware = struct {
         });
     }
 
-    // ── Schedule construction ────────────────────────────────────────────
-
     pub fn moveSlmCompute(s: *Hardware, fixed: []const ?usize) !void {
-        var ordered: std.ArrayList(usize) = .empty;
-        defer ordered.deinit(s.gpa);
+        var slots = try occupiedSlots(s.gpa, fixed);
+        defer slots.deinit(s.gpa);
 
-        var cols: std.ArrayList(usize) = .empty;
-        defer cols.deinit(s.gpa);
-
-        for (fixed, 0..) |maybe_qubit, col| {
-            if (maybe_qubit) |q| {
-                try ordered.append(s.gpa, q);
-                try cols.append(s.gpa, col);
-            }
-        }
-
-        var register = try s.pickup(ordered.items);
+        var register = try s.pickup(slots.qubits.items);
         defer register.deinit(s.gpa);
 
-        // Move each atom to its destination slot in compute zone slms[0].
-        const grid = s.cfg.compute_zone.grid(0);
-        const d = grid.halfSepX();
-
-        // Manhattan step 1: move each atom to its target x column (null slots skipped).
-        for (register.items, cols.items) |a, col| {
-            try s.moveAtom(a, grid.x(col) - a.pos.x + d, 0);
-        }
-        s.step();
-
-        // Manhattan step 2: move all atoms to the compute zone's top row —
-        // gates pack into the top-left corner, nearest the storage corridor.
-        const y_dest = grid.y(0);
-        for (register.items) |a| {
-            try s.moveAtom(a, 0, y_dest - a.pos.y);
-        }
-        s.step();
-
-        // Manhattan step 3: x correction to target column, then place atom into compute SLM.
-        for (register.items) |a| {
-            try s.moveAtom(a, -d, 0);
-            try s.storeAtom(a);
-        }
-        s.step();
+        // Manhattan entry into compute SLM[0]'s top row
+        // Gates pack into the top-left corner, nearest the storage corridor.
+        try s.enterComputeSlm(register.items, slots.cols.items, s.cfg.compute_zone.grid(0));
     }
 
     pub fn moveSlmStorage(s: *Hardware, fixed: []const ?usize) !void {
+        var returning: std.ArrayList(usize) = .empty;
+        defer returning.deinit(s.gpa);
+
+        for (fixed) |maybe_q| {
+            if (maybe_q) |q| try returning.append(s.gpa, q);
+        }
+
+        try s.returnToStorage(returning.items);
+    }
+
+    pub fn moveAodStorage(s: *Hardware, aod_qubits: [][]?usize) !void {
+        // Collect all unique qubit IDs across all timeframes.
+        const seen = try s.gpa.alloc(bool, s.placement.len);
+        defer s.gpa.free(seen);
+        @memset(seen, false);
+
+        var unique: std.ArrayList(usize) = .empty;
+        defer unique.deinit(s.gpa);
+
+        for (aod_qubits) |row| {
+            for (row) |maybe_q| {
+                if (maybe_q) |q| {
+                    if (!seen[q]) {
+                        seen[q] = true;
+                        try unique.append(s.gpa, q);
+                    }
+                }
+            }
+        }
+        if (unique.items.len == 0) return;
+
+        // Sort by current x so sequential column assignments preserve left-to-right order.
+        std.sort.block(usize, unique.items, s.placement, struct {
+            fn lt(p: []const Atom, a: usize, b: usize) bool {
+                return p[a].pos.x < p[b].pos.x;
+            }
+        }.lt);
+
+        try s.returnToStorage(unique.items);
+    }
+
+    // Return trip home for `qubits`, in order: load into the AOD, shift into
+    // the inter-column lane, rise to the inter-zone corridor, compress onto
+    // free storage columns, then drop to the bottom row and store.
+    fn returnToStorage(s: *Hardware, qubits: []const usize) !void {
         // Half compute zone site spacing — used as clearance from trap sites.
         const d_c = s.cfg.compute_zone.grid(0).halfSepX();
         const sgrid = s.cfg.storage_zone.grid();
@@ -264,121 +289,32 @@ pub const Hardware = struct {
         const y_corridor = s.cfg.corridorY();
 
         // Load each atom into the AOD so the horizontal highlight shows during the return trip.
-        for (fixed) |maybe_slm| {
-            if (maybe_slm) |q| try s.loadAtom(&s.placement[q]);
-        }
+        for (qubits) |q| try s.loadAtom(&s.placement[q]);
         s.step();
 
-        // Step 2: move LEFT by d_c — rigid shift into the inter-column lane.
+        // Step 1: move RIGHT by d_c — rigid shift into the inter-column lane.
         // Shifting by exactly d_c places every atom at an x midpoint between compute
-        // columns, so they won't cross a trap site x-column when rising in step 3.
-        for (fixed) |maybe_slm| {
-            if (maybe_slm) |q| try s.moveAtom(&s.placement[q], d_c, 0);
-        }
-        s.step();
-
-        // Step 3: move UP to the inter-zone corridor.
-        // Atoms travel vertically at inter-column x positions, clearing all compute
-        // zone trap rows without crossing any trap site.
-        for (fixed) |maybe_slm| {
-            if (maybe_slm) |q| {
-                const a = &s.placement[q];
-                if (a.pos.y == y_corridor) continue;
-                try s.moveAtom(a, 0, y_corridor - a.pos.y);
-            }
-        }
-        s.step();
-
-        // Step 4: compress — atoms move to sequential storage columns in left-to-right order,
-        // skipping columns already occupied by atoms that stayed in the storage zone.
-        var returning: std.ArrayList(usize) = .empty;
-        defer returning.deinit(s.gpa);
-        for (fixed) |maybe_slm| {
-            if (maybe_slm) |q| try returning.append(s.gpa, q);
-        }
-
-        var occ = try occupiedStorageX(s.gpa, returning.items, s.placement, y_storage_bottom);
-        defer occ.deinit();
-
-        var col: usize = 0;
-        for (returning.items) |q| {
-            while (occ.contains(sgrid.x(col))) col += 1;
-
-            const a = &s.placement[q];
-            const dest_x = sgrid.x(col);
-            if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
-            col += 1;
-        }
-        s.step();
-
-        // Step 5: drop to the bottom storage row and emit a Store op to mark the atom
-        // as back in the SLM (no longer in the AOD).
-        for (fixed) |maybe_slm| {
-            if (maybe_slm) |q| {
-                const a = &s.placement[q];
-                if (a.pos.y != y_storage_bottom) {
-                    try s.moveAtom(a, 0, y_storage_bottom - a.pos.y);
-                }
-                try s.storeAtom(a);
-            }
-        }
-        s.step();
-    }
-
-    pub fn moveAodStorage(s: *Hardware, aod_qubits: [][]?usize) !void {
-        // Collect all unique qubit IDs across all timeframes.
-        var seen = std.AutoHashMap(usize, void).init(s.gpa);
-        defer seen.deinit();
-
-        var unique: std.ArrayList(usize) = .empty;
-        defer unique.deinit(s.gpa);
-
-        for (aod_qubits) |row| {
-            for (row) |maybe_q| {
-                if (maybe_q) |q| {
-                    const gop = try seen.getOrPut(q);
-                    if (!gop.found_existing) try unique.append(s.gpa, q);
-                }
-            }
-        }
-        if (unique.items.len == 0) return;
-
-        // Sort by current x so sequential column assignments preserve left-to-right order.
-        const plc = s.placement;
-        std.sort.block(usize, unique.items, plc, struct {
-            fn lt(p: []const Atom, a: usize, b: usize) bool {
-                return p[a].pos.x < p[b].pos.x;
-            }
-        }.lt);
-
-        // Load each atom into the AOD so the horizontal highlight shows during the return trip.
-        for (unique.items) |q| try s.loadAtom(&s.placement[q]);
-        s.step();
-
-        const d_c = s.cfg.compute_zone.grid(0).halfSepX();
-        const sgrid = s.cfg.storage_zone.grid();
-        const y_storage_bottom = sgrid.bottomRowY();
-        const y_corridor = s.cfg.corridorY();
-
-        // Step 1: move RIGHT by d_c — shift into inter-column lane.
-        for (unique.items) |q| try s.moveAtom(&s.placement[q], d_c, 0);
+        // columns, so they won't cross a trap site x-column when rising in step 2.
+        for (qubits) |q| try s.moveAtom(&s.placement[q], d_c, 0);
         s.step();
 
         // Step 2: move UP to the inter-zone corridor.
-        for (unique.items) |q| {
+        // Atoms travel vertically at inter-column x positions, clearing all compute
+        // zone trap rows without crossing any trap site.
+        for (qubits) |q| {
             const a = &s.placement[q];
             if (a.pos.y == y_corridor) continue;
             try s.moveAtom(a, 0, y_corridor - a.pos.y);
         }
         s.step();
 
-        // Step 3: compress — sequential storage columns in left-to-right order,
+        // Step 3: compress — atoms move to sequential storage columns in left-to-right order,
         // skipping columns already occupied by atoms that stayed in the storage zone.
-        var occ = try occupiedStorageX(s.gpa, unique.items, s.placement, y_storage_bottom);
+        var occ = try occupiedStorageX(s.gpa, qubits, s.placement, y_storage_bottom);
         defer occ.deinit();
 
         var col: usize = 0;
-        for (unique.items) |q| {
+        for (qubits) |q| {
             while (occ.contains(sgrid.x(col))) col += 1;
 
             const a = &s.placement[q];
@@ -390,7 +326,7 @@ pub const Hardware = struct {
 
         // Step 4: drop to the bottom storage row and emit a Store op to mark the atom
         // as back in the SLM (no longer in the AOD).
-        for (unique.items) |q| {
+        for (qubits) |q| {
             const a = &s.placement[q];
             if (a.pos.y != y_storage_bottom) {
                 try s.moveAtom(a, 0, y_storage_bottom - a.pos.y);
@@ -408,50 +344,41 @@ pub const Hardware = struct {
     pub fn moveAodCompute(s: *Hardware, fixed: []const ?usize, moveable: [][]?usize) !void {
         if (moveable.len == 0) return;
 
-        var ordered: std.ArrayList(usize) = .empty;
-        defer ordered.deinit(s.gpa);
+        var slots = try occupiedSlots(s.gpa, moveable[0]);
+        defer slots.deinit(s.gpa);
 
-        var cols: std.ArrayList(usize) = .empty;
-        defer cols.deinit(s.gpa);
-
-        for (moveable[0], 0..) |maybe_q, col| {
-            if (maybe_q) |q| {
-                try ordered.append(s.gpa, q);
-                try cols.append(s.gpa, col);
-            }
-        }
-        if (ordered.items.len == 0) return;
+        if (slots.qubits.items.len == 0) return;
 
         // Pick up atoms from storage, traversing without crossing occupied sites.
-        var register = try s.pickup(ordered.items);
+        var register = try s.pickup(slots.qubits.items);
         defer register.deinit(s.gpa);
 
-        // Manhattan entry into SLM[1] — mirrors moveSlmCompute for SLM[0].
+        // Manhattan entry into SLM[1] - mirrors moveSlmCompute for SLM[0].
         const grid = s.cfg.compute_zone.grid(1);
-        try s.enterComputeSlm(register.items, cols.items, grid);
+        try s.enterComputeSlm(register.items, slots.cols.items, grid);
 
-        // Sweep: for each timeframe, lift atoms into AOD (t), slide to column (t),
-        // then deposit back into SLM (t+1, red flash). Rows where nothing
-        // moves emit nothing, so they consume no timestep.
         try s.sweepMoveableRows(moveable, fixed, grid);
     }
 
-    /// Manhattan entry of a freshly picked-up register into compute SLM[1]:
-    /// move each atom to its first-timeframe column (offset by half the
-    /// column pitch to avoid crossings), drop to the top row to pair with
-    /// SLM[0]'s fixed atoms, then slide onto the column and store.
-    fn enterComputeSlm(s: *Hardware, register: []const *Atom, cols: []const usize, grid: arch.Grid) !void {
+    /// Manhattan entry of a freshly picked-up register into a compute SLM:
+    /// move each atom to its target column (offset by half the column pitch
+    /// to avoid crossings), drop to the SLM's top row, then slide onto the
+    /// column and store.
+    fn enterComputeSlm(
+        s: *Hardware,
+        register: []const *Atom,
+        cols: []const usize,
+        grid: arch.Grid,
+    ) !void {
         const d = grid.halfSepX();
 
-        // Step 1: move each atom to its first-timeframe column x + d
-        // (inter-column offset avoids crossings).
+        // Step 1: move each atom to its target column x + d
         for (register, cols) |a, col| {
             try s.moveAtom(a, grid.x(col) - a.pos.x + d, 0);
         }
         s.step();
 
-        // Step 2: drop all atoms to SLM[1]'s top row, pairing with the fixed
-        // atoms in SLM[0]'s top row.
+        // Step 2: drop all atoms to the SLM's top row.
         const y_dest = grid.y(0);
         for (register) |a| {
             try s.moveAtom(a, 0, y_dest - a.pos.y);
@@ -475,7 +402,12 @@ pub const Hardware = struct {
     /// SLM[0] with this row's atom in SLM[1]) so the verifier can prove the
     /// pulse reaches what the router asked. Rows where nothing moves emit
     /// nothing, so they consume no timestep.
-    fn sweepMoveableRows(s: *Hardware, moveable: [][]?usize, fixed: []const ?usize, grid: arch.Grid) !void {
+    fn sweepMoveableRows(
+        s: *Hardware,
+        moveable: [][]?usize,
+        fixed: []const ?usize,
+        grid: arch.Grid,
+    ) !void {
         for (moveable) |row| {
             var moved_q: std.ArrayList(usize) = .empty;
             defer moved_q.deinit(s.gpa);
@@ -499,20 +431,14 @@ pub const Hardware = struct {
             s.step();
 
             if (has_qubit) {
-                var n_pairs: usize = 0;
-                for (row, 0..) |maybe_q, i| {
-                    if (maybe_q != null and i < fixed.len and fixed[i] != null) n_pairs += 1;
-                }
-                const pairs = try s.arena.allocator().alloc([2]u32, n_pairs);
-                var pi: usize = 0;
+                var pairs: std.ArrayList([2]u32) = .empty;
                 for (row, 0..) |maybe_q, i| {
                     const q = maybe_q orelse continue;
                     if (i >= fixed.len) continue;
                     const partner = fixed[i] orelse continue;
-                    pairs[pi] = .{ @intCast(partner), @intCast(q) };
-                    pi += 1;
+                    try pairs.append(s.arena.allocator(), .{ @intCast(partner), @intCast(q) });
                 }
-                try s.emit(.{ .rydberg = .{ .zone = .compute, .pairs = pairs } });
+                try s.emit(.{ .rydberg = .{ .zone = .compute, .pairs = pairs.items } });
                 s.step();
             }
         }
@@ -707,9 +633,35 @@ pub const Hardware = struct {
     }
 };
 
-/// Indexed by qubit id; null means the atom hasn't been picked up.
-/// Backed by a single allocation sized to the number of sites.
+/// Atoms currently held by the AOD, in pickup order (one AOD column each),
+/// pointing into Hardware.placement so moves track automatically.
 pub const Register = std.ArrayList(*Atom);
+
+/// A timeframe row's occupied slots: qubit ids
+/// and their column indices, in slot order.
+const Slots = struct {
+    qubits: std.ArrayList(usize) = .empty,
+    cols: std.ArrayList(usize) = .empty,
+
+    fn deinit(sl: *Slots, gpa: std.mem.Allocator) void {
+        sl.qubits.deinit(gpa);
+        sl.cols.deinit(gpa);
+    }
+};
+
+fn occupiedSlots(gpa: std.mem.Allocator, row: []const ?usize) !Slots {
+    var slots = Slots{};
+    errdefer slots.deinit(gpa);
+
+    for (row, 0..) |maybe_q, col| {
+        if (maybe_q) |q| {
+            try slots.qubits.append(gpa, q);
+            try slots.cols.append(gpa, col);
+        }
+    }
+
+    return slots;
+}
 
 // Returns a set of x coordinates at `y_target` occupied by atoms whose placement
 // index is NOT in `returning`. Caller must deinit the returned map.
@@ -719,15 +671,17 @@ fn occupiedStorageX(
     placement: []const Atom,
     y_target: i32,
 ) !std.AutoHashMap(i32, void) {
-    var ret_set = std.AutoHashMap(usize, void).init(gpa);
-    defer ret_set.deinit();
+    const ret_set = try gpa.alloc(bool, placement.len);
+    defer gpa.free(ret_set);
+    @memset(ret_set, false);
 
-    for (returning) |q| try ret_set.put(q, {});
+    for (returning) |q| ret_set[q] = true;
 
     var occ = std.AutoHashMap(i32, void).init(gpa);
+    errdefer occ.deinit();
 
     for (placement, 0..) |atom, i| {
-        if (ret_set.contains(i)) continue;
+        if (ret_set[i]) continue;
         if (atom.pos.y == y_target) try occ.put(atom.pos.x, {});
     }
 
@@ -1134,6 +1088,49 @@ test "moveAodCompute pairs each timeframe's qubits within blockade range" {
     try hw.moveAodCompute(&fixed, &moveable);
 
     try expectRydbergPairsWithinBlockade(cfg, &hw, &fixed, &moveable);
+}
+
+// Full driver-shaped schedule for the allocation-failure checks.
+fn buildFullSchedule(gpa: std.mem.Allocator) !void {
+    var cfg = testShuttleCfg();
+    cfg.storage_zone.slm.num_col = 16;
+
+    var hw = try Hardware.init(gpa, cfg, 12, &.{
+        .{ .row = 2, .col = 0 },
+        .{ .row = 2, .col = 1 },
+        .{ .row = 2, .col = 2 },
+        .{ .row = 2, .col = 3 },
+        .{ .row = 2, .col = 4 },
+        .{ .row = 2, .col = 5 },
+        .{ .row = 2, .col = 6 },
+        .{ .row = 2, .col = 7 },
+        .{ .row = 2, .col = 8 },
+        .{ .row = 2, .col = 9 },
+        .{ .row = 2, .col = 10 },
+        .{ .row = 2, .col = 11 },
+    });
+    defer hw.deinit();
+
+    const fixed = [_]?usize{ 0, 2 };
+    var t0 = [_]?usize{ 1, null };
+    var t1 = [_]?usize{ null, 1 };
+    var moveable = [_][]?usize{ &t0, &t1 };
+
+    try hw.moveSlmCompute(&fixed);
+    try hw.moveAodCompute(&fixed, &moveable);
+    try hw.moveAodStorage(&moveable);
+    try hw.moveSlmStorage(&fixed);
+    try hw.raman(&.{.{ .qubit = 1, .angle = 1.0, .phase = 0.0 }});
+    try hw.moveReadout();
+    try hw.measure(.readout);
+}
+
+test "schedule construction frees scratch on every allocation failure" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        buildFullSchedule,
+        .{},
+    );
 }
 
 test {
