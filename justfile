@@ -5,8 +5,11 @@ build:
 run:
 	zig build run
 
-bench *args:
-	./bench.sh {{args}}
+bench-wc *args:
+	./script/bench-wallclock.sh {{args}}
+
+bench-hw *args:
+	./script/bench-hardware.sh {{args}}
 
 test:
 	zig build test --summary all
