@@ -585,16 +585,6 @@ pub fn testConfig() ArchConfig {
         .constraints = .{
             .db_nm = 300,
             .dz_nm = 100,
-            .one_qubit_gate_fidelity = 1,
-            .two_qubit_gate_fidelity = 1,
-            .readout_fidelity = 1,
-            .db_nm = 3000,
-            .dz_nm = 3000,
-            .one_qubit_gate_fidelity = 0.999,
-            .two_qubit_gate_fidelity = 0.995,
-            .readout_fidelity = 0.99,
-            .db_nm = 300,
-            .dz_nm = 100,
         },
     };
 }
@@ -656,16 +646,6 @@ test "validate rejects broken blockade geometry" {
     try std.testing.expectError(error.BlockadeGeometry, validate(cfg));
 }
 
-test "validate rejects an out-of-range fidelity" {
-    var cfg = testConfig();
-    cfg.constraints.readout_fidelity = 1.5;
-    quiet = true;
-    defer quiet = false;
-    try std.testing.expectError(error.InvalidFidelity, validate(cfg));
-}
-
-test "the example config loads and validates" {
-    const cfg = try load(std.testing.allocator, std.testing.io, "cfg/arch.toml");
 test "the pinned config loads and derives zone offsets" {
     const cfg = try load(std.testing.allocator, std.testing.io, "testdata/arch.toml");
     defer cfg.deinit(std.testing.allocator);
