@@ -10,18 +10,12 @@
 const std = @import("std");
 const trace = @import("trace");
 
-// An active AOD paired with its SLM gate partner at a given timestep.
-// Serves as the boundary marker for resting AODs on either side.
-const Entangle = struct {
-    c_idx: usize, // SLM array index of the bounding atom
-    t_idx: usize, // index into active[] of this AOD
-};
-
-// Nearest active (gate-engaged) AOD to the left and right of a resting AOD.
+// Nearest active (gate-engaged) AOD to the left and right of a resting AOD,
+// recorded as the SLM array index of its gate partner - the boundary marker.
 // null on either side means no active AOD exists in that direction.
 const Interval = struct {
-    left: ?Entangle = null,
-    right: ?Entangle = null,
+    left: ?usize = null,
+    right: ?usize = null,
 };
 
 // Parking constraint: resting AOD must land in one of the gap slots [min_slot, max_slot].
@@ -44,27 +38,28 @@ const Constraint = struct {
 };
 
 // Phase 2 - build one Interval per active[] entry: each resting AOD's nearest
-// active (gate-engaged) AOD on both sides, recorded as Entangles via slm
-// (qubit label to SLM array index). A side with no active AOD stays null.
+// active (gate-engaged) AOD on both sides, located via slm_map (qubit label
+// to SLM array index). A side with no active AOD stays null.
 fn nearestActive(
     arena: std.mem.Allocator,
-    slm: std.AutoHashMap(usize, usize),
+    slm_map: []const ?usize,
     active: []const ?usize,
 ) ![]Interval {
     const n = active.len;
+
     const result = try arena.alloc(Interval, n);
     @memset(result, .{});
 
-    var last_active: ?Entangle = null;
+    var last_active: ?usize = null;
     var stack: std.ArrayList(usize) = .empty; // resting AODs awaiting a right boundary
 
     for (active, 0..) |label, j| {
         if (label) |id| {
             // An active AOD is the right boundary of every resting AOD queued
             // so far, and the left boundary of those that follow.
-            const e = Entangle{ .c_idx = slm.get(id).?, .t_idx = j };
-            while (stack.pop()) |i| result[i].right = e;
-            last_active = e;
+            const c = slm_map[id].?;
+            while (stack.pop()) |i| result[i].right = c;
+            last_active = c;
         } else {
             // Resting: the left boundary is already known; the right one
             // arrives with the next active AOD, so queue for it.
@@ -129,14 +124,14 @@ fn mergeConstraints(
 
         // Match the most urgent candidate - the one whose window closes
         // soonest. Popping consumes it: a slot holds one AOD at a time.
-        // The flush guaranteed top.max_slot >= slot.min_slot; overlap still
-        // needs top.min_slot <= slot.max_slot, which the sweep cannot
-        // order (entries ascend by min_slot, so their max_slots interleave
-        // freely). On a miss both sides survive: the entry keeps serving
-        // its earlier timesteps, the candidate waits for a later entry or
-        // flushes as a fresh gap.
+        // The flush guaranteed half the overlap test (top.max_slot >=
+        // slot.min_slot); the other half the sweep cannot order (entries
+        // ascend by min_slot, so their max_slots interleave freely). On a
+        // miss both sides survive: the entry keeps serving its earlier
+        // timesteps, the candidate waits for a later entry or flushes as
+        // a fresh gap.
         if (heap.peek()) |top| {
-            if (top.min_slot <= slot.max_slot) {
+            if (top.overlaps(slot)) {
                 try result.append(arena, slot.intersect(heap.pop().?));
                 continue;
             }
@@ -198,9 +193,16 @@ pub fn computePositions(
     slm: []const usize,
     timesteps: []const []const ?usize,
 ) ![]Constraint {
-    // Build label→index map once; passed into nearestActive each timestep.
-    var slm_map = std.AutoHashMap(usize, usize).init(arena);
-    for (slm, 0..) |label, i| try slm_map.put(label, i);
+    // Build the label→index map once (indexed by qubit label, dense ids);
+    // passed into nearestActive each timestep.
+    var max_label: usize = 0;
+
+    for (slm) |label| max_label = @max(max_label, label);
+
+    const slm_map = try arena.alloc(?usize, max_label + 1);
+    @memset(slm_map, null);
+
+    for (slm, 0..) |label, i| slm_map[label] = i;
 
     var resting: std.ArrayList(Constraint) = .empty;
 
@@ -219,8 +221,8 @@ pub fn computePositions(
             // Slot just after the left boundary atom, or 0 if unbounded.
             // Slot of the right boundary atom itself, or slm.len if unbounded.
             try gaps.append(arena, .{
-                .min_slot = if (iv.left) |e| e.c_idx + 1 else 0,
-                .max_slot = if (iv.right) |e| e.c_idx else slm.len,
+                .min_slot = if (iv.left) |c| c + 1 else 0,
+                .max_slot = iv.right orelse slm.len,
             });
         }
 
@@ -247,9 +249,18 @@ pub fn scheduleTargetQubits(
     slm_slots: []const ?usize,
     timesteps: []const []const ?usize,
 ) ![][]?usize {
-    var slm_pos = std.AutoHashMap(usize, usize).init(arena);
+    // Column of each fixed SLM qubit, indexed by qubit label (dense ids).
+    var max_label: usize = 0;
+
+    for (slm_slots) |v| {
+        if (v) |id| max_label = @max(max_label, id);
+    }
+
+    const slm_pos = try arena.alloc(?usize, max_label + 1);
+    @memset(slm_pos, null);
+
     for (slm_slots, 0..) |v, c| {
-        if (v) |id| try slm_pos.put(id, c);
+        if (v) |id| slm_pos[id] = c;
     }
 
     const n = aod_nodes.len;
@@ -271,7 +282,8 @@ pub fn scheduleTargetQubits(
         // Phase 1: active AODs sit at their SLM partner's column.
         for (match, 0..) |partner, k| {
             const id = partner orelse continue;
-            const c = slm_pos.get(id) orelse continue;
+            if (id >= slm_pos.len) continue;
+            const c = slm_pos[id] orelse continue;
             aod_slot[c] = aod_nodes[k];
             pos[k] = c;
         }
