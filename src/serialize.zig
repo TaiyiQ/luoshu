@@ -172,11 +172,11 @@ pub fn benchToJson(gpa: std.mem.Allocator, m: bench.Metrics) ![]u8 {
 
     try s.objectField("timing_model");
     try s.beginObject();
-    try fieldFmt(&s, "shuttle_nm_per_us", "{d:.3}", .{m.timing.shuttle_nm_per_us});
-    try fieldFmt(&s, "load_us", "{d:.3}", .{m.timing.load_us});
-    try fieldFmt(&s, "store_us", "{d:.3}", .{m.timing.store_us});
-    try fieldFmt(&s, "rydberg_us", "{d:.3}", .{m.timing.rydberg_us});
-    try fieldFmt(&s, "raman_us", "{d:.3}", .{m.timing.raman_us});
+    try fieldFmt(&s, "shuttle_nm_per_us", "{d:.3}", .{bench.Timing.shuttle_nm_per_us});
+    try fieldFmt(&s, "load_us", "{d:.3}", .{bench.Timing.load_us});
+    try fieldFmt(&s, "store_us", "{d:.3}", .{bench.Timing.store_us});
+    try fieldFmt(&s, "rydberg_us", "{d:.3}", .{bench.Timing.rydberg_us});
+    try fieldFmt(&s, "raman_us", "{d:.3}", .{bench.Timing.raman_us});
     try s.endObject();
 
     try field(&s, "compile_ns", m.compile_ns);

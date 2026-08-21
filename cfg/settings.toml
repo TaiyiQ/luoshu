@@ -1,8 +1,8 @@
 # ── Options ────────────────────────────────────────────────────────
 # One key per CLI flag; commented keys fall back to built-in defaults.
 [options]
-arch = "cfg/arch.toml"
-# assembly = "cfg/assembly.json" # storage occupancy from atom-rearrangement
+# arch = "cfg/arch.toml"            # architecture TOML (the built-in default)
+# assembly = "cfg/assembly.json"    # storage occupancy from atom-rearrangement
 # out = "schedule.json"             # hardware schedule JSON (single run only)
 # bench = "bench.json"              # benchmark metrics JSON (single run only)
 # viz = true                        # open the schedule visualizer (off by default)
@@ -16,8 +16,8 @@ arch = "cfg/arch.toml"
 out_dir = "zig-out/bench"
 circuits = [
     "ex/graph/graph-10-9.qasm",
-    "ex/graph/graph-50-5.qasm",
-    "ex/graph/graph-50-9.qasm",
-    "ex/graph/graph-60-5.qasm",
-    "ex/graph/graph-90-9.qasm",
+#    "ex/graph/graph-50-5.qasm",
+#    "ex/graph/graph-50-9.qasm",
+#    "ex/graph/graph-60-5.qasm",
+#    "ex/graph/graph-90-9.qasm",
 ]

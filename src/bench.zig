@@ -20,26 +20,25 @@
 const std = @import("std");
 const schedule = @import("schedule");
 
-/// Physical timing constants. Defaults are NALAC's (arXiv:2405.08068, §V):
-/// shuttle 0.55 µm/µs, load/store 20 µs each, CZ pulse 0.2 µs. Override to
-/// model a different platform.
+/// Physical timing constants, NALAC's (arXiv:2405.08068, §V): shuttle
+/// 0.55 µm/µs, load/store 20 µs each, CZ pulse 0.2 µs. Serialized under
+/// `timing_model` in bench JSON so the numbers stay self-describing.
 pub const Timing = struct {
     /// AOD transport speed, nm per µs (NALAC: 0.55 µm/µs = 550 nm/µs).
-    shuttle_nm_per_us: f64 = 550.0,
+    pub const shuttle_nm_per_us: f64 = 550.0;
 
     /// AOD pick-up time (trap ramp-on), µs.
-    load_us: f64 = 20.0,
+    pub const load_us: f64 = 20.0;
 
     /// SLM drop time (trap hand-off), µs.
-    store_us: f64 = 20.0,
+    pub const store_us: f64 = 20.0;
 
     /// Rydberg/CZ entangling pulse, µs.
-    rydberg_us: f64 = 0.2,
+    pub const rydberg_us: f64 = 0.2;
 
-    /// Single-qubit Raman pulse, µs. NALAC does not model 1Q gate time; the
-    /// default of 0 keeps the reported total comparable to the paper. Set it to
-    /// fold single-qubit time into the runtime.
-    raman_us: f64 = 0.0,
+    /// Single-qubit Raman pulse, µs. NALAC does not model 1Q gate time; 0
+    /// keeps the reported total comparable to the paper.
+    pub const raman_us: f64 = 0.0;
 };
 
 /// Aggregate metrics for one compiled schedule. Times are in µs.
@@ -75,8 +74,6 @@ pub const Metrics = struct {
     shuttling_us: f64 = 0, // per-frame max move / speed
     entangling_us: f64 = 0, // Rydberg pulses
     raman_us_total: f64 = 0, // single-qubit pulses
-
-    timing: Timing,
 
     /// Wall-clock time the compiler spent producing this schedule. Filled by
     /// the driver; null when not measured.
@@ -120,18 +117,17 @@ fn moveDistNm(m: anytype) f64 {
     return @sqrt(dx * dx + dy * dy);
 }
 
-/// Compute metrics for a compiled schedule under `timing`.
-pub fn measure(hw: *const schedule.Hardware, timing: Timing) Metrics {
-    return measureFrames(hw.frames.items, hw.placement.len, timing);
+/// Compute metrics for a compiled schedule under `Timing`.
+pub fn measure(hw: *const schedule.Hardware) Metrics {
+    return measureFrames(hw.frames.items, hw.placement.len);
 }
 
 /// Core of `measure`, taking the frame list directly so it is unit-testable
 /// without constructing a full Hardware.
-pub fn measureFrames(frames: []const schedule.Frame, num_qubits: usize, timing: Timing) Metrics {
+pub fn measureFrames(frames: []const schedule.Frame, num_qubits: usize) Metrics {
     var m = Metrics{
         .num_qubits = num_qubits,
         .frames = frames.len,
-        .timing = timing,
     };
 
     for (frames) |frame| {
@@ -172,16 +168,150 @@ pub fn measureFrames(frames: []const schedule.Frame, num_qubits: usize, timing: 
         // A frame is, at most: pick up (parallel), translate (rigidly, so the
         // slowest atom sets the time), drop, then pulse. Each phase costs once
         // per frame, never once per atom.
-        m.shuttling_us += frame_max_nm / timing.shuttle_nm_per_us;
+        m.shuttling_us += frame_max_nm / Timing.shuttle_nm_per_us;
 
-        if (has_load) m.loading_us += timing.load_us;
-        if (has_store) m.loading_us += timing.store_us;
-        if (has_rydberg) m.entangling_us += timing.rydberg_us;
-        if (has_raman) m.raman_us_total += timing.raman_us;
+        if (has_load) m.loading_us += Timing.load_us;
+        if (has_store) m.loading_us += Timing.store_us;
+        if (has_rydberg) m.entangling_us += Timing.rydberg_us;
+        if (has_raman) m.raman_us_total += Timing.raman_us;
     }
 
     return m;
 }
+
+// --- Benchmark table -------------------------------------------------------
+
+/// Fixed-width console table for `--benchmark` runs:
+///
+///     circuit                   qubits  frames       cz  colors  cz/pulse ...
+///     ------------------------------------------------------------------ ...
+///     ex/graph/graph-10-9.qasm      10      49    21/21    10/8      2.33 ...
+///
+/// cz = pairs entangled in the schedule / CZ gates handed to routing: a
+/// shortfall means the router dropped gates (non-bipartite MIS leftovers).
+/// colors = timesteps used / max stage degree (the edge-coloring lower
+/// bound), both summed over stages: the gap is the coloring's slack.
+pub const Table = struct {
+    /// Width of the leading `circuit` column, computed once in `init`.
+    name_w: usize,
+
+    const Col = struct { header: []const u8, w: usize };
+
+    /// Every column after `circuit`, in print order. `row` and `totals` fill
+    /// cells in this order; the header row and rule length derive from it.
+    const cols = [_]Col{
+        .{ .header = "qubits", .w = 6 },
+        .{ .header = "frames", .w = 6 },
+        .{ .header = "cz", .w = 11 },
+        .{ .header = "colors", .w = 8 },
+        .{ .header = "cz/pulse", .w = 8 },
+        .{ .header = "shuttle_us", .w = 10 },
+        .{ .header = "loading_us", .w = 10 },
+        .{ .header = "total_us", .w = 8 },
+        .{ .header = "compile_ms", .w = 10 },
+    };
+
+    /// Combined width of every column after `circuit`, including separators.
+    const cols_width = blk: {
+        var n: usize = 0;
+        for (cols) |c| n += sep.len + c.w;
+        break :blk n;
+    };
+
+    const sep = "  ";
+
+    /// Running sums for the totals row; `add` once per circuit.
+    pub const Totals = struct {
+        circuits: usize = 0,
+        cz_pairs: usize = 0,
+        cz_requested: usize = 0,
+        colors: usize = 0,
+        max_degree: usize = 0,
+        shuttling_us: f64 = 0,
+        loading_us: f64 = 0,
+        total_us: f64 = 0,
+        compile_ns: u64 = 0,
+
+        pub fn add(t: *Totals, m: Metrics) void {
+            t.circuits += 1;
+            t.cz_pairs += m.cz_pairs;
+            t.cz_requested += m.cz_requested orelse 0;
+            t.colors += m.colors orelse 0;
+            t.max_degree += m.max_degree orelse 0;
+            t.shuttling_us += m.shuttling_us;
+            t.loading_us += m.loading_us;
+            t.total_us += m.totalUs();
+            t.compile_ns += m.compile_ns orelse 0;
+        }
+    };
+
+    /// `max_name_len`: the longest circuit path the table will show.
+    pub fn init(max_name_len: usize) Table {
+        return .{ .name_w = @max(max_name_len, "circuit".len) };
+    }
+
+    pub fn header(t: Table) void {
+        var cells: [cols.len][]const u8 = undefined;
+        for (cols, &cells) |c, *s| s.* = c.header;
+        t.printRow("circuit", cells);
+        t.rule();
+    }
+
+    pub fn row(t: Table, name: []const u8, m: Metrics) void {
+        var bufs: [cols.len][32]u8 = undefined;
+        t.printRow(name, .{
+            fmtCell(&bufs[0], "{d}", .{m.num_qubits}),
+            fmtCell(&bufs[1], "{d}", .{m.frames}),
+            fmtCell(&bufs[2], "{d}/{d}", .{ m.cz_pairs, m.cz_requested orelse 0 }),
+            fmtCell(&bufs[3], "{d}/{d}", .{ m.colors orelse 0, m.max_degree orelse 0 }),
+            fmtCell(&bufs[4], "{d:.2}", .{m.avgCzPerPulse()}),
+            fmtCell(&bufs[5], "{d:.1}", .{m.shuttling_us}),
+            fmtCell(&bufs[6], "{d:.1}", .{m.loading_us}),
+            fmtCell(&bufs[7], "{d:.1}", .{m.totalUs()}),
+            fmtCell(&bufs[8], "{d:.2}", .{compileMs(m.compile_ns orelse 0)}),
+        });
+    }
+
+    pub fn totals(t: Table, sum: Totals) void {
+        t.rule();
+        var bufs: [cols.len][32]u8 = undefined;
+        var name_buf: [32]u8 = undefined;
+        t.printRow(fmtCell(&name_buf, "{d} circuits", .{sum.circuits}), .{
+            "",
+            "",
+            fmtCell(&bufs[2], "{d}/{d}", .{ sum.cz_pairs, sum.cz_requested }),
+            fmtCell(&bufs[3], "{d}/{d}", .{ sum.colors, sum.max_degree }),
+            "",
+            fmtCell(&bufs[5], "{d:.1}", .{sum.shuttling_us}),
+            fmtCell(&bufs[6], "{d:.1}", .{sum.loading_us}),
+            fmtCell(&bufs[7], "{d:.1}", .{sum.total_us}),
+            fmtCell(&bufs[8], "{d:.2}", .{compileMs(sum.compile_ns)}),
+        });
+    }
+
+    fn rule(t: Table) void {
+        for (0..t.name_w + cols_width) |_| std.debug.print("-", .{});
+        std.debug.print("\n", .{});
+    }
+
+    /// `name` left-aligned to the circuit column, each cell right-aligned to
+    /// its spec width. An overlong cell widens its column rather than being
+    /// truncated.
+    fn printRow(t: Table, name: []const u8, cells: [cols.len][]const u8) void {
+        std.debug.print("{[name]s:<[w]}", .{ .name = name, .w = t.name_w });
+        for (cols, cells) |c, s|
+            std.debug.print(sep ++ "{[cell]s:>[w]}", .{ .cell = s, .w = c.w });
+        std.debug.print("\n", .{});
+    }
+
+    fn fmtCell(buf: []u8, comptime fmt: []const u8, args: anytype) []const u8 {
+        return std.fmt.bufPrint(buf, fmt, args) catch "?";
+    }
+
+    fn compileMs(ns: u64) f64 {
+        return @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms;
+    }
+};
 
 test "measureFrames sums routing overhead and parallelism per frame" {
     const gpa = std.testing.allocator;
@@ -207,7 +337,7 @@ test "measureFrames sums routing overhead and parallelism per frame" {
     try f2.append(gpa, .{ .rydberg = .{ .zone = .compute, .pairs = &.{ .{ 0, 1 }, .{ 2, 3 } } } });
 
     const frames = [_]schedule.Frame{ f0, f1, f2 };
-    const m = measureFrames(&frames, 4, .{});
+    const m = measureFrames(&frames, 4);
 
     try std.testing.expectEqual(@as(usize, 3), m.frames);
     try std.testing.expectEqual(@as(usize, 2), m.n_load);
