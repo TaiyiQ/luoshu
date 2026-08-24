@@ -10,6 +10,11 @@
 //!  - path legality: no move sweeps through a trap site that is occupied
 //!    for the whole frame (ops within a frame execute in parallel, so an
 //!    atom loaded in the same frame lifts with the sweep and is no obstacle);
+//!  - trap sweeps: no move sweeps a storage- or readout-zone trap site,
+//!    occupied or empty — an AOD atom dragged across an SLM potential risks
+//!    a trap handoff, so travel happens in gap midpoints and lanes. The
+//!    compute zone is exempt: the dip choreography deliberately slides
+//!    within its rows;
 //!  - site exclusivity: no two atoms on the same site at the end of a frame;
 //!  - AOD rigidity: two atoms held in the AOD never invert their relative
 //!    x or y order within a frame (AOD rows/columns cannot cross);
@@ -73,6 +78,7 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
 
         try replayOps(gpa, t, frame, n, pos, trap, &moves);
         try checkPathLegality(t, n, moves.items, start_trap, trap, pos);
+        try checkTrapSweeps(t, hw.cfg, moves.items);
         try checkSiteExclusivity(t, n, pos, &occupied);
         try checkAodRigidity(t, n, start_pos, pos, trap);
         try checkAodLimits(t, n, hw.cfg.aod, pos, trap);
@@ -208,6 +214,62 @@ fn checkPathLegality(
             }
         }
     }
+}
+
+/// No move sweeps a storage- or readout-zone trap site, occupied or empty:
+/// an AOD atom dragged across an SLM potential risks a trap handoff, so
+/// travel happens in gap midpoints and lanes. The compute zone is exempt —
+/// the dip choreography deliberately slides within its rows.
+fn checkTrapSweeps(t: usize, cfg: arch.ArchConfig, moves: []const MoveRec) !void {
+    const grids = [_]arch.Grid{
+        cfg.storage_zone.grid(),
+        cfg.readout_zone.grid(),
+    };
+    for (moves) |mv| {
+        for (grids) |g| {
+            const site: ?Point = if (mv.src.y == mv.dest.y) horiz: {
+                // A horizontal move sweeps a site iff it rides exactly on a
+                // trap row and a trap column lies strictly between its ends.
+                if (gridIndex(g.origin_nm[1], g.sep_nm[1], g.num_row, mv.src.y) == null)
+                    break :horiz null;
+                const col = indexBetween(g.origin_nm[0], g.sep_nm[0], g.num_col, mv.src.x, mv.dest.x) orelse
+                    break :horiz null;
+                break :horiz .{ .x = g.x(col), .y = mv.src.y };
+            } else vert: {
+                if (gridIndex(g.origin_nm[0], g.sep_nm[0], g.num_col, mv.src.x) == null)
+                    break :vert null;
+                const row = indexBetween(g.origin_nm[1], g.sep_nm[1], g.num_row, mv.src.y, mv.dest.y) orelse
+                    break :vert null;
+                break :vert .{ .x = mv.src.x, .y = g.y(row) };
+            };
+            if (site) |p| {
+                vfail(t, "qubit {d} moves ({d},{d}) -> ({d},{d}) across the trap site at ({d},{d})", .{
+                    mv.q, mv.src.x, mv.src.y, mv.dest.x, mv.dest.y, p.x, p.y,
+                });
+                return error.SweptTrapSite;
+            }
+        }
+    }
+}
+
+/// Index of the grid line sitting exactly at `v`, if any.
+fn gridIndex(origin: i32, sep: i32, n: u32, v: i32) ?usize {
+    const rel = v - origin;
+    if (@mod(rel, sep) != 0) return null;
+    const i = @divExact(rel, sep);
+    if (i < 0 or i >= n) return null;
+    return @intCast(i);
+}
+
+/// Index of the first grid line strictly between `a` and `b`, if any.
+fn indexBetween(origin: i32, sep: i32, n: u32, a: i32, b: i32) ?usize {
+    const lo = @min(a, b);
+    const hi = @max(a, b);
+    var first = @divFloor(lo - origin, sep) + 1;
+    if (first < 0) first = 0;
+    if (first >= n) return null;
+    if (origin + first * sep >= hi) return null;
+    return @intCast(first);
 }
 
 /// No two atoms on the same site at the end of a frame.
@@ -687,36 +749,38 @@ test "catches a sweep through an occupied trap site" {
 test "atoms loaded in the same frame are not path obstacles" {
     const gpa = std.testing.allocator;
 
-    var hw = try makeHw(gpa, &.{ pt(0, 0), pt(2000, 0) });
+    // Mid-gap y so the sweeps cross no trap row — this test is about atom
+    // obstacles, not trap sites.
+    var hw = try makeHw(gpa, &.{ pt(0, 500), pt(2000, 500) });
     defer hw.deinit();
 
     // Both lift in the same frame; qubit 1's sweep crosses qubit 0's old
-    // site, but qubit 0 lifts with it (and moves out of the way).
+    // position, but qubit 0 lifts with it (and moves out of the way).
     try addFrame(&hw, &.{
         .{
             .load = .{
                 .qubit = 0,
-                .position = pt(0, 0),
+                .position = pt(0, 500),
             },
         },
         .{
             .move = .{
                 .qubit = 0,
-                .src = pt(0, 0),
-                .dest = pt(-3000, 0),
+                .src = pt(0, 500),
+                .dest = pt(-3000, 500),
             },
         },
         .{
             .load = .{
                 .qubit = 1,
-                .position = pt(2000, 0),
+                .position = pt(2000, 500),
             },
         },
         .{
             .move = .{
                 .qubit = 1,
-                .src = pt(2000, 0),
-                .dest = pt(-2000, 0),
+                .src = pt(2000, 500),
+                .dest = pt(-2000, 500),
             },
         },
     });
@@ -725,13 +789,13 @@ test "atoms loaded in the same frame are not path obstacles" {
         .{
             .store = .{
                 .qubit = 0,
-                .position = pt(-3000, 0),
+                .position = pt(-3000, 500),
             },
         },
         .{
             .store = .{
                 .qubit = 1,
-                .position = pt(-2000, 0),
+                .position = pt(-2000, 500),
             },
         },
     });
@@ -773,20 +837,22 @@ test "catches two atoms on the same site at end of frame" {
 test "catches an AOD order inversion" {
     const gpa = std.testing.allocator;
 
-    var hw = try makeHw(gpa, &.{ pt(0, 0), pt(2000, 0) });
+    // Mid-gap y so the moves cross no trap site — this test is about the
+    // AOD column order, not trap sweeps.
+    var hw = try makeHw(gpa, &.{ pt(0, 500), pt(2000, 500) });
     defer hw.deinit();
 
     try addFrame(&hw, &.{
         .{
             .load = .{
                 .qubit = 0,
-                .position = pt(0, 0),
+                .position = pt(0, 500),
             },
         },
         .{
             .load = .{
                 .qubit = 1,
-                .position = pt(2000, 0),
+                .position = pt(2000, 500),
             },
         },
     });
@@ -796,15 +862,15 @@ test "catches an AOD order inversion" {
         .{
             .move = .{
                 .qubit = 0,
-                .src = pt(0, 0),
-                .dest = pt(3000, 0),
+                .src = pt(0, 500),
+                .dest = pt(3000, 500),
             },
         },
         .{
             .move = .{
                 .qubit = 1,
-                .src = pt(2000, 0),
-                .dest = pt(1000, 0),
+                .src = pt(2000, 500),
+                .dest = pt(1000, 500),
             },
         },
     });
@@ -1164,6 +1230,88 @@ test "catches a reset of a qubit held in the AOD" {
     defer quiet = false;
 
     try std.testing.expectError(error.ResetWhileInAod, verify(gpa, &hw));
+}
+
+test "catches a sweep along a storage row across an empty trap site" {
+    const gpa = std.testing.allocator;
+
+    var hw = try makeHw(gpa, &.{pt(0, 0)});
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{
+        .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
+    });
+
+    // Slides on the y=0 trap row across the empty site at (1000,0). No
+    // atom is hit, but the trap potential is.
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(0, 0),
+                .dest = pt(2000, 0),
+            },
+        },
+    });
+
+    quiet = true;
+    defer quiet = false;
+
+    try std.testing.expectError(error.SweptTrapSite, verify(gpa, &hw));
+}
+
+test "catches a descent along a storage column through an empty trap site" {
+    const gpa = std.testing.allocator;
+
+    var hw = try makeHw(gpa, &.{pt(0, 0)});
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{
+        .{ .load = .{ .qubit = 0, .position = pt(0, 0) } },
+    });
+
+    // Rides the x=0 trap column through the empty site at (0,1000).
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(0, 0),
+                .dest = pt(0, 2000),
+            },
+        },
+    });
+
+    quiet = true;
+    defer quiet = false;
+
+    try std.testing.expectError(error.SweptTrapSite, verify(gpa, &hw));
+}
+
+// The compute zone is exempt from the trap-sweep rule: the dip choreography
+// (sweepMoveableRows) deliberately slides atoms within its rows.
+test "accepts a slide along a compute row" {
+    const gpa = std.testing.allocator;
+
+    // testConfig compute SLM(0): one row at y=5800, columns at x=1000, 3000.
+    var hw = try makeHw(gpa, &.{pt(1000, 5800)});
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{
+        .{ .load = .{ .qubit = 0, .position = pt(1000, 5800) } },
+    });
+
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(1000, 5800),
+                .dest = pt(3000, 5800),
+            },
+        },
+        .{ .store = .{ .qubit = 0, .position = pt(3000, 5800) } },
+    });
+
+    try verify(gpa, &hw);
 }
 
 test {

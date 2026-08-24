@@ -483,11 +483,58 @@ pub const Hardware = struct {
         s.step();
     }
 
+    /// Manhattan entry into the readout zone for a register staged in the
+    /// trap-free band below storage, mirroring enterComputeSlm: fan out to
+    /// the compute inter-column lanes, descend through the zone to the
+    /// hover band just above the readout row, slide to sequential readout
+    /// columns there, then drop onto the sites and store. Every horizontal
+    /// leg runs in a trap-free band and every vertical leg rides a lane or
+    /// lands on its endpoint, so no move sweeps a trap site. `start`
+    /// continues the lane/column numbering across trips.
+    fn enterReadout(s: *Hardware, qubits: []const usize, start: usize) !void {
+        const cgrid = s.cfg.compute_zone.grid(0);
+        const d_c = cgrid.halfSepX();
+        const rgrid = s.cfg.readout_zone.grid();
+        const d_r = rgrid.halfSepX();
+        const y_hover = rgrid.y(0) - d_r;
+
+        // Step 1: fan out, one inter-column lane per atom. The register
+        // arrives packed left-to-right and lane x rises with the slot
+        // index, so no held columns cross.
+        for (qubits, start..) |q, i| {
+            const a = &s.placement[q];
+            const lane_x = cgrid.x(i) + d_c;
+            if (a.pos.x != lane_x) try s.moveAtom(a, lane_x - a.pos.x, 0);
+        }
+        s.step();
+
+        // Step 2: descend through the compute zone to the hover band.
+        for (qubits) |q| {
+            const a = &s.placement[q];
+            if (a.pos.y != y_hover) try s.moveAtom(a, 0, y_hover - a.pos.y);
+        }
+        s.step();
+
+        // Step 3: slide to sequential readout columns inside the band.
+        for (qubits, start..) |q, i| {
+            const a = &s.placement[q];
+            const dest_x = rgrid.x(i);
+            if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
+        }
+        s.step();
+
+        // Step 4: drop onto the readout sites and deposit.
+        for (qubits) |q| {
+            const a = &s.placement[q];
+            try s.moveAtom(a, 0, d_r);
+            try s.storeAtom(a);
+        }
+        s.step();
+    }
+
     // Out leg of the reset round trip: pick the reset set up from storage
     // and park it at sequential readout columns, so the repump light fires
-    // far from every coherent atom. Same lane descent as moveReadout, for
-    // a subset: fan out across the compute zone's trap-free inter-column
-    // lanes, descend through the zone, then deposit.
+    // far from every coherent atom.
     pub fn moveResetReadout(s: *Hardware, qubits: []const u32) !void {
         const ord = try s.gpa.alloc(usize, qubits.len);
         defer s.gpa.free(ord);
@@ -504,37 +551,12 @@ pub const Hardware = struct {
         }.lt);
 
         // Collect from storage and stage in the trap-free band below it.
+        // The register's atoms are placement[ord[i]] in slot order, so the
+        // entry works off `ord` directly.
         var register = try s.pickup(ord);
-        defer register.deinit(s.gpa);
+        register.deinit(s.gpa);
 
-        const cgrid = s.cfg.compute_zone.grid(0);
-        const d_c = cgrid.halfSepX();
-
-        const rgrid = s.cfg.readout_zone.grid();
-        const y_readout = rgrid.y(0);
-
-        // Step 1: fan out, one inter-column lane per atom, so the descent
-        // crosses no trap sites. The register is packed left-to-right and
-        // lane x rises with the slot index, so no held columns cross.
-        for (register.items, 0..) |a, i| {
-            const lane_x = cgrid.x(i) + d_c;
-            if (a.pos.x != lane_x) try s.moveAtom(a, lane_x - a.pos.x, 0);
-        }
-        s.step();
-
-        // Step 2: descend through the compute zone to the readout row.
-        for (register.items) |a| {
-            if (a.pos.y != y_readout) try s.moveAtom(a, 0, y_readout - a.pos.y);
-        }
-        s.step();
-
-        // Step 3: slide to sequential readout columns and deposit.
-        for (register.items, 0..) |a, i| {
-            const dest_x = rgrid.x(i);
-            if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
-            try s.storeAtom(a);
-        }
-        s.step();
+        try s.enterReadout(ord, 0);
     }
 
     // Repump the listed qubits to |0> at their current readout-zone
@@ -570,12 +592,18 @@ pub const Hardware = struct {
 
         const cgrid = s.cfg.compute_zone.grid(0);
         const d_c = cgrid.halfSepX();
+        const d_r = s.cfg.readout_zone.grid().halfSepX();
         const y_corridor = s.cfg.corridorY();
 
         for (ord) |q| try s.loadAtom(&s.placement[q]);
         s.step();
 
-        // Step 1: slide back onto the inter-column lanes.
+        // Step 1: rise off the readout sites into the hover band above the
+        // row, so the slide to the lanes sweeps no readout trap site.
+        for (ord) |q| try s.moveAtom(&s.placement[q], 0, -d_r);
+        s.step();
+
+        // Step 2: slide back onto the inter-column lanes inside the band.
         for (ord, 0..) |q, i| {
             const a = &s.placement[q];
             const lane_x = cgrid.x(i) + d_c;
@@ -583,7 +611,7 @@ pub const Hardware = struct {
         }
         s.step();
 
-        // Step 2: ascend to the inter-zone corridor, clearing all compute
+        // Step 3: ascend to the inter-zone corridor, clearing all compute
         // zone trap rows without crossing any trap site.
         for (ord) |q| {
             const a = &s.placement[q];
@@ -592,19 +620,18 @@ pub const Hardware = struct {
         }
         s.step();
 
-        // Steps 3-4: compress onto free storage columns and drop home.
+        // Steps 4-5: compress onto free storage columns and drop home.
         try s.compressToStorage(ord);
     }
 
-    // Shuttle every atom from the storage zone to the readout zone:
-    // fan out across the compute zone's trap-free inter-column lanes,
-    // descend through the zone, then park at sequential readout columns.
+    // Shuttle every atom from the storage zone to the readout zone: shift
+    // into the storage gap midpoints, descend to the trap-free staging
+    // band, then enter the readout zone via the compute lanes.
     //
     // Gated atoms come home to the bottom storage row, but idle atoms
     // still sit wherever assembly delivered them, possibly on several
     // rows — and the AOD drives a single row tone, so the register makes
-    // one trip per occupied storage row. Rows nearest the compute zone
-    // empty first, so later descents cross only vacated trap rows.
+    // one trip per occupied storage row, nearest the compute zone first.
     pub fn moveReadout(s: *Hardware) !void {
         if (s.placement.len == 0) return;
 
@@ -621,10 +648,10 @@ pub const Hardware = struct {
             }
         }.lt);
 
-        const cgrid = s.cfg.compute_zone.grid(0);
-        const d_c = cgrid.halfSepX();
-        const rgrid = s.cfg.readout_zone.grid();
-        const y_readout = rgrid.y(0);
+        const sgrid = s.cfg.storage_zone.grid();
+        const d_s = sgrid.halfSepX();
+        // The same trap-free band pickup stages its register in.
+        const y_stage = sgrid.bottomRowY() + 4 * d_s;
 
         var start: usize = 0;
         while (start < order.len) {
@@ -636,33 +663,23 @@ pub const Hardware = struct {
             for (trip) |q| try s.loadAtom(&s.placement[q]);
             s.step();
 
-            // Step 1: fan out, one inter-column lane per atom. Lanes sit at
-            // half-sep right of each compute column, so the descent crosses
-            // no trap sites. Lane indices continue across trips, keeping the
-            // slide to column `i` clear of atoms already parked at columns
-            // below it.
-            for (trip, start..) |q, i| {
-                const a = &s.placement[q];
-                const lane_x = cgrid.x(i) + d_c;
-                if (a.pos.x != lane_x) try s.moveAtom(a, lane_x - a.pos.x, 0);
-            }
+            // Step 1: move RIGHT by d_s — rigid shift into the storage gap
+            // midpoints, half a pitch from every trap column, so the
+            // descent crosses no trap site whatever rows it passes.
+            for (trip) |q| try s.moveAtom(&s.placement[q], d_s, 0);
             s.step();
 
-            // Step 2: descend through the compute zone to the readout row.
+            // Step 2: descend to the staging band below the storage zone.
             for (trip) |q| {
                 const a = &s.placement[q];
-                if (a.pos.y != y_readout) try s.moveAtom(a, 0, y_readout - a.pos.y);
+                if (a.pos.y != y_stage) try s.moveAtom(a, 0, y_stage - a.pos.y);
             }
             s.step();
 
-            // Step 3: slide to sequential readout columns and deposit.
-            for (trip, start..) |q, i| {
-                const a = &s.placement[q];
-                const dest_x = rgrid.x(i);
-                if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
-                try s.storeAtom(a);
-            }
-            s.step();
+            // Steps 3-6: lanes, descent, hover slide, drop. Lane and
+            // column indices continue across trips, so every trip parks
+            // right of the atoms already deposited.
+            try s.enterReadout(trip, start);
 
             start = end;
         }
