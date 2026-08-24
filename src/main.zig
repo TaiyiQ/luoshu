@@ -33,22 +33,25 @@ pub fn main(init: std.process.Init) !void {
             cli.fatal("cannot load assembly '{s}': {t}", .{ path, err });
     }
 
+    // Several circuits run as a suite: a metrics table instead of windows.
+    const suite = opts.jobs.len > 1;
+
     var name_w: usize = 0;
     for (opts.jobs) |j| name_w = @max(name_w, j.qasm.len);
 
     const table = bench.Table.init(name_w);
-    if (opts.benchmark) table.header();
+    if (suite) table.header();
 
     var sum = bench.Table.Totals{};
     for (opts.jobs) |job| {
         const metrics = try compileOne(init, opts, cfg, asm_doc, job);
-        if (opts.benchmark) {
+        if (suite) {
             table.row(job.qasm, metrics);
             sum.add(metrics);
         }
     }
 
-    if (opts.benchmark) table.totals(sum);
+    if (suite) table.totals(sum);
 }
 
 fn compileOne(
@@ -121,14 +124,16 @@ fn compileOne(
             cli.fatal("cannot write bench '{s}': {t}", .{ path, err });
     }
 
-    // Circuit, stages, logical, and schedule views as tabs in one window.
-    if (opts.settings.viz) try viz.run(init.gpa, sch, asm_doc, circ, pipeline);
+    // Circuit, stages, logical, and schedule views as tabs in one window;
+    // suite runs print the metrics table instead.
+    if (opts.settings.viz and opts.jobs.len == 1)
+        try viz.run(init.gpa, sch, asm_doc, circ, pipeline);
 
     return metrics;
 }
 
-/// Out paths may point into directories that don't exist yet (the benchmark
-/// out_dir, or an --out with a fresh parent).
+/// Job outputs land under the configured out directory, which may not
+/// exist yet.
 fn createParentDir(io: std.Io, path: []const u8) !void {
     if (std.fs.path.dirname(path)) |dir| try std.Io.Dir.cwd().createDirPath(io, dir);
 }

@@ -181,7 +181,7 @@ pub fn measureFrames(frames: []const schedule.Frame, num_qubits: usize) Metrics 
 
 // --- Benchmark table -------------------------------------------------------
 
-/// Fixed-width console table for `--benchmark` runs:
+/// Fixed-width console table for suite runs (several circuits given):
 ///
 ///     circuit                   qubits  frames       cz  colors  cz/pulse ...
 ///     ------------------------------------------------------------------ ...
@@ -319,22 +319,69 @@ test "measureFrames sums routing overhead and parallelism per frame" {
     // Frame 0: pick two atoms up (one parallel load phase).
     var f0: schedule.Frame = .empty;
     defer f0.deinit(gpa);
-    try f0.append(gpa, .{ .load = .{ .qubit = 0, .position = .{ .x = 0, .y = 0 } } });
-    try f0.append(gpa, .{ .load = .{ .qubit = 1, .position = .{ .x = 1100, .y = 0 } } });
+
+    try f0.append(gpa, .{
+        .load = .{
+            .qubit = 0,
+            .position = .{ .x = 0, .y = 0 },
+        },
+    });
+
+    try f0.append(gpa, .{
+        .load = .{
+            .qubit = 1,
+            .position = .{ .x = 1100, .y = 0 },
+        },
+    });
 
     // Frame 1: translate (1100 nm and 550 nm in parallel -> 1100 sets the
     // time) then drop.
     var f1: schedule.Frame = .empty;
     defer f1.deinit(gpa);
-    try f1.append(gpa, .{ .move = .{ .qubit = 0, .src = .{ .x = 0, .y = 0 }, .dest = .{ .x = 1100, .y = 0 } } });
-    try f1.append(gpa, .{ .move = .{ .qubit = 1, .src = .{ .x = 1100, .y = 0 }, .dest = .{ .x = 1650, .y = 0 } } });
-    try f1.append(gpa, .{ .store = .{ .qubit = 0, .position = .{ .x = 1100, .y = 0 } } });
-    try f1.append(gpa, .{ .store = .{ .qubit = 1, .position = .{ .x = 1650, .y = 0 } } });
+
+    try f1.append(gpa, .{
+        .move = .{
+            .qubit = 0,
+            .src = .{ .x = 0, .y = 0 },
+            .dest = .{ .x = 1100, .y = 0 },
+        },
+    });
+
+    try f1.append(gpa, .{
+        .move = .{
+            .qubit = 1,
+            .src = .{ .x = 1100, .y = 0 },
+            .dest = .{ .x = 1650, .y = 0 },
+        },
+    });
+
+    try f1.append(gpa, .{
+        .store = .{
+            .qubit = 0,
+            .position = .{ .x = 1100, .y = 0 },
+        },
+    });
+
+    try f1.append(gpa, .{
+        .store = .{
+            .qubit = 1,
+            .position = .{ .x = 1650, .y = 0 },
+        },
+    });
 
     // Frame 2: one pulse entangling two pairs.
     var f2: schedule.Frame = .empty;
     defer f2.deinit(gpa);
-    try f2.append(gpa, .{ .rydberg = .{ .zone = .compute, .pairs = &.{ .{ 0, 1 }, .{ 2, 3 } } } });
+
+    try f2.append(gpa, .{
+        .rydberg = .{
+            .zone = .compute,
+            .pairs = &.{
+                .{ 0, 1 },
+                .{ 2, 3 },
+            },
+        },
+    });
 
     const frames = [_]schedule.Frame{ f0, f1, f2 };
     const m = measureFrames(&frames, 4);
