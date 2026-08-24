@@ -23,32 +23,27 @@ pub const Reset = struct {
     qubit: u32,
 };
 
-pub const Native = union(enum) {
+pub const StageKind = enum { u, cz, reset };
+
+pub const Native = union(StageKind) {
     u: U,
     cz: Cz,
     reset: Reset,
 };
 
-pub const StageKind = enum { u, cz, reset };
-
-pub const Stage = struct {
-    u_gates: std.ArrayList(U) = .empty,
-    cz_gates: std.ArrayList(Cz) = .empty,
-    reset_gates: std.ArrayList(Reset) = .empty,
-
-    // A stage's kind is whichever list is populated. Stages are homogeneous,
-    // and no empty stage persists in a pipeline, so the .u fallback only
-    // names a fresh stage transiently during fit().
-    fn kind(s: *const Stage) StageKind {
-        if (s.reset_gates.items.len != 0) return .reset;
-        if (s.cz_gates.items.len != 0) return .cz;
-        return .u;
-    }
+/// One homogeneous episode of the pipeline: the tag is the stage's kind,
+/// so a stage holding two kinds is unrepresentable.
+pub const Stage = union(StageKind) {
+    u: std.ArrayList(U),
+    cz: std.ArrayList(Cz),
+    reset: std.ArrayList(Reset),
 
     fn deinit(s: *Stage, gpa: std.mem.Allocator) void {
-        s.u_gates.deinit(gpa);
-        s.cz_gates.deinit(gpa);
-        s.reset_gates.deinit(gpa);
+        switch (s.*) {
+            .u => |*list| list.deinit(gpa),
+            .cz => |*list| list.deinit(gpa),
+            .reset => |*list| list.deinit(gpa),
+        }
     }
 };
 
@@ -70,18 +65,22 @@ pub const Pipeline = struct {
         s.stages.deinit(s.gpa);
     }
 
-    // Place a `gate` into stage `n`, creating intervening stages as needed.
     fn place(s: *Pipeline, n: usize, gate: Native) !void {
-        while (s.stages.items.len <= n) {
-            try s.stages.append(s.gpa, .{});
+        if (s.stages.items.len <= n) {
+            std.debug.assert(s.stages.items.len == n);
+            try s.stages.append(s.gpa, switch (gate) {
+                .u => .{ .u = .empty },
+                .cz => .{ .cz = .empty },
+                .reset => .{ .reset = .empty },
+            });
         }
 
         const stage = &s.stages.items[n];
 
         switch (gate) {
-            .u => |g| try stage.u_gates.append(s.gpa, g),
-            .cz => |g| try stage.cz_gates.append(s.gpa, g),
-            .reset => |g| try stage.reset_gates.append(s.gpa, g),
+            .u => |g| try stage.u.append(s.gpa, g),
+            .cz => |g| try stage.cz.append(s.gpa, g),
+            .reset => |g| try stage.reset.append(s.gpa, g),
         }
     }
 };
@@ -103,7 +102,7 @@ pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
     const fit = struct {
         fn earliest(stages: []const Stage, from: usize, want: StageKind) usize {
             var s = from;
-            while (s < stages.len and stages[s].kind() != want) s += 1;
+            while (s < stages.len and stages[s] != want) s += 1;
             return s;
         }
     }.earliest;
@@ -120,14 +119,8 @@ pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
             .reset => |g| .{ g.qubit, g.qubit },
         };
 
-        const want: StageKind = switch (gate) {
-            .u => .u,
-            .cz => .cz,
-            .reset => .reset,
-        };
-
         const from = @max(cursors[q[0]], cursors[q[1]]);
-        const stage = fit(pipe.stages.items, from, want);
+        const stage = fit(pipe.stages.items, from, gate);
 
         try pipe.place(stage, gate);
 
@@ -235,7 +228,7 @@ test "decompose merges a run of commuting CZs into one stage" {
     defer pipe.deinit();
 
     try std.testing.expectEqual(1, pipe.stages.items.len);
-    try std.testing.expectEqual(2, pipe.stages.items[0].cz_gates.items.len);
+    try std.testing.expectEqual(2, pipe.stages.items[0].cz.items.len);
 }
 
 test "decompose: a U barrier splits CZs on its qubit into separate stages" {
@@ -251,9 +244,9 @@ test "decompose: a U barrier splits CZs on its qubit into separate stages" {
     // The barrier H gets its own stage between the CZs: a U and a CZ on
     // the same qubit never share a stage.
     try std.testing.expectEqual(3, pipe.stages.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[0].cz_gates.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[1].u_gates.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[2].cz_gates.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[0].cz.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[1].u.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[2].cz.items.len);
 }
 
 test "decompose never stages a gate before a preceding gate on its qubit" {
@@ -271,17 +264,15 @@ test "decompose never stages a gate before a preceding gate on its qubit" {
     try std.testing.expectEqual(3, pipe.stages.items.len);
 
     const s0 = pipe.stages.items[0];
-    try std.testing.expectEqual(0, s0.cz_gates.items.len);
-    try std.testing.expectEqual(1, s0.u_gates.items.len);
-    try std.testing.expectEqual(1, s0.u_gates.items[0].qubit);
+    try std.testing.expectEqual(1, s0.u.items.len);
+    try std.testing.expectEqual(1, s0.u.items[0].qubit);
 
     const s1 = pipe.stages.items[1];
-    try std.testing.expectEqual(1, s1.cz_gates.items.len);
-    try std.testing.expectEqual(0, s1.u_gates.items.len);
+    try std.testing.expectEqual(1, s1.cz.items.len);
 
     const s2 = pipe.stages.items[2];
-    try std.testing.expectEqual(1, s2.u_gates.items.len);
-    try std.testing.expectEqual(0, s2.u_gates.items[0].qubit);
+    try std.testing.expectEqual(1, s2.u.items.len);
+    try std.testing.expectEqual(0, s2.u.items[0].qubit);
 }
 
 test "decompose keeps stages homogeneous: an idle-qubit U joins the U stage" {
@@ -298,10 +289,8 @@ test "decompose keeps stages homogeneous: an idle-qubit U joins the U stage" {
     defer pipe.deinit();
 
     try std.testing.expectEqual(2, pipe.stages.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[0].cz_gates.items.len);
-    try std.testing.expectEqual(0, pipe.stages.items[0].u_gates.items.len);
-    try std.testing.expectEqual(0, pipe.stages.items[1].cz_gates.items.len);
-    try std.testing.expectEqual(2, pipe.stages.items[1].u_gates.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[0].cz.items.len);
+    try std.testing.expectEqual(2, pipe.stages.items[1].u.items.len);
 }
 
 test "decompose: resets share a stage across disjoint qubits and barrier their own" {
@@ -317,13 +306,10 @@ test "decompose: resets share a stage across disjoint qubits and barrier their o
     defer pipe.deinit();
 
     try std.testing.expectEqual(3, pipe.stages.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[0].u_gates.items.len);
-    try std.testing.expectEqual(0, pipe.stages.items[0].reset_gates.items.len);
-    try std.testing.expectEqual(2, pipe.stages.items[1].reset_gates.items.len);
-    try std.testing.expectEqual(0, pipe.stages.items[1].u_gates.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[2].u_gates.items.len);
-    try std.testing.expectEqual(0, pipe.stages.items[2].reset_gates.items.len);
-    try std.testing.expectEqual(0, pipe.stages.items[2].u_gates.items[0].qubit);
+    try std.testing.expectEqual(1, pipe.stages.items[0].u.items.len);
+    try std.testing.expectEqual(2, pipe.stages.items[1].reset.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[2].u.items.len);
+    try std.testing.expectEqual(0, pipe.stages.items[2].u.items[0].qubit);
 }
 
 test "decompose stacks same-qubit U runs into single stages" {
@@ -344,10 +330,9 @@ test "decompose stacks same-qubit U runs into single stages" {
     defer pipe.deinit();
 
     try std.testing.expectEqual(3, pipe.stages.items.len);
-    try std.testing.expectEqual(4, pipe.stages.items[0].u_gates.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[1].cz_gates.items.len);
-    try std.testing.expectEqual(0, pipe.stages.items[1].u_gates.items.len);
-    try std.testing.expectEqual(2, pipe.stages.items[2].u_gates.items.len);
+    try std.testing.expectEqual(4, pipe.stages.items[0].u.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[1].cz.items.len);
+    try std.testing.expectEqual(2, pipe.stages.items[2].u.items.len);
 }
 
 test {

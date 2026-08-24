@@ -217,14 +217,16 @@ pub const CircuitLayout = struct {
 
                 @memset(next_free, n_cols);
 
-                for (stage.cz_gates.items) |g| {
-                    n_cols = @max(n_cols, try place(gpa, &laid, next_free, .{ .cz = g }));
-                }
-                for (stage.u_gates.items) |g| {
-                    n_cols = @max(n_cols, try place(gpa, &laid, next_free, .{ .u = g }));
-                }
-                for (stage.reset_gates.items) |g| {
-                    n_cols = @max(n_cols, try place(gpa, &laid, next_free, .{ .reset = g }));
+                switch (stage) {
+                    .u => |list| for (list.items) |g| {
+                        n_cols = @max(n_cols, try place(gpa, &laid, next_free, .{ .u = g }));
+                    },
+                    .cz => |list| for (list.items) |g| {
+                        n_cols = @max(n_cols, try place(gpa, &laid, next_free, .{ .cz = g }));
+                    },
+                    .reset => |list| for (list.items) |g| {
+                        n_cols = @max(n_cols, try place(gpa, &laid, next_free, .{ .reset = g }));
+                    },
                 }
             }
         } else {
@@ -302,9 +304,14 @@ pub const SlotTables = struct {
         defer rounds.deinit(gpa);
 
         for (pipe.stages.items, 0..) |*stage, si| {
-            if (stage.cz_gates.items.len == 0) continue;
+            if (stage.* != .cz) continue;
 
-            const seqs = try compiler.routeStage(gpa, stage.cz_gates.items, pipe.num_qubits, null);
+            const seqs = try compiler.routeStage(
+                gpa,
+                stage.cz.items,
+                pipe.num_qubits,
+                null,
+            );
             defer {
                 for (seqs) |*s| s.deinit();
                 gpa.free(seqs);

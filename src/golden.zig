@@ -210,9 +210,14 @@ pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
     try w.writeAll("[\n");
     var first = true;
     for (pipe.stages.items) |*stage| {
-        if (stage.cz_gates.items.len == 0) continue;
+        if (stage.* != .cz) continue;
 
-        const seqs = try compiler.routeStage(gpa, stage.cz_gates.items, pipe.num_qubits, null);
+        const seqs = try compiler.routeStage(
+            gpa,
+            stage.cz.items,
+            pipe.num_qubits,
+            null,
+        );
         defer {
             for (seqs) |*s| s.deinit();
             gpa.free(seqs);

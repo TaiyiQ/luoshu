@@ -36,13 +36,10 @@ pub const Timing = struct {
     /// Rydberg/CZ entangling pulse, µs.
     pub const rydberg_us: f64 = 0.2;
 
-    /// Single-qubit Raman pulse, µs. NALAC does not model 1Q gate time; 0
-    /// keeps the reported total comparable to the paper.
+    /// Single-qubit Raman pulse
     pub const raman_us: f64 = 0.0;
 
-    /// Readout-zone repump pulse, µs. NALAC does not model reset; 0 keeps
-    /// the reported total comparable to the paper. The round-trip shuttle
-    /// around the pulse is costed by its own load/move/store ops.
+    /// Readout-zone repump pulse
     pub const reset_us: f64 = 0.0;
 };
 
