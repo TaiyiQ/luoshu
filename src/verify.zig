@@ -25,7 +25,8 @@
 //!    `db_nm` at pulse time (a pair parked farther apart entangles nothing,
 //!    legally — this is the check that proves the pulse does what the
 //!    router asked);
-//!  - measurement: measured qubits lie inside the named zone.
+//!  - measurement: measured qubits lie inside the named zone;
+//!  - reset: reset qubits sit in an SLM trap and lie inside the named zone.
 //!
 //! Any violation prints a diagnostic naming the frame and returns an error.
 //! Run after Pipeline.compile in debug builds and in every test, so routing
@@ -166,6 +167,15 @@ fn replayOps(
                             q, target.pos.x, target.pos.y, pos[q].x, pos[q].y,
                         });
                         return error.RamanPositionMismatch;
+                    }
+                }
+            },
+            .reset => |r| {
+                for (r.qubits) |raw| {
+                    const q = try qubitIndex(t, raw, n);
+                    if (trap[q] != .slm) {
+                        vfail(t, "reset of qubit {d} while held in the AOD", .{q});
+                        return error.ResetWhileInAod;
                     }
                 }
             },
@@ -332,6 +342,18 @@ fn checkZones(
                             q, pos[q].x, pos[q].y,
                         });
                         return error.MeasureOutsideZone;
+                    }
+                }
+            },
+            .reset => |r| {
+                const bounds = zoneBounds(cfg, r.zone);
+                for (r.qubits) |raw| {
+                    const q = try qubitIndex(t, raw, n);
+                    if (!contains(bounds, pos[q])) {
+                        vfail(t, "reset qubit {d} at ({d},{d}) outside its zone", .{
+                            q, pos[q].x, pos[q].y,
+                        });
+                        return error.ResetOutsideZone;
                     }
                 }
             },
@@ -1091,6 +1113,57 @@ test "catches a measurement outside its zone" {
     defer quiet = false;
 
     try std.testing.expectError(error.MeasureOutsideZone, verify(gpa, &hw));
+}
+
+test "catches a reset outside its zone" {
+    const gpa = std.testing.allocator;
+
+    var reset_q = [_]u32{0};
+    // Atom sits in storage, but the op claims a readout-zone reset.
+    var hw = try makeHw(gpa, &.{pt(0, 0)});
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{
+        .{
+            .reset = .{
+                .zone = .readout,
+                .qubits = try hw.arena.allocator().dupe(u32, &reset_q),
+            },
+        },
+    });
+
+    quiet = true;
+    defer quiet = false;
+
+    try std.testing.expectError(error.ResetOutsideZone, verify(gpa, &hw));
+}
+
+test "catches a reset of a qubit held in the AOD" {
+    const gpa = std.testing.allocator;
+
+    var reset_q = [_]u32{0};
+    var hw = try makeHw(gpa, &.{pt(0, 0)});
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
+        },
+        .{
+            .reset = .{
+                .zone = .storage,
+                .qubits = try hw.arena.allocator().dupe(u32, &reset_q),
+            },
+        },
+    });
+
+    quiet = true;
+    defer quiet = false;
+
+    try std.testing.expectError(error.ResetWhileInAod, verify(gpa, &hw));
 }
 
 test {

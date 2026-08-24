@@ -39,6 +39,11 @@ pub const Timing = struct {
     /// Single-qubit Raman pulse, µs. NALAC does not model 1Q gate time; 0
     /// keeps the reported total comparable to the paper.
     pub const raman_us: f64 = 0.0;
+
+    /// Readout-zone repump pulse, µs. NALAC does not model reset; 0 keeps
+    /// the reported total comparable to the paper. The round-trip shuttle
+    /// around the pulse is costed by its own load/move/store ops.
+    pub const reset_us: f64 = 0.0;
 };
 
 /// Aggregate metrics for one compiled schedule. Times are in µs.
@@ -60,6 +65,9 @@ pub const Metrics = struct {
 
     n_measure: usize = 0,
 
+    /// Readout-zone repump resets fired.
+    n_reset: usize = 0,
+
     /// CZ pairs entangled across all pulses (sum of pairs per pulse).
     cz_pairs: usize = 0,
 
@@ -74,6 +82,7 @@ pub const Metrics = struct {
     shuttling_us: f64 = 0, // per-frame max move / speed
     entangling_us: f64 = 0, // Rydberg pulses
     raman_us_total: f64 = 0, // single-qubit pulses
+    reset_us_total: f64 = 0, // readout-zone repumps
 
     /// Wall-clock time the compiler spent producing this schedule. Filled by
     /// the driver; null when not measured.
@@ -93,9 +102,9 @@ pub const Metrics = struct {
         return m.loading_us + m.shuttling_us;
     }
 
-    /// Time spent firing gate pulses (entangling + single-qubit).
+    /// Time spent firing gate pulses (entangling + single-qubit + reset).
     pub fn gateUs(m: Metrics) f64 {
-        return m.entangling_us + m.raman_us_total;
+        return m.entangling_us + m.raman_us_total + m.reset_us_total;
     }
 
     /// End-to-end schedule runtime.
@@ -135,6 +144,7 @@ pub fn measureFrames(frames: []const schedule.Frame, num_qubits: usize) Metrics 
         var has_store = false;
         var has_rydberg = false;
         var has_raman = false;
+        var has_reset = false;
         var frame_max_nm: f64 = 0;
 
         for (frame.items) |op| switch (op) {
@@ -163,6 +173,10 @@ pub fn measureFrames(frames: []const schedule.Frame, num_qubits: usize) Metrics 
                 has_raman = true;
             },
             .measure => m.n_measure += 1,
+            .reset => {
+                m.n_reset += 1;
+                has_reset = true;
+            },
         };
 
         // A frame is, at most: pick up (parallel), translate (rigidly, so the
@@ -174,6 +188,7 @@ pub fn measureFrames(frames: []const schedule.Frame, num_qubits: usize) Metrics 
         if (has_store) m.loading_us += Timing.store_us;
         if (has_rydberg) m.entangling_us += Timing.rydberg_us;
         if (has_raman) m.raman_us_total += Timing.raman_us;
+        if (has_reset) m.reset_us_total += Timing.reset_us;
     }
 
     return m;

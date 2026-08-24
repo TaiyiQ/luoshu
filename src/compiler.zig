@@ -148,10 +148,42 @@ pub fn compile(
     const rank = try gpa.alloc(usize, pipe.num_qubits);
     defer gpa.free(rank);
 
+    // Per-qubit dedup scratch for reset stages.
+    const seen = try gpa.alloc(bool, pipe.num_qubits);
+    defer gpa.free(seen);
+
     for (pipe.stages.items) |*stage| {
+        // A reset stage is homogeneous: shuttle the reset set to the
+        // readout zone, repump it to |0> there, and bring it home to
+        // storage. The virtual-Z frames zero out — reset re-prepares |0>,
+        // which is invariant under Rz, so the accumulated reference is void.
+        if (stage.reset_gates.items.len > 0) {
+            var qubits: std.ArrayList(u32) = .empty;
+            defer qubits.deinit(gpa);
+            @memset(seen, false);
+
+            for (stage.reset_gates.items) |g| {
+                if (seen[g.qubit]) continue; // reset q; reset q; is one repump
+                seen[g.qubit] = true;
+                frame_phase[g.qubit] = 0;
+                try qubits.append(gpa, g.qubit);
+            }
+
+            try hw.moveResetReadout(qubits.items);
+            try hw.reset(qubits.items);
+            try hw.moveResetStorage(qubits.items);
+
+            continue;
+        }
+
         // A stage with no CZ gates has nothing to route, so it is pure Raman pulses.
         if (stage.cz_gates.items.len > 0) {
-            const sequences = try routeStage(gpa, stage.cz_gates.items, pipe.num_qubits, stats);
+            const sequences = try routeStage(
+                gpa,
+                stage.cz_gates.items,
+                pipe.num_qubits,
+                stats,
+            );
             defer {
                 for (sequences) |*s| s.deinit();
                 gpa.free(sequences);

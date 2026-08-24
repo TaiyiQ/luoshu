@@ -1286,11 +1286,11 @@ pub const QasmParser = struct {
                 // circuit, so the statement is dropped.
                 s.skipToSemicolon();
             } else if (std.mem.eql(u8, word, "reset")) {
-                // Reset is recorded as a front-end IR op (it shows in the
-                // original-circuit drawing) but is not lowered into the
-                // hardware schedule. A whole-register reset emits one op per
-                // qubit. The operands' measured flag is cleared: a reset
-                // returns them to a fresh state.
+                // Reset is recorded as a front-end IR op and lowered to a
+                // round-trip shuttle: the reset set repumps to |0> in the
+                // readout zone, then returns to storage. A whole-register
+                // reset emits one op per qubit. The operands' measured flag
+                // is cleared: a reset returns them to a fresh state.
                 const target = try s.parseQubitRange(
                     "expected a qubit to reset, e.g. `reset q;`",
                     "reset of an undeclared register",

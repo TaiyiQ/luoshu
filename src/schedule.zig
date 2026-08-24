@@ -72,6 +72,11 @@ const Measure = struct {
     qubits: []u32,
 };
 
+const Reset = struct {
+    zone: Zone,
+    qubits: []u32,
+};
+
 pub const OpKind = union(enum) {
     raman: Raman,
     load: Load,
@@ -79,6 +84,7 @@ pub const OpKind = union(enum) {
     store: Store,
     rydberg: Rydberg,
     measure: Measure,
+    reset: Reset,
 };
 
 /// All ops that execute in parallel during one timestep. The frame's index
@@ -283,9 +289,6 @@ pub const Hardware = struct {
     fn returnToStorage(s: *Hardware, qubits: []const usize) !void {
         // Half compute zone site spacing — used as clearance from trap sites.
         const d_c = s.cfg.compute_zone.grid(0).halfSepX();
-        const sgrid = s.cfg.storage_zone.grid();
-        // Bottom edge of the storage zone (bottom SLM row y, closest to compute).
-        const y_storage_bottom = sgrid.bottomRowY();
         const y_corridor = s.cfg.corridorY();
 
         // Load each atom into the AOD so the horizontal highlight shows during the return trip.
@@ -308,8 +311,19 @@ pub const Hardware = struct {
         }
         s.step();
 
-        // Step 3: compress — atoms move to sequential storage columns in left-to-right order,
-        // skipping columns already occupied by atoms that stayed in the storage zone.
+        // Steps 3-4: compress onto free storage columns and drop home.
+        try s.compressToStorage(qubits);
+    }
+
+    // Final legs of any return trip: from the inter-zone corridor, atoms
+    // move to sequential storage columns in left-to-right order — skipping
+    // columns already occupied by atoms that stayed in the storage zone —
+    // then drop to the bottom storage row and emit a Store op to mark each
+    // atom as back in the SLM (no longer in the AOD).
+    fn compressToStorage(s: *Hardware, qubits: []const usize) !void {
+        const sgrid = s.cfg.storage_zone.grid();
+        const y_storage_bottom = sgrid.bottomRowY();
+
         var occ = try occupiedStorageX(s.gpa, qubits, s.placement, y_storage_bottom);
         defer occ.deinit();
 
@@ -324,8 +338,6 @@ pub const Hardware = struct {
         }
         s.step();
 
-        // Step 4: drop to the bottom storage row and emit a Store op to mark the atom
-        // as back in the SLM (no longer in the AOD).
         for (qubits) |q| {
             const a = &s.placement[q];
             if (a.pos.y != y_storage_bottom) {
@@ -469,6 +481,119 @@ pub const Hardware = struct {
             });
         }
         s.step();
+    }
+
+    // Out leg of the reset round trip: pick the reset set up from storage
+    // and park it at sequential readout columns, so the repump light fires
+    // far from every coherent atom. Same lane descent as moveReadout, for
+    // a subset: fan out across the compute zone's trap-free inter-column
+    // lanes, descend through the zone, then deposit.
+    pub fn moveResetReadout(s: *Hardware, qubits: []const u32) !void {
+        const ord = try s.gpa.alloc(usize, qubits.len);
+        defer s.gpa.free(ord);
+
+        for (ord, qubits) |*o, q| o.* = q;
+
+        // Bottom (compute-facing) row first, then by x, so pickup advances
+        // rightward within each row and the register packs left-to-right.
+        std.sort.block(usize, ord, s.placement, struct {
+            fn lt(p: []const Atom, a: usize, b: usize) bool {
+                if (p[a].pos.y != p[b].pos.y) return p[a].pos.y > p[b].pos.y;
+                return p[a].pos.x < p[b].pos.x;
+            }
+        }.lt);
+
+        // Collect from storage and stage in the trap-free band below it.
+        var register = try s.pickup(ord);
+        defer register.deinit(s.gpa);
+
+        const cgrid = s.cfg.compute_zone.grid(0);
+        const d_c = cgrid.halfSepX();
+
+        const rgrid = s.cfg.readout_zone.grid();
+        const y_readout = rgrid.y(0);
+
+        // Step 1: fan out, one inter-column lane per atom, so the descent
+        // crosses no trap sites. The register is packed left-to-right and
+        // lane x rises with the slot index, so no held columns cross.
+        for (register.items, 0..) |a, i| {
+            const lane_x = cgrid.x(i) + d_c;
+            if (a.pos.x != lane_x) try s.moveAtom(a, lane_x - a.pos.x, 0);
+        }
+        s.step();
+
+        // Step 2: descend through the compute zone to the readout row.
+        for (register.items) |a| {
+            if (a.pos.y != y_readout) try s.moveAtom(a, 0, y_readout - a.pos.y);
+        }
+        s.step();
+
+        // Step 3: slide to sequential readout columns and deposit.
+        for (register.items, 0..) |a, i| {
+            const dest_x = rgrid.x(i);
+            if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
+            try s.storeAtom(a);
+        }
+        s.step();
+    }
+
+    // Repump the listed qubits to |0> at their current readout-zone
+    // positions. Fires between the two legs of the reset round trip, with
+    // every reset atom parked in a readout SLM trap.
+    pub fn reset(s: *Hardware, qubits: []const u32) !void {
+        try s.emit(.{
+            .reset = .{
+                .zone = .readout,
+                .qubits = try s.arena.allocator().dupe(u32, qubits),
+            },
+        });
+        s.step();
+    }
+
+    // Home leg of the reset round trip: lift the freshly repumped atoms
+    // off the readout row, ascend through the compute zone's inter-column
+    // lanes to the corridor, then compress onto free bottom-row storage
+    // columns — the same homecoming gated atoms make after a CZ episode.
+    pub fn moveResetStorage(s: *Hardware, qubits: []const u32) !void {
+        const ord = try s.gpa.alloc(usize, qubits.len);
+        defer s.gpa.free(ord);
+
+        for (ord, qubits) |*o, q| o.* = q;
+
+        // Every reset atom sits on the one readout row; left-to-right
+        // order keeps lane and column assignment crossing-free.
+        std.sort.block(usize, ord, s.placement, struct {
+            fn lt(p: []const Atom, a: usize, b: usize) bool {
+                return p[a].pos.x < p[b].pos.x;
+            }
+        }.lt);
+
+        const cgrid = s.cfg.compute_zone.grid(0);
+        const d_c = cgrid.halfSepX();
+        const y_corridor = s.cfg.corridorY();
+
+        for (ord) |q| try s.loadAtom(&s.placement[q]);
+        s.step();
+
+        // Step 1: slide back onto the inter-column lanes.
+        for (ord, 0..) |q, i| {
+            const a = &s.placement[q];
+            const lane_x = cgrid.x(i) + d_c;
+            if (a.pos.x != lane_x) try s.moveAtom(a, lane_x - a.pos.x, 0);
+        }
+        s.step();
+
+        // Step 2: ascend to the inter-zone corridor, clearing all compute
+        // zone trap rows without crossing any trap site.
+        for (ord) |q| {
+            const a = &s.placement[q];
+            if (a.pos.y == y_corridor) continue;
+            try s.moveAtom(a, 0, y_corridor - a.pos.y);
+        }
+        s.step();
+
+        // Steps 3-4: compress onto free storage columns and drop home.
+        try s.compressToStorage(ord);
     }
 
     // Shuttle every atom from the storage zone to the readout zone:
@@ -991,6 +1116,43 @@ test "moveReadout keeps the AOD register in a single row across storage rows" {
     for (hw.placement) |a| try std.testing.expectEqual(y_readout, a.pos.y);
 }
 
+// A mid-circuit reset round trip: a subset shuttles from two different
+// storage rows to the readout zone, repumps, and comes home — single row
+// tone throughout, nobody left in the AOD, reset atoms back on the bottom
+// storage row, bystanders untouched.
+test "reset round trip keeps a single AOD row and returns the subset home" {
+    const gpa = std.testing.allocator;
+
+    var hw = try Hardware.init(gpa, testShuttleCfg(), 4, &.{
+        .{ .row = 2, .col = 0 },
+        .{ .row = 2, .col = 2 },
+        .{ .row = 0, .col = 1 },
+        .{ .row = 0, .col = 3 },
+    });
+    defer hw.deinit();
+
+    try hw.moveResetReadout(&.{ 0, 2 });
+
+    // Both reset atoms parked in the readout zone for the repump.
+    const y_readout = hw.cfg.readout_zone.grid().y(0);
+    try std.testing.expectEqual(y_readout, hw.placement[0].pos.y);
+    try std.testing.expectEqual(y_readout, hw.placement[2].pos.y);
+
+    try hw.reset(&.{ 0, 2 });
+    try hw.moveResetStorage(&.{ 0, 2 });
+
+    var in_aod = try expectSingleAodRow(gpa, hw.frames.items);
+    defer in_aod.deinit();
+    try std.testing.expectEqual(0, in_aod.count());
+
+    // Home on the bottom storage row; bystanders never moved.
+    const y_bottom = hw.cfg.storage_zone.grid().bottomRowY();
+    try std.testing.expectEqual(y_bottom, hw.placement[0].pos.y);
+    try std.testing.expectEqual(y_bottom, hw.placement[2].pos.y);
+    try std.testing.expectEqual(hw.initial[1], hw.placement[1].pos);
+    try std.testing.expectEqual(hw.initial[3], hw.placement[3].pos);
+}
+
 // Replays `frames` and, at the k-th rydberg pulse, asserts every intended
 // pair of the k-th occupied timeframe — (fixed[i], moveable[t][i]) — sits
 // within the blockade radius, and that exactly one pulse fires per
@@ -1121,6 +1283,9 @@ fn buildFullSchedule(gpa: std.mem.Allocator) !void {
     try hw.moveAodStorage(&moveable);
     try hw.moveSlmStorage(&fixed);
     try hw.raman(&.{.{ .qubit = 1, .angle = 1.0, .phase = 0.0 }});
+    try hw.moveResetReadout(&.{1});
+    try hw.reset(&.{1});
+    try hw.moveResetStorage(&.{1});
     try hw.moveReadout();
     try hw.measure(.readout);
 }

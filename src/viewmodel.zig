@@ -93,7 +93,10 @@ pub fn buildDimensions(arena: std.mem.Allocator, layout: arch.ArchConfig) ![]Dim
     }, .{
         .x = cg1.x(0),
         .y = cg1.y(0),
-    }, .{ .x = -cg.sep_nm[0], .y = 0 });
+    }, .{
+        .x = -cg.sep_nm[0],
+        .y = 0,
+    });
 
     // Gaps between neighbouring zones: the flight distance between the
     // facing trap rows, not the configured zone boxes.
@@ -103,7 +106,10 @@ pub fn buildDimensions(arena: std.mem.Allocator, layout: arch.ArchConfig) ![]Dim
     }, .{
         .x = cg.x(0),
         .y = cg.y(0),
-    }, .{ .x = -sg.sep_nm[0], .y = 0 });
+    }, .{
+        .x = -sg.sep_nm[0],
+        .y = 0,
+    });
 
     const cbottom = if (cg1.bottomRowY() > cg.bottomRowY()) cg1 else cg;
 
@@ -113,7 +119,10 @@ pub fn buildDimensions(arena: std.mem.Allocator, layout: arch.ArchConfig) ![]Dim
     }, .{
         .x = rg.x(0),
         .y = rg.y(0),
-    }, .{ .x = -cg.sep_nm[0], .y = 0 });
+    }, .{
+        .x = -cg.sep_nm[0],
+        .y = 0,
+    });
 
     return dims.toOwnedSlice(arena);
 }
@@ -131,7 +140,10 @@ fn appendSeps(
         }, .{
             .x = g.x(1),
             .y = g.y(0),
-        }, .{ .x = 0, .y = -g.sep_nm[1] });
+        }, .{
+            .x = 0,
+            .y = -g.sep_nm[1],
+        });
     }
 
     if (g.num_row >= 2) {
@@ -142,7 +154,10 @@ fn appendSeps(
         }, .{
             .x = g.x(0),
             .y = g.y(r + 1),
-        }, .{ .x = -g.sep_nm[0], .y = 0 });
+        }, .{
+            .x = -g.sep_nm[0],
+            .y = 0,
+        });
     }
 }
 
@@ -163,7 +178,15 @@ fn appendDim(
     else
         try std.fmt.allocPrintSentinel(arena, "{s} {d:.1} um", .{ name, dist_um }, 0);
 
-    try dims.append(arena, .{ .a = a, .b = b, .lane_nm = lane_nm, .label = label });
+    try dims.append(
+        arena,
+        .{
+            .a = a,
+            .b = b,
+            .lane_nm = lane_nm,
+            .label = label,
+        },
+    );
 }
 
 /// One gate with the diagram column the layout pass assigned it.
@@ -199,6 +222,9 @@ pub const CircuitLayout = struct {
                 }
                 for (stage.u_gates.items) |g| {
                     n_cols = @max(n_cols, try place(gpa, &laid, next_free, .{ .u = g }));
+                }
+                for (stage.reset_gates.items) |g| {
+                    n_cols = @max(n_cols, try place(gpa, &laid, next_free, .{ .reset = g }));
                 }
             }
         } else {
@@ -314,6 +340,7 @@ pub const Summary = struct {
     raman: u32 = 0,
     rydberg: u32 = 0,
     measure: u32 = 0,
+    reset: u32 = 0,
 };
 
 pub const ViewModel = struct {
@@ -377,6 +404,10 @@ pub const ViewModel = struct {
                     .measure => |m| {
                         vm.summary.measure += 1;
                         for (m.qubits) |q| vm.bump(q);
+                    },
+                    .reset => |r| {
+                        vm.summary.reset += 1;
+                        for (r.qubits) |q| vm.bump(q);
                     },
                 }
             }
