@@ -105,18 +105,6 @@ pub const Graph = struct {
             if (has_any) std.debug.print("\n", .{});
         }
     }
-
-    pub fn print(self: *const Graph, name: []const u8) void {
-        std.debug.print(">> Graph(name={s}, n={d}, m={d}, directed={}) \n", .{ name, self.n, self.m, self.directed });
-        for (0..self.n) |u| {
-            std.debug.print("  {d} -> ", .{u});
-            var e = self.edges[u];
-            while (e) |edge| : (e = edge.next) {
-                std.debug.print("{d} ", .{edge.y});
-            }
-            std.debug.print("\n", .{});
-        }
-    }
 };
 
 test {

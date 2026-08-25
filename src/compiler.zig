@@ -153,23 +153,6 @@ pub fn compile(
     defer gpa.free(seen);
 
     for (pipe.stages.items) |*stage| switch (stage.*) {
-        .reset => |resets| {
-            var qubits: std.ArrayList(u32) = .empty;
-            defer qubits.deinit(gpa);
-            @memset(seen, false);
-
-            for (resets.items) |g| {
-                if (seen[g.qubit]) continue; // reset q; reset q; is one repump
-                seen[g.qubit] = true;
-                frame_phase[g.qubit] = 0;
-                try qubits.append(gpa, g.qubit);
-            }
-
-            try hw.moveResetReadout(qubits.items);
-            try hw.reset(qubits.items);
-            try hw.moveResetStorage(qubits.items);
-        },
-
         .cz => |czs| {
             const sequences = try routeStage(
                 gpa,
@@ -236,6 +219,23 @@ pub fn compile(
                 try hw.raman(batch[start..end]);
                 start = end;
             }
+        },
+
+        .reset => |resets| {
+            var qubits: std.ArrayList(u32) = .empty;
+            defer qubits.deinit(gpa);
+            @memset(seen, false);
+
+            for (resets.items) |g| {
+                if (seen[g.qubit]) continue; // reset q; reset q; is one repump
+                seen[g.qubit] = true;
+                frame_phase[g.qubit] = 0;
+                try qubits.append(gpa, g.qubit);
+            }
+
+            try hw.moveResetReadout(qubits.items);
+            try hw.reset(qubits.items);
+            try hw.moveResetStorage(qubits.items);
         },
     };
 
