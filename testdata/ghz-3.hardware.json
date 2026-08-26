@@ -664,7 +664,7 @@
     },
     {
       "op": "measure",
-      "zone": "readout_zone",
+      "zone": "readout",
       "basis": "Z",
       "t": 52,
       "qubits": [0, 1, 2]

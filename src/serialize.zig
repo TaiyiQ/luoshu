@@ -308,7 +308,7 @@ fn zoneName(z: schedule.Zone) []const u8 {
     return switch (z) {
         .storage => "storage",
         .compute => "compute",
-        .readout => "readout_zone",
+        .readout => "readout",
     };
 }
 

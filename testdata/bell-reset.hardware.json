@@ -338,7 +338,7 @@
     },
     {
       "op": "reset",
-      "zone": "readout_zone",
+      "zone": "readout",
       "t": 29,
       "qubits": [0]
     },
@@ -532,7 +532,7 @@
     },
     {
       "op": "measure",
-      "zone": "readout_zone",
+      "zone": "readout",
       "basis": "Z",
       "t": 44,
       "qubits": [0, 1]
