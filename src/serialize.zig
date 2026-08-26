@@ -2,6 +2,7 @@
 //! the contract with downstream consumers is reviewable in one place.
 
 const std = @import("std");
+const arch = @import("arch");
 const schedule = @import("schedule");
 const bench = @import("bench");
 
@@ -65,18 +66,96 @@ pub fn hardwareToJson(gpa: std.mem.Allocator, hw: *const schedule.Hardware) ![]u
     try field(&s, "num_qubits", hw.placement.len);
     try s.objectField("ops");
     try s.beginArray();
+
+    var run: std.ArrayList(schedule.Move) = .empty;
+    defer run.deinit(gpa);
+
     for (hw.frames.items, 0..) |frame, t| {
-        for (frame.items) |op| try writeOp(&s, op, t);
+        var axis: Axis = .none;
+
+        for (frame.items) |op| switch (op) {
+            .move => |m| {
+                const a: Axis = if (m.dest.x != m.src.x) .x else if (m.dest.y != m.src.y) .y else .none;
+
+                if (a != .none and axis != .none and a != axis) {
+                    try writeMoveRun(&s, hw.cfg, axis, run.items, t);
+                    run.clearRetainingCapacity();
+                    axis = .none;
+                }
+
+                if (axis == .none) axis = a;
+
+                try run.append(gpa, m);
+            },
+            else => {
+                if (run.items.len > 0) {
+                    try writeMoveRun(&s, hw.cfg, axis, run.items, t);
+                    run.clearRetainingCapacity();
+                    axis = .none;
+                }
+
+                try writeOp(&s, op, t);
+            },
+        };
+
+        if (run.items.len > 0) {
+            try writeMoveRun(&s, hw.cfg, axis, run.items, t);
+            run.clearRetainingCapacity();
+        }
     }
+
     try s.endArray();
     try s.endObject();
 
     return gpa.dupe(u8, buf.written());
 }
 
+const Axis = enum { none, x, y };
+
+/// One AOD translation: all moves in a frame that share a direction, emitted
+/// as a single grouped op. Runs are split on axis changes and on interleaved
+/// non-move ops, so array order within a timestep is preserved.
+fn writeMoveRun(
+    s: *std.json.Stringify,
+    cfg: arch.ArchConfig,
+    axis: Axis,
+    moves: []const schedule.Move,
+    t: usize,
+) !void {
+    try s.beginObject();
+    try field(s, "op", "move");
+    try field(s, "aod", cfg.aod.aod_id);
+    try field(s, "translate", if (axis == .y) "y" else "x");
+    try field(s, "from_zone", zoneBandName(cfg, moves[0].src.y));
+    try field(s, "to_zone", zoneBandName(cfg, moves[0].dest.y));
+    try field(s, "t", t);
+    try s.objectField("atoms");
+    try s.beginArray();
+    for (moves) |m| {
+        try s.print(
+            "{{ \"qubit\": {d}, \"from\": {{ \"x\": {d}, \"y\": {d} }}, \"to\": {{ \"x\": {d}, \"y\": {d} }} }}",
+            .{ m.qubit, m.src.x, m.src.y, m.dest.x, m.dest.y },
+        );
+    }
+    try s.endArray();
+    try s.endObject();
+}
+
+fn zoneBandName(cfg: arch.ArchConfig, y: i32) []const u8 {
+    if (inBand(cfg.storage_zone.box(), y)) return zoneName(.storage);
+    if (inBand(cfg.compute_zone.box(), y)) return zoneName(.compute);
+    if (inBand(cfg.readout_zone.box(), y)) return zoneName(.readout);
+    return "transit";
+}
+
+fn inBand(b: arch.ZoneBox, y: i32) bool {
+    return y >= b.min[1] and y <= b.max[1];
+}
+
 fn writeOp(s: *std.json.Stringify, op: schedule.OpKind, t: usize) !void {
     try s.beginObject();
     try field(s, "op", @tagName(op));
+
     switch (op) {
         .raman => |r| {
             try fieldFmt(s, "angle", "{d:.4}", .{r.angle});
@@ -91,12 +170,9 @@ fn writeOp(s: *std.json.Stringify, op: schedule.OpKind, t: usize) !void {
             }
             try s.endArray();
         },
-        .move => |m| {
-            try field(s, "qubit", m.qubit);
-            try fieldFmt(s, "from", "{{ \"x\": {d}, \"y\": {d} }}", .{ m.src.x, m.src.y });
-            try fieldFmt(s, "to", "{{ \"x\": {d}, \"y\": {d} }}", .{ m.dest.x, m.dest.y });
-            try field(s, "t", t);
-        },
+        // Moves never reach writeOp: hardwareToJson groups them into
+        // per-AOD runs and emits them via writeMoveRun.
+        .move => unreachable,
         .rydberg => |r| {
             try field(s, "zone", zoneName(r.zone));
             try field(s, "t", t);
@@ -141,6 +217,7 @@ fn writeOp(s: *std.json.Stringify, op: schedule.OpKind, t: usize) !void {
             try field(s, "t", t);
         },
     }
+
     try s.endObject();
 }
 
