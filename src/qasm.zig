@@ -52,7 +52,7 @@ pub fn loadDiag(
     return parser.parse() catch |err| {
         // Prefer the location captured at failure time; fall back to the
         // cursor for errors raised without one.
-        const at = parser.err_pos orelse parser.absPos(parser.pos);
+        const at = parser.err_pos orelse parser.pos;
         const loc = lineCol(src, at);
         diag.* = .{
             .reason = parser.reason orelse defaultReason(err),
@@ -100,41 +100,20 @@ pub const QasmParser = struct {
         width: usize,
     };
 
-    // A named classical value (a `const`/variable or a `for` loop variable).
-    // All classical types — int, float, angle, … — are evaluated to f64;
-    // subscripts and loop bounds round to an integer. `vars` is a scope
-    // stack: a lookup scans from the end, so inner bindings (loop variables)
-    // shadow outer ones.
-    const NamedVal = struct { name: []const u8, value: f64 };
-
     gpa: std.mem.Allocator,
-    // The source slice currently being parsed. At the top level this is the
-    // whole program; during a gate/def/loop expansion it is the body slice,
-    // always a contiguous sub-slice of `source` (see `absPos`).
     src: []const u8,
-    // The original, full program source, kept so diagnostics emitted while a
-    // body is expanded still report a position in the file the user wrote.
-    source: []const u8,
     pos: usize,
     reg: std.ArrayList(Register),
     // Classical bit registers, tracked only to width-check measurements.
     bits: std.ArrayList(BitReg),
-    // Classical scope stack: `const`s, variables, and `for` loop variables.
-    // `parsePrimary` resolves a bare identifier against it.
-    vars: std.ArrayList(NamedVal),
-    // Nesting depth of loop expansion, guarding against deep nesting
-    // (which would otherwise overflow the stack).
-    expand_depth: usize,
     total_qubits: usize,
     saw_measure: bool,
     // A static, human-readable reason for the most recent failure, when the
     // generic error name (e.g. "ParseError") is not specific enough. `load`
     // pairs it with the source location.
     reason: ?[]const u8,
-    // The absolute source offset of the failure, captured when it is raised
-    // (before the expansion stack unwinds and restores `src`/`pos`). Without
-    // it, an error inside a gate/def/loop body would be located against the
-    // wrong slice. Null until a located failure occurs.
+    // The source offset of the failure, captured when it is raised. Null
+    // until a located failure occurs.
     err_pos: ?usize,
     // Optional, caller-owned sink for non-fatal warnings (e.g. a discarded
     // measurement). Left null when the caller does not collect warnings.
@@ -148,12 +127,9 @@ pub const QasmParser = struct {
         return .{
             .gpa = gpa,
             .src = src,
-            .source = src,
             .pos = 0,
             .reg = .empty,
             .bits = .empty,
-            .vars = .empty,
-            .expand_depth = 0,
             .total_qubits = 0,
             .saw_measure = false,
             .reason = null,
@@ -163,10 +139,7 @@ pub const QasmParser = struct {
         };
     }
 
-    // Records `reason` and the absolute failure location, then raises a parse
-    // error. Capturing the location now (rather than from `pos` afterward) keeps
-    // it correct even when the failure is inside an expanded body, which the
-    // unwinding restores out from under `pos`.
+    // Records `reason` and the failure location, then raises a parse error.
     fn fail(s: *QasmParser, reason: []const u8) error{ParseError} {
         return s.failWith(error.ParseError, reason);
     }
@@ -174,7 +147,7 @@ pub const QasmParser = struct {
     // Like `fail`, but raises `err` instead of the generic ParseError.
     fn failWith(s: *QasmParser, err: anytype, reason: []const u8) @TypeOf(err) {
         s.reason = reason;
-        s.err_pos = s.absPos(s.pos);
+        s.err_pos = s.pos;
         return err;
     }
 
@@ -183,16 +156,8 @@ pub const QasmParser = struct {
     // harmless, so the append error is ignored.
     fn warn(s: *QasmParser, at: usize, reason: []const u8) void {
         const sink = s.warn_sink orelse return;
-        const loc = lineCol(s.source, s.absPos(at));
+        const loc = lineCol(s.src, at);
         sink.append(s.gpa, .{ .reason = reason, .line = loc.line, .col = loc.col }) catch {};
-    }
-
-    // Maps an offset within the current `src` (which, during a gate/def/loop
-    // expansion, is a body slice) to an offset in the original `source`. Every
-    // body is a contiguous sub-slice of the source, so pointer arithmetic
-    // recovers the absolute position for a diagnostic.
-    fn absPos(s: *QasmParser, at: usize) usize {
-        return @intFromPtr(s.src.ptr) - @intFromPtr(s.source.ptr) + at;
     }
 
     // Records qubit `q` as measured. A no-op (and no allocation) when warnings
@@ -219,14 +184,9 @@ pub const QasmParser = struct {
         defer s.reg.deinit(s.gpa);
         defer s.bits.deinit(s.gpa);
         defer s.measured.deinit();
-        defer s.vars.deinit(s.gpa);
 
         try s.collectDeclarations();
 
-        // The declaration pass evaluated top-level `const`s only to size
-        // registers (`qubit[N]`); the gate pass re-evaluates them in order, so
-        // start it from a clean scope.
-        s.vars.clearRetainingCapacity();
         s.pos = 0;
         var circ = Circuit.init(s.gpa, s.total_qubits);
         errdefer circ.deinit();
@@ -512,12 +472,6 @@ pub const QasmParser = struct {
                 else
                     try s.bits.append(s.gpa, .{ .name = name, .width = width });
                 continue;
-            } else if (std.mem.eql(u8, word, "const") or isClassicalType(word)) {
-                // Evaluate a top-level classical declaration so that a later
-                // register width may reference it, e.g. `const int N = 9;`
-                // followed by `qubit[N] q;`.
-                try s.evalClassicalDecl(word);
-                continue;
             }
             s.skipToSemicolon();
         }
@@ -620,9 +574,7 @@ pub const QasmParser = struct {
             if (std.mem.eql(u8, word, "pi")) return PI;
             if (std.mem.eql(u8, word, "tau")) return 2.0 * PI;
             if (std.mem.eql(u8, word, "euler")) return std.math.e;
-            // A `const`, variable, `def` parameter, or `for` loop variable.
-            if (s.lookupVar(word)) |v| return v;
-            s.err_pos = s.absPos(id_start);
+            s.err_pos = id_start;
             return error.ParseError;
         }
 
@@ -640,156 +592,20 @@ pub const QasmParser = struct {
         return std.fmt.parseFloat(f64, s.src[start..s.pos]);
     }
 
-    // Resolves a classical identifier against the scope stack, innermost first,
-    // so a loop variable shadows an outer binding of the same name. Null when
-    // the name is not a bound classical value.
-    fn lookupVar(s: *QasmParser, name: []const u8) ?f64 {
-        var i = s.vars.items.len;
-        while (i > 0) {
-            i -= 1;
-            if (std.mem.eql(u8, s.vars.items[i].name, name)) return s.vars.items[i].value;
-        }
-        return null;
-    }
-
-    // Classical scalar types whose declarations bind a value into `vars`. `bit`
-    // and `qubit` are excluded: they declare registers, handled separately.
-    fn isClassicalType(word: []const u8) bool {
-        const kws = [_][]const u8{
-            "int",  "uint",     "float",   "double",  "angle",
-            "bool", "duration", "stretch", "complex",
-        };
-        for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
-        return false;
-    }
-
-    // Evaluates a register width or array size: a constant expression that
-    // usually is a literal but may reference a `const` (e.g. `qubit[N]`).
-    // Rounded to a non-negative integer.
+    // Evaluates a register width or array size: a constant expression,
+    // rounded to a non-negative integer.
     fn readWidth(s: *QasmParser) !usize {
         const v = try s.parseExpr();
         if (v < 0) return s.fail("negative register width");
         return @intFromFloat(@round(v));
     }
 
-    // Evaluates a subscript expression (e.g. `qs[j + 1]`) to a non-negative
+    // Evaluates a subscript expression (e.g. `q[2]`) to a non-negative
     // index. Negative results are rejected by the caller's bounds check.
     fn evalIndex(s: *QasmParser) !usize {
         const v = try s.parseExpr();
         if (v < 0) return s.fail("negative qubit index");
         return @intFromFloat(@round(v));
-    }
-
-    // Evaluates an integer expression used as a `for` loop bound, rounding to
-    // the nearest integer.
-    fn evalInt(s: *QasmParser) !i64 {
-        return @intFromFloat(@round(try s.parseExpr()));
-    }
-
-    // Parses a classical declaration whose leading word (`const` or a scalar
-    // type) is already read: `[const] TYPE[ [size] ] name [= expr];`. When an
-    // initializer is present its value is bound in the current scope; an
-    // uninitialized declaration is accepted but binds nothing.
-    fn evalClassicalDecl(s: *QasmParser, leading: []const u8) !void {
-        var tword = leading;
-        if (std.mem.eql(u8, tword, "const")) {
-            s.skipWs();
-            tword = s.readIdent();
-        }
-        // An optional bit-size on the type, e.g. `int[32]`; not modeled.
-        s.skipWs();
-        if (s.pos < s.src.len and s.src[s.pos] == '[') {
-            while (s.pos < s.src.len and s.src[s.pos] != ']') s.pos += 1;
-            if (s.pos < s.src.len) s.pos += 1;
-        }
-        s.skipWs();
-        const name = s.readIdent();
-        if (name.len == 0) return s.fail("expected a variable name");
-        s.skipWs();
-        if (s.pos < s.src.len and s.src[s.pos] == '=') {
-            s.pos += 1;
-            const save = s.pos;
-            if (s.parseExpr()) |v| {
-                try s.vars.append(s.gpa, .{ .name = name, .value = v });
-            } else |_| {
-                s.pos = save;
-                return s.fail("initializer is not a constant expression");
-            }
-        }
-        s.skipToSemicolon();
-    }
-
-    // Parses `for TYPE v in [a:b]` or `[a:step:b] { body }` (the `for` already
-    // consumed) and unrolls it, binding `v` to each value of the inclusive
-    // range and re-parsing the body for each. The bounds are constant integer
-    // expressions, so they may reference `const`s and enclosing loop variables.
-    fn parseForLoop(
-        s: *QasmParser,
-        circ: *Circuit,
-    ) error{ ParseError, InvalidCharacter, Overflow, UnknownRegister, OutOfMemory }!void {
-        if (s.expand_depth >= 64) return s.fail("loop nesting too deep");
-        s.skipWs();
-        _ = s.readIdent(); // the loop variable's type, e.g. `int`
-        s.skipWs();
-        const varname = s.readIdent();
-        if (varname.len == 0) return s.fail("expected a loop variable name");
-        s.skipWs();
-        if (!std.mem.eql(u8, s.readIdent(), "in")) return s.fail("expected 'in' in a for loop");
-
-        try s.consume('[');
-        const start = try s.evalInt();
-        try s.consume(':');
-        const second = try s.evalInt();
-        var step: i64 = 1;
-        var stop = second;
-        s.skipWs();
-        if (s.pos < s.src.len and s.src[s.pos] == ':') {
-            // `[a:step:b]`: the middle value was the step.
-            s.pos += 1;
-            step = second;
-            stop = try s.evalInt();
-        }
-        try s.consume(']');
-        if (step == 0) return s.fail("for loop step is zero");
-
-        const body = try s.captureBlock();
-        const after = s.pos;
-
-        var k = start;
-        while (if (step > 0) k <= stop else k >= stop) : (k += step) {
-            try s.vars.append(s.gpa, .{ .name = varname, .value = @floatFromInt(k) });
-            const saved_src = s.src;
-            s.src = body;
-            s.pos = 0;
-            s.expand_depth += 1;
-            defer {
-                s.expand_depth -= 1;
-                s.src = saved_src;
-                _ = s.vars.pop();
-            }
-            try s.parseGates(circ);
-        }
-        s.pos = after;
-    }
-
-    // Consumes a brace-delimited block at the cursor and returns the source
-    // between its braces, leaving the cursor just past the closing `}`. Tracks
-    // nesting so inner braces are included.
-    fn captureBlock(s: *QasmParser) ![]const u8 {
-        s.skipWs();
-        if (s.pos >= s.src.len or s.src[s.pos] != '{') return s.fail("expected '{' to open a block");
-        s.pos += 1;
-        const body_start = s.pos;
-        var depth: usize = 1;
-        while (s.pos < s.src.len and depth > 0) : (s.pos += 1) {
-            switch (s.src[s.pos]) {
-                '{' => depth += 1,
-                '}' => depth -= 1,
-                else => {},
-            }
-        }
-        if (depth != 0) return s.fail("unterminated block");
-        return s.src[body_start .. s.pos - 1];
     }
 
     // The built-in gate set: each entry names the gate, its angle-parameter
@@ -862,15 +678,6 @@ pub const QasmParser = struct {
                     }
                 }
                 s.skipToSemicolon();
-            } else if (std.mem.eql(u8, word, "const") or isClassicalType(word)) {
-                // A classical declaration (`const int N = 9;`, `float dt = …;`,
-                // `angle theta = …;`). The value is evaluated and bound so later
-                // expressions, loop bounds, and subscripts can reference it.
-                try s.evalClassicalDecl(word);
-            } else if (std.mem.eql(u8, word, "for")) {
-                // A `for` over a static integer range unrolls into a fixed
-                // sequence of gates (its bounds never depend on a measurement).
-                try s.parseForLoop(circ);
             } else if (std.mem.eql(u8, word, "reset")) {
                 // Reset is recorded as a front-end IR op and lowered to a
                 // round-trip shuttle: the reset set repumps to |0> in the
@@ -1016,6 +823,8 @@ pub const QasmParser = struct {
             "gate",
             "def",
             "return",
+            "for",
+            "const",
         };
         for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
         return false;
@@ -1513,99 +1322,6 @@ test "QasmParser width-checks a combined bit-declaration measurement" {
     var p = QasmParser.init(std.testing.allocator, src);
     try std.testing.expectError(error.ParseError, p.parse());
     try std.testing.expectEqualStrings("measurement width does not match the target bit register", p.reason.?);
-}
-
-test "QasmParser unrolls a for loop over a static range" {
-    // `N` sizes the register and bounds the loop; the loop applies one gate per
-    // qubit, so it unrolls to N gates.
-    const src =
-        \\const int N = 3;
-        \\qubit[N] q;
-        \\for int i in [0:N-1] {
-        \\    h q[i];
-        \\}
-        \\measure q;
-    ;
-    var p = QasmParser.init(std.testing.allocator, src);
-    var circ = try p.parse();
-    defer circ.deinit();
-
-    try std.testing.expectEqual(3, circ.n);
-    try std.testing.expectEqual(3, circ.gates.items.len);
-    try std.testing.expectEqual(0, circ.gates.items[0].u.qubit);
-    try std.testing.expectEqual(1, circ.gates.items[1].u.qubit);
-    try std.testing.expectEqual(2, circ.gates.items[2].u.qubit);
-}
-
-test "QasmParser steps a for loop range" {
-    // `[0:2:N-1]` with N=5 yields 0, 2, 4.
-    const src =
-        \\const int N = 5;
-        \\qubit[N] q;
-        \\for int i in [0:2:N-1] {
-        \\    h q[i];
-        \\}
-        \\measure q;
-    ;
-    var p = QasmParser.init(std.testing.allocator, src);
-    var circ = try p.parse();
-    defer circ.deinit();
-
-    try std.testing.expectEqual(3, circ.gates.items.len);
-    try std.testing.expectEqual(0, circ.gates.items[0].u.qubit);
-    try std.testing.expectEqual(2, circ.gates.items[1].u.qubit);
-    try std.testing.expectEqual(4, circ.gates.items[2].u.qubit);
-}
-
-test "QasmParser measures a loop-indexed qubit" {
-    // The measure operand's index is a constant expression, so a loop
-    // variable resolves per unrolled iteration.
-    const src =
-        \\qubit[3] q;
-        \\bit[3] c;
-        \\for int i in [0:2] {
-        \\    h q[i];
-        \\    measure q[i] -> c[i];
-        \\}
-    ;
-    var p = QasmParser.init(std.testing.allocator, src);
-    var circ = try p.parse();
-    defer circ.deinit();
-
-    try std.testing.expectEqual(3, circ.gates.items.len);
-}
-
-test "QasmParser assigns a loop-indexed measurement" {
-    // Assignment form: the bit index on the target is a constant expression
-    // too, bounds-checked per unrolled iteration.
-    const src =
-        \\qubit[2] q;
-        \\bit[2] c;
-        \\for int i in [0:1] {
-        \\    h q[i];
-        \\    c[i] = measure q[i];
-        \\}
-    ;
-    var p = QasmParser.init(std.testing.allocator, src);
-    var circ = try p.parse();
-    defer circ.deinit();
-
-    try std.testing.expectEqual(2, circ.gates.items.len);
-}
-
-test "QasmParser bit-index-checks a loop-indexed measurement target" {
-    // The loop runs i up to 2, but c has only 2 bits, so the third
-    // iteration's `c[2]` is out of range.
-    const src =
-        \\qubit[3] q;
-        \\bit[2] c;
-        \\for int i in [0:2] {
-        \\    c[i] = measure q[i];
-        \\}
-    ;
-    var p = QasmParser.init(std.testing.allocator, src);
-    try std.testing.expectError(error.ParseError, p.parse());
-    try std.testing.expectEqualStrings("bit index out of range", p.reason.?);
 }
 
 test "QasmParser lowers rzz to CX-Rz-CX" {
