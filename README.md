@@ -33,12 +33,10 @@ Everything under `cfg/` is user-editable; tests and golden snapshots pin their o
 
 ## Benchmark
 
-Passing several circuits runs them as a suite: the visualizer stays closed, each
-circuit writes `<out>/<name>-schedule.json` and `<name>-bench.json` when the
-`out` directory is set, and a schedule-quality table prints:
+Passing several circuits runs them as a suite: the visualizer stays closed, each circuit writes `<out>/<name>-schedule.json` and `<name>-bench.json` when the `out` directory is set, and a schedule-quality table prints:
 
 ```shell
-> ./gatecomp ex/graph/*.qasm
+> ./gatecomp ex/graph/*.qasm --out zig-out
 
 circuit                   qubits  frames           cz    colors  cz/pulse  shuttle_us  loading_us  total_us  compile_ms
 -----------------------------------------------------------------------------------------------------------------------
@@ -50,7 +48,3 @@ ex/graph/graph-90-9.qasm      90     392      135/135      13/6     10.38     23
 -----------------------------------------------------------------------------------------------------------------------
 5 circuits                                    390/390     54/28               58910.0     11440.0   70360.8      111.74
 ```
-
-The suite table measures the quality of the compiled schedules; `bench.sh`
-(`just bench <suite> <ref>`) measures the compiler instead — an A/B of compile
-time and peak memory between the working tree and a baseline commit.
