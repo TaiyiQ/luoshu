@@ -243,13 +243,6 @@ pub const QasmParser = struct {
         return s.src[start..s.pos];
     }
 
-    fn readUint(s: *QasmParser) !usize {
-        const start = s.pos;
-        while (s.pos < s.src.len and std.ascii.isDigit(s.src[s.pos])) s.pos += 1;
-        if (start == s.pos) return error.ParseError;
-        return std.fmt.parseInt(usize, s.src[start..s.pos], 10);
-    }
-
     // Requires the next token to be `c`. On a miss the diagnostic names the
     // expected delimiter and points just past the previous token (where it
     // should be), rather than at whatever was found instead.
@@ -291,17 +284,13 @@ pub const QasmParser = struct {
         return s.qubitReg(name) != null or s.bitRegWidth(name) != null;
     }
 
-    // Parses a qubit operand that may cover a range: a physical (`$0`) or
-    // indexed (`q[0]`) qubit — a single qubit, the index a constant expression
-    // — or a whole register (`q`, all its qubits). `missing` and `undeclared`
-    // name the statement in the two operand diagnostics.
+    // Parses a qubit operand that may cover a range: an indexed (`q[0]`)
+    // qubit — a single qubit, the index a constant expression — or a whole
+    // register (`q`, all its qubits). `missing` and `undeclared` name the
+    // statement in the two operand diagnostics.
     const QubitRange = struct { base: u32, count: usize };
     fn parseQubitRange(s: *QasmParser, missing: []const u8, undeclared: []const u8) !QubitRange {
         s.skipWs();
-        if (s.pos < s.src.len and s.src[s.pos] == '$') {
-            s.pos += 1;
-            return .{ .base = @intCast(try s.readUint()), .count = 1 };
-        }
         const name = s.readIdent();
         if (name.len == 0) return s.fail(missing);
         const reg = s.qubitReg(name) orelse return s.failWith(error.UnknownRegister, undeclared);
@@ -390,24 +379,7 @@ pub const QasmParser = struct {
         return .{ .width = if (indexed) 1 else s.bitRegWidth(name) };
     }
 
-    fn scanPhysicalQubits(s: *QasmParser) void {
-        var i: usize = 0;
-        while (i < s.src.len) {
-            if (s.src[i] == '$') {
-                i += 1;
-                const start = i;
-                while (i < s.src.len and std.ascii.isDigit(s.src[i])) i += 1;
-                if (i > start) {
-                    if (std.fmt.parseInt(usize, s.src[start..i], 10)) |idx| {
-                        if (idx + 1 > s.total_qubits) s.total_qubits = idx + 1;
-                    } else |_| {}
-                }
-            } else i += 1;
-        }
-    }
-
     fn collectDeclarations(s: *QasmParser) !void {
-        s.scanPhysicalQubits();
         while (s.pos < s.src.len) {
             s.skipWsAndComments();
             if (s.pos >= s.src.len) break;
@@ -481,10 +453,6 @@ pub const QasmParser = struct {
         s.skipWs();
         const at = s.pos;
         const q: u32 = blk: {
-            if (s.pos < s.src.len and s.src[s.pos] == '$') {
-                s.pos += 1;
-                break :blk @intCast(try s.readUint());
-            }
             const name = s.readIdent();
             const reg = s.qubitReg(name) orelse {
                 s.pos = at;
@@ -492,8 +460,8 @@ pub const QasmParser = struct {
             };
             s.skipWs();
             // `q[i]` indexes the register; a bare `q` names the only qubit of a
-            // single-qubit register. The index is a constant expression (e.g.
-            // `qs[j + 1]` inside a loop), evaluated and rounded to an integer.
+            // single-qubit register. The index is a constant expression,
+            // evaluated and rounded to an integer.
             if (s.pos < s.src.len and s.src[s.pos] == '[') {
                 s.pos += 1;
                 const idx = try s.evalIndex();
