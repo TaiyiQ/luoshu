@@ -185,13 +185,14 @@ pub const QasmParser = struct {
         defer s.bits.deinit(s.gpa);
         defer s.measured.deinit();
 
-        try s.collectDeclarations();
-
-        s.pos = 0;
-        var circ = Circuit.init(s.gpa, s.total_qubits);
+        // One pass: registers are declared before use, so declarations and
+        // gates parse together and the qubit count is final once the walk
+        // completes.
+        var circ = Circuit.init(s.gpa, 0);
         errdefer circ.deinit();
 
         try s.parseGates(&circ);
+        circ.n = s.total_qubits;
 
         // A program with no readout is not a runnable circuit. `saw_measure`
         // is set by parseGates as it validates each `measure` statement.
@@ -379,76 +380,6 @@ pub const QasmParser = struct {
         return .{ .width = if (indexed) 1 else s.bitRegWidth(name) };
     }
 
-    fn collectDeclarations(s: *QasmParser) !void {
-        while (s.pos < s.src.len) {
-            s.skipWsAndComments();
-            if (s.pos >= s.src.len) break;
-            const decl_at = s.pos;
-            var word = s.readIdent();
-            if (word.len == 0) {
-                s.pos += 1;
-                continue;
-            }
-            // `input`/`output` are declaration modifiers; the real declaration
-            // keyword follows.
-            if (std.mem.eql(u8, word, "input") or std.mem.eql(u8, word, "output")) {
-                s.skipWs();
-                word = s.readIdent();
-            }
-            if (std.mem.eql(u8, word, "qubit")) {
-                // `qubit[n] q;` declares an n-wide register; `qubit q;` a
-                // single qubit.
-                s.skipWs();
-                var n: usize = 1;
-                if (s.pos < s.src.len and s.src[s.pos] == '[') {
-                    s.pos += 1;
-                    n = try s.readWidth();
-                    try s.consume(']');
-                }
-                s.skipWs();
-                const name = s.readIdent();
-                if (name.len == 0) return s.fail("expected a register name");
-                try s.consume(';');
-                // A redeclaration is dropped (the first binding wins); warn so
-                // its qubits don't silently go unallocated.
-                if (s.declared(name)) {
-                    s.warn(decl_at, "register redeclared");
-                } else {
-                    try s.reg.append(s.gpa, .{ .name = name, .base = s.total_qubits, .width = n });
-                    s.total_qubits += n;
-                }
-                continue;
-            } else if (std.mem.eql(u8, word, "bit")) {
-                // `bit[n] c;` declares an n-wide register; `bit c;` a single
-                // bit. A `bit b = measure q;` form also initializes it; that
-                // measurement is handled in the gate pass, so the initializer
-                // is skipped here. Recorded only so measurements can be
-                // width-checked.
-                s.skipWs();
-                var width: usize = 1;
-                if (s.pos < s.src.len and s.src[s.pos] == '[') {
-                    s.pos += 1;
-                    width = try s.readWidth();
-                    try s.consume(']');
-                }
-                s.skipWs();
-                const name = s.readIdent();
-                if (name.len == 0) return s.fail("expected a register name");
-                s.skipWs();
-                if (s.pos < s.src.len and s.src[s.pos] == '=')
-                    s.skipToSemicolon()
-                else
-                    try s.consume(';');
-                if (s.declared(name))
-                    s.warn(decl_at, "register redeclared")
-                else
-                    try s.bits.append(s.gpa, .{ .name = name, .width = width });
-                continue;
-            }
-            s.skipToSemicolon();
-        }
-    }
-
     fn parseQubitRef(s: *QasmParser) !u32 {
         s.skipWs();
         const at = s.pos;
@@ -622,30 +553,63 @@ pub const QasmParser = struct {
             }
 
             if (std.mem.eql(u8, word, "OPENQASM") or
-                std.mem.eql(u8, word, "include") or
-                std.mem.eql(u8, word, "qubit"))
+                std.mem.eql(u8, word, "include"))
             {
                 s.skipToSemicolon();
-            } else if (std.mem.eql(u8, word, "bit")) {
-                // The register was recorded in the first pass. Process an
-                // initializing measurement (`bit b = measure q;`) so it is
-                // validated and tracked; a plain declaration just terminates.
+            } else if (std.mem.eql(u8, word, "qubit")) {
+                // `qubit[n] q;` declares an n-wide register; `qubit q;` a
+                // single qubit.
                 s.skipWs();
+                var n: usize = 1;
                 if (s.pos < s.src.len and s.src[s.pos] == '[') {
                     s.pos += 1;
-                    _ = try s.readWidth();
+                    n = try s.readWidth();
+                    try s.consume(']');
+                }
+                s.skipWs();
+                const name = s.readIdent();
+                if (name.len == 0) return s.fail("expected a register name");
+                try s.consume(';');
+                // A redeclaration is dropped (the first binding wins); warn so
+                // its qubits don't silently go unallocated.
+                if (s.declared(name)) {
+                    s.warn(stmt_start, "register redeclared");
+                } else {
+                    try s.reg.append(s.gpa, .{ .name = name, .base = s.total_qubits, .width = n });
+                    s.total_qubits += n;
+                }
+            } else if (std.mem.eql(u8, word, "bit")) {
+                // `bit[n] c;` declares an n-wide register; `bit c;` a single
+                // bit. Recorded so measurements can be width-checked. A
+                // `bit b = measure q;` form also initializes it: the
+                // measurement is validated and tracked in place.
+                s.skipWs();
+                var width: usize = 1;
+                if (s.pos < s.src.len and s.src[s.pos] == '[') {
+                    s.pos += 1;
+                    width = try s.readWidth();
                     try s.consume(']');
                     s.skipWs();
                 }
                 const name = s.readIdent();
-                if (try s.assignmentMeasure(name)) |lhs| {
-                    const qubits = try s.parseMeasureOperand(stmt_start);
-                    if (lhs.width) |bits| {
-                        if (qubits != bits)
-                            return s.fail("measurement width does not match the target bit register");
+                if (name.len == 0) return s.fail("expected a register name");
+                if (s.declared(name))
+                    s.warn(stmt_start, "register redeclared")
+                else
+                    try s.bits.append(s.gpa, .{ .name = name, .width = width });
+                s.skipWs();
+                if (s.pos < s.src.len and s.src[s.pos] == '=') {
+                    if (try s.assignmentMeasure(name)) |lhs| {
+                        const qubits = try s.parseMeasureOperand(stmt_start);
+                        if (lhs.width) |bits| {
+                            if (qubits != bits)
+                                return s.fail("measurement width does not match the target bit register");
+                        }
                     }
+                    s.skipToSemicolon();
+                } else {
+                    try s.consume(';');
                 }
-                s.skipToSemicolon();
             } else if (std.mem.eql(u8, word, "reset")) {
                 // Reset is recorded as a front-end IR op and lowered to a
                 // round-trip shuttle: the reset set repumps to |0> in the
