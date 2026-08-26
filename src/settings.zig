@@ -1,58 +1,42 @@
-//! Run settings loaded from a TOML file (default: cfg/settings.toml).
-//! The file encodes the CLI flags so a plain `gatecomp <circuit>` run
-//! needs none. `resolve` layers the three sources: command-line flags
-//! beat file values beat the built-in defaults on `Resolved`.
+//! Run settings loaded from a TOML file, opt-in via `--cfg`. The file
+//! encodes the input flags (--arch/--asm/--out) as an [options] table;
+//! the CLI rejects mixing it with those flags, so `resolve` applies
+//! exactly one source over the built-in defaults on `Resolved`.
 
 const std = @import("std");
 const toml = @import("toml");
 
-pub const default_path = "cfg/settings.toml";
-
-/// Mirrors the [options] table: one key per CLI flag. Null means "not
-/// set", leaving the value to the layer below. The CLI hands its parsed
-/// flags to `resolve` in this shape too.
+/// Mirrors the [options] table: one key per input flag. Null means "not
+/// set", leaving the built-in default. The CLI hands its parsed flags to
+/// `resolve` in this shape too.
 pub const Options = struct {
     arch: ?[]const u8 = null,
     assembly: ?[]const u8 = null,
     /// Directory the job outputs land in; each circuit writes
     /// <stem>-schedule.json and <stem>-bench.json. Null writes nothing.
     out: ?[]const u8 = null,
-    viz: ?bool = null,
-    verbose: ?bool = null,
 };
 
 pub const Settings = struct {
     options: Options = .{},
 };
 
-/// Options with every layer applied. The field defaults are the built-in
-/// layer: what a bare run uses when neither the settings file nor the
-/// command line has an opinion.
+/// Options with the one source applied. The field defaults are the
+/// built-in layer: what a run uses when the source has no opinion.
 pub const Resolved = struct {
     arch: []const u8 = "cfg/arch.toml",
     assembly: ?[]const u8 = null,
     out: ?[]const u8 = null,
-    viz: bool = false,
-    verbose: bool = false,
 };
 
-/// Loads the settings file and layers `flags` on top. An explicit `path`
-/// must exist; the default file may be absent.
+/// Applies one source over the built-in defaults: the config file when
+/// `path` is given (it must exist), the command-line flags otherwise.
+/// The CLI rejects mixing, so at most one side carries values. Errors
+/// only when loading a file.
 pub fn resolve(arena: std.mem.Allocator, io: std.Io, flags: Options, path: ?[]const u8) !Resolved {
-    const cfg: Settings = if (path) |p|
-        try load(arena, io, p)
-    else
-        load(arena, io, default_path) catch |err| switch (err) {
-            error.FileNotFound => .{},
-            else => return err,
-        };
-    return merge(cfg, flags);
-}
-
-fn merge(cfg: Settings, flags: Options) Resolved {
+    const opts = if (path) |p| (try load(arena, io, p)).options else flags;
     var r = Resolved{};
-    apply(&r, cfg.options);
-    apply(&r, flags);
+    apply(&r, opts);
     return r;
 }
 
@@ -60,8 +44,6 @@ fn apply(r: *Resolved, o: Options) void {
     if (o.arch) |v| r.arch = v;
     if (o.assembly) |v| r.assembly = v;
     if (o.out) |v| r.out = v;
-    if (o.viz) |v| r.viz = v;
-    if (o.verbose) |v| r.verbose = v;
 }
 
 /// Parses a settings TOML file. Strings are duped into `arena` because the
@@ -92,36 +74,42 @@ test "shipped settings file parses" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
 
-    const s = try load(arena_state.allocator(), std.testing.io, default_path);
+    const s = try load(arena_state.allocator(), std.testing.io, "cfg/settings.toml");
     // Every key ships commented out: the built-in defaults suffice.
     try std.testing.expect(s.options.arch == null);
     try std.testing.expect(s.options.out == null);
 }
 
-test "missing keys fall back to defaults" {
+test "config file values apply over defaults" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
     var parser = toml.Parser(Settings).init(arena);
     defer parser.deinit();
-    var raw = try parser.parseString("[options]\nverbose = true\n");
+    var raw = try parser.parseString("[options]\nout = \"zig-out\"\n");
     defer raw.deinit();
     const s = try dupe(arena, raw.value);
 
-    try std.testing.expect(s.options.arch == null);
-    try std.testing.expect(s.options.verbose.?);
+    var r = Resolved{};
+    apply(&r, s.options);
+    try std.testing.expectEqualStrings("zig-out", r.out.?);
+    try std.testing.expectEqualStrings("cfg/arch.toml", r.arch); // key absent
+    try std.testing.expect(r.assembly == null);
 }
 
-test "merge precedence: flag beats file beats built-in" {
-    const file = Settings{ .options = .{ .arch = "file.toml", .viz = true } };
-    const r = merge(file, .{ .arch = "flag.toml", .verbose = true });
+test "flags apply over defaults" {
+    var r = Resolved{};
+    apply(&r, .{ .arch = "flag.toml" });
     try std.testing.expectEqualStrings("flag.toml", r.arch);
-    try std.testing.expect(r.viz); // file value survives: no flag given
-    try std.testing.expect(r.verbose);
+    try std.testing.expect(r.assembly == null);
+    try std.testing.expect(r.out == null);
+}
 
-    const bare = merge(.{}, .{});
-    try std.testing.expectEqualStrings("cfg/arch.toml", bare.arch);
-    try std.testing.expect(!bare.viz);
-    try std.testing.expect(!bare.verbose);
+test "bare run uses built-in defaults" {
+    var r = Resolved{};
+    apply(&r, .{});
+    try std.testing.expectEqualStrings("cfg/arch.toml", r.arch);
+    try std.testing.expect(r.assembly == null);
+    try std.testing.expect(r.out == null);
 }

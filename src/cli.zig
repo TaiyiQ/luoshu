@@ -7,15 +7,19 @@ const usage =
     \\Compiles each circuit given. Several circuits run as a suite: a
     \\metrics table prints per circuit and the visualizer stays closed.
     \\
-    \\options:
-    \\  --cfg <file>        settings TOML encoding these options
-    \\                      (default: cfg/settings.toml, may be absent)
+    \\Inputs come from flags or from a config file, never both: --cfg
+    \\cannot be combined with --arch, --asm, or --out.
+    \\
+    \\input options:
+    \\  --cfg <file>        settings TOML encoding the input options
     \\  --arch <file>       architecture TOML (default: cfg/arch.toml)
     \\  --asm <file>        storage occupancy JSON from the upstream
     \\                      atom-rearrangement package; omitting it uses
     \\                      procedural placement
     \\  --out <dir>         directory for the job outputs: each circuit
     \\                      writes <name>-schedule.json and <name>-bench.json
+    \\
+    \\toggles (valid in either mode):
     \\  --viz               open the schedule visualizer (off by default)
     \\  -v, --verbose       trace the compiler passes to stderr
     \\  -h, --help          show this help
@@ -33,9 +37,13 @@ pub const Options = struct {
     /// Compilations to run, one per positional circuit argument.
     jobs: []const Job,
 
-    /// Layered run settings: flags over the config TOML over built-in
+    /// Resolved inputs: the config TOML or the flags, over built-in
     /// defaults. Jobs already carry the out/bench paths derived from it.
     settings: settings.Resolved,
+
+    /// Runtime toggles, CLI-only in either mode.
+    viz: bool,
+    verbose: bool,
 };
 
 pub fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
@@ -43,10 +51,9 @@ pub fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
     std.process.exit(1);
 }
 
-/// Parses argv into Options. Flags collect into a settings.Options partial
-/// that settings.resolve layers over the config TOML and built-in defaults.
-/// String values are duped into `arena` because the iterator's slices don't
-/// outlive it.
+/// Parses argv into Options. Inputs come from one source: the --cfg TOML
+/// or the --arch/--asm/--out flags — mixing them is fatal. String values
+/// are duped into `arena` because the iterator's slices don't outlive it.
 pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !Options {
     var it = try std.process.Args.Iterator.initAllocator(args, arena);
     defer it.deinit();
@@ -56,6 +63,9 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
     var circuits: std.ArrayList([]const u8) = .empty;
     var config_path: ?[]const u8 = null;
     var flags = settings.Options{};
+    var input_flag: ?[]const u8 = null;
+    var viz = false;
+    var verbose = false;
 
     while (it.next()) |argument| {
         const arg = std.mem.sliceTo(argument, 0);
@@ -69,16 +79,19 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
         } else if (std.mem.eql(u8, arg, "--arch")) {
             const v = it.next() orelse fatal("--arch expects a file", .{});
             flags.arch = try arena.dupe(u8, v);
+            input_flag = "--arch";
         } else if (std.mem.eql(u8, arg, "--asm")) {
             const v = it.next() orelse fatal("--asm expects a file", .{});
             flags.assembly = try arena.dupe(u8, v);
+            input_flag = "--asm";
         } else if (std.mem.eql(u8, arg, "--out")) {
             const v = it.next() orelse fatal("--out expects a directory", .{});
             flags.out = try arena.dupe(u8, v);
+            input_flag = "--out";
         } else if (std.mem.eql(u8, arg, "--viz")) {
-            flags.viz = true;
+            viz = true;
         } else if (std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--verbose")) {
-            flags.verbose = true;
+            verbose = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
             fatal("unknown option '{s}'\n\n" ++ usage, .{arg});
         } else {
@@ -86,11 +99,11 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
         }
     }
 
+    if (config_path != null) if (input_flag) |flag|
+        fatal("{s} cannot be combined with --cfg (set it in the config file)", .{flag});
+
     const cfg = settings.resolve(arena, io, flags, config_path) catch |err|
-        fatal("cannot load config '{s}': {t}", .{
-            config_path orelse settings.default_path,
-            err,
-        });
+        fatal("cannot load config '{s}': {t}", .{ config_path.?, err });
 
     if (circuits.items.len == 0)
         fatal("missing <circuit.qasm>\n\n" ++ usage, .{});
@@ -110,6 +123,8 @@ pub fn parseArgs(arena: std.mem.Allocator, io: std.Io, args: std.process.Args) !
     return .{
         .jobs = jobs,
         .settings = cfg,
+        .viz = viz,
+        .verbose = verbose,
     };
 }
 
