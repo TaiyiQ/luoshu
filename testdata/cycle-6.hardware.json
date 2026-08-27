@@ -218,51 +218,10 @@
       "to_zone": "compute",
       "t": 13,
       "atoms": [
-        { "qubit": 1, "from": { "x": 65000, "y": 49000 }, "to": { "x": 60000, "y": 49000 } }
-      ]
-    },
-    {
-      "op": "store",
-      "qubit": 1,
-      "x": 60000,
-      "y": 49000,
-      "t": 13
-    },
-    {
-      "op": "move",
-      "aod": 0,
-      "translate": "x",
-      "from_zone": "compute",
-      "to_zone": "compute",
-      "t": 13,
-      "atoms": [
-        { "qubit": 3, "from": { "x": 75000, "y": 49000 }, "to": { "x": 70000, "y": 49000 } }
-      ]
-    },
-    {
-      "op": "store",
-      "qubit": 3,
-      "x": 70000,
-      "y": 49000,
-      "t": 13
-    },
-    {
-      "op": "move",
-      "aod": 0,
-      "translate": "x",
-      "from_zone": "compute",
-      "to_zone": "compute",
-      "t": 13,
-      "atoms": [
+        { "qubit": 1, "from": { "x": 65000, "y": 49000 }, "to": { "x": 60000, "y": 49000 } },
+        { "qubit": 3, "from": { "x": 75000, "y": 49000 }, "to": { "x": 70000, "y": 49000 } },
         { "qubit": 5, "from": { "x": 85000, "y": 49000 }, "to": { "x": 80000, "y": 49000 } }
       ]
-    },
-    {
-      "op": "store",
-      "qubit": 5,
-      "x": 80000,
-      "y": 49000,
-      "t": 13
     },
     {
       "op": "rydberg",
@@ -270,13 +229,6 @@
       "t": 14
     },
     {
-      "op": "load",
-      "qubit": 1,
-      "x": 60000,
-      "y": 49000,
-      "t": 15
-    },
-    {
       "op": "move",
       "aod": 0,
       "translate": "x",
@@ -284,77 +236,15 @@
       "to_zone": "compute",
       "t": 15,
       "atoms": [
-        { "qubit": 1, "from": { "x": 60000, "y": 49000 }, "to": { "x": 70000, "y": 49000 } }
-      ]
-    },
-    {
-      "op": "load",
-      "qubit": 3,
-      "x": 70000,
-      "y": 49000,
-      "t": 15
-    },
-    {
-      "op": "move",
-      "aod": 0,
-      "translate": "x",
-      "from_zone": "compute",
-      "to_zone": "compute",
-      "t": 15,
-      "atoms": [
-        { "qubit": 3, "from": { "x": 70000, "y": 49000 }, "to": { "x": 90000, "y": 49000 } }
-      ]
-    },
-    {
-      "op": "load",
-      "qubit": 5,
-      "x": 80000,
-      "y": 49000,
-      "t": 15
-    },
-    {
-      "op": "move",
-      "aod": 0,
-      "translate": "x",
-      "from_zone": "compute",
-      "to_zone": "compute",
-      "t": 15,
-      "atoms": [
+        { "qubit": 1, "from": { "x": 60000, "y": 49000 }, "to": { "x": 70000, "y": 49000 } },
+        { "qubit": 3, "from": { "x": 70000, "y": 49000 }, "to": { "x": 90000, "y": 49000 } },
         { "qubit": 5, "from": { "x": 80000, "y": 49000 }, "to": { "x": 100000, "y": 49000 } }
       ]
     },
     {
-      "op": "store",
-      "qubit": 1,
-      "x": 70000,
-      "y": 49000,
-      "t": 16
-    },
-    {
-      "op": "store",
-      "qubit": 3,
-      "x": 90000,
-      "y": 49000,
-      "t": 16
-    },
-    {
-      "op": "store",
-      "qubit": 5,
-      "x": 100000,
-      "y": 49000,
-      "t": 16
-    },
-    {
       "op": "rydberg",
       "zone": "compute",
-      "t": 17
-    },
-    {
-      "op": "load",
-      "qubit": 1,
-      "x": 70000,
-      "y": 49000,
-      "t": 18
+      "t": 16
     },
     {
       "op": "move",
@@ -362,93 +252,17 @@
       "translate": "x",
       "from_zone": "compute",
       "to_zone": "compute",
-      "t": 18,
+      "t": 17,
       "atoms": [
-        { "qubit": 1, "from": { "x": 70000, "y": 49000 }, "to": { "x": 80000, "y": 49000 } }
-      ]
-    },
-    {
-      "op": "load",
-      "qubit": 3,
-      "x": 90000,
-      "y": 49000,
-      "t": 18
-    },
-    {
-      "op": "move",
-      "aod": 0,
-      "translate": "x",
-      "from_zone": "compute",
-      "to_zone": "compute",
-      "t": 18,
-      "atoms": [
-        { "qubit": 3, "from": { "x": 90000, "y": 49000 }, "to": { "x": 100000, "y": 49000 } }
-      ]
-    },
-    {
-      "op": "load",
-      "qubit": 5,
-      "x": 100000,
-      "y": 49000,
-      "t": 18
-    },
-    {
-      "op": "move",
-      "aod": 0,
-      "translate": "x",
-      "from_zone": "compute",
-      "to_zone": "compute",
-      "t": 18,
-      "atoms": [
+        { "qubit": 1, "from": { "x": 70000, "y": 49000 }, "to": { "x": 80000, "y": 49000 } },
+        { "qubit": 3, "from": { "x": 90000, "y": 49000 }, "to": { "x": 100000, "y": 49000 } },
         { "qubit": 5, "from": { "x": 100000, "y": 49000 }, "to": { "x": 110000, "y": 49000 } }
       ]
     },
     {
-      "op": "store",
-      "qubit": 1,
-      "x": 80000,
-      "y": 49000,
-      "t": 19
-    },
-    {
-      "op": "store",
-      "qubit": 3,
-      "x": 100000,
-      "y": 49000,
-      "t": 19
-    },
-    {
-      "op": "store",
-      "qubit": 5,
-      "x": 110000,
-      "y": 49000,
-      "t": 19
-    },
-    {
       "op": "rydberg",
       "zone": "compute",
-      "t": 20
-    },
-    {
-      "op": "load",
-      "qubit": 1,
-      "x": 80000,
-      "y": 49000,
-      "t": 21
-    },
-    {
-      "op": "load",
-      "qubit": 3,
-      "x": 100000,
-      "y": 49000,
-      "t": 21
-    },
-    {
-      "op": "load",
-      "qubit": 5,
-      "x": 110000,
-      "y": 49000,
-      "t": 21
+      "t": 18
     },
     {
       "op": "move",
@@ -456,7 +270,7 @@
       "translate": "x",
       "from_zone": "compute",
       "to_zone": "compute",
-      "t": 22,
+      "t": 19,
       "atoms": [
         { "qubit": 1, "from": { "x": 80000, "y": 49000 }, "to": { "x": 85000, "y": 49000 } },
         { "qubit": 3, "from": { "x": 100000, "y": 49000 }, "to": { "x": 105000, "y": 49000 } },
@@ -469,7 +283,7 @@
       "translate": "y",
       "from_zone": "compute",
       "to_zone": "transit",
-      "t": 23,
+      "t": 20,
       "atoms": [
         { "qubit": 1, "from": { "x": 85000, "y": 49000 }, "to": { "x": 85000, "y": 32000 } },
         { "qubit": 3, "from": { "x": 105000, "y": 49000 }, "to": { "x": 105000, "y": 32000 } },
@@ -482,7 +296,7 @@
       "translate": "x",
       "from_zone": "transit",
       "to_zone": "transit",
-      "t": 24,
+      "t": 21,
       "atoms": [
         { "qubit": 1, "from": { "x": 85000, "y": 32000 }, "to": { "x": 84000, "y": 32000 } },
         { "qubit": 5, "from": { "x": 115000, "y": 32000 }, "to": { "x": 114000, "y": 32000 } }
@@ -494,7 +308,7 @@
       "translate": "y",
       "from_zone": "transit",
       "to_zone": "storage",
-      "t": 25,
+      "t": 22,
       "atoms": [
         { "qubit": 1, "from": { "x": 84000, "y": 32000 }, "to": { "x": 84000, "y": 27000 } }
       ]
@@ -504,7 +318,7 @@
       "qubit": 1,
       "x": 84000,
       "y": 27000,
-      "t": 25
+      "t": 22
     },
     {
       "op": "move",
@@ -512,7 +326,7 @@
       "translate": "y",
       "from_zone": "transit",
       "to_zone": "storage",
-      "t": 25,
+      "t": 22,
       "atoms": [
         { "qubit": 3, "from": { "x": 105000, "y": 32000 }, "to": { "x": 105000, "y": 27000 } }
       ]
@@ -522,7 +336,7 @@
       "qubit": 3,
       "x": 105000,
       "y": 27000,
-      "t": 25
+      "t": 22
     },
     {
       "op": "move",
@@ -530,7 +344,7 @@
       "translate": "y",
       "from_zone": "transit",
       "to_zone": "storage",
-      "t": 25,
+      "t": 22,
       "atoms": [
         { "qubit": 5, "from": { "x": 114000, "y": 32000 }, "to": { "x": 114000, "y": 27000 } }
       ]
@@ -540,28 +354,28 @@
       "qubit": 5,
       "x": 114000,
       "y": 27000,
-      "t": 25
+      "t": 22
     },
     {
       "op": "load",
       "qubit": 2,
       "x": 70000,
       "y": 47000,
-      "t": 26
+      "t": 23
     },
     {
       "op": "load",
       "qubit": 0,
       "x": 80000,
       "y": 47000,
-      "t": 26
+      "t": 23
     },
     {
       "op": "load",
       "qubit": 4,
       "x": 100000,
       "y": 47000,
-      "t": 26
+      "t": 23
     },
     {
       "op": "move",
@@ -569,7 +383,7 @@
       "translate": "x",
       "from_zone": "compute",
       "to_zone": "compute",
-      "t": 27,
+      "t": 24,
       "atoms": [
         { "qubit": 2, "from": { "x": 70000, "y": 47000 }, "to": { "x": 75000, "y": 47000 } },
         { "qubit": 0, "from": { "x": 80000, "y": 47000 }, "to": { "x": 85000, "y": 47000 } },
@@ -582,7 +396,7 @@
       "translate": "y",
       "from_zone": "compute",
       "to_zone": "transit",
-      "t": 28,
+      "t": 25,
       "atoms": [
         { "qubit": 2, "from": { "x": 75000, "y": 47000 }, "to": { "x": 75000, "y": 32000 } },
         { "qubit": 0, "from": { "x": 85000, "y": 47000 }, "to": { "x": 85000, "y": 32000 } },
@@ -595,7 +409,7 @@
       "translate": "x",
       "from_zone": "transit",
       "to_zone": "transit",
-      "t": 29,
+      "t": 26,
       "atoms": [
         { "qubit": 2, "from": { "x": 75000, "y": 32000 }, "to": { "x": 72000, "y": 32000 } },
         { "qubit": 0, "from": { "x": 85000, "y": 32000 }, "to": { "x": 87000, "y": 32000 } },
@@ -608,7 +422,7 @@
       "translate": "y",
       "from_zone": "transit",
       "to_zone": "storage",
-      "t": 30,
+      "t": 27,
       "atoms": [
         { "qubit": 2, "from": { "x": 72000, "y": 32000 }, "to": { "x": 72000, "y": 27000 } }
       ]
@@ -618,7 +432,7 @@
       "qubit": 2,
       "x": 72000,
       "y": 27000,
-      "t": 30
+      "t": 27
     },
     {
       "op": "move",
@@ -626,7 +440,7 @@
       "translate": "y",
       "from_zone": "transit",
       "to_zone": "storage",
-      "t": 30,
+      "t": 27,
       "atoms": [
         { "qubit": 0, "from": { "x": 87000, "y": 32000 }, "to": { "x": 87000, "y": 27000 } }
       ]
@@ -636,7 +450,7 @@
       "qubit": 0,
       "x": 87000,
       "y": 27000,
-      "t": 30
+      "t": 27
     },
     {
       "op": "move",
@@ -644,7 +458,7 @@
       "translate": "y",
       "from_zone": "transit",
       "to_zone": "storage",
-      "t": 30,
+      "t": 27,
       "atoms": [
         { "qubit": 4, "from": { "x": 102000, "y": 32000 }, "to": { "x": 102000, "y": 27000 } }
       ]
@@ -654,49 +468,49 @@
       "qubit": 4,
       "x": 102000,
       "y": 27000,
-      "t": 30
+      "t": 27
     },
     {
       "op": "load",
       "qubit": 2,
       "x": 72000,
       "y": 27000,
-      "t": 31
+      "t": 28
     },
     {
       "op": "load",
       "qubit": 1,
       "x": 84000,
       "y": 27000,
-      "t": 31
+      "t": 28
     },
     {
       "op": "load",
       "qubit": 0,
       "x": 87000,
       "y": 27000,
-      "t": 31
+      "t": 28
     },
     {
       "op": "load",
       "qubit": 4,
       "x": 102000,
       "y": 27000,
-      "t": 31
+      "t": 28
     },
     {
       "op": "load",
       "qubit": 3,
       "x": 105000,
       "y": 27000,
-      "t": 31
+      "t": 28
     },
     {
       "op": "load",
       "qubit": 5,
       "x": 114000,
       "y": 27000,
-      "t": 31
+      "t": 28
     },
     {
       "op": "move",
@@ -704,7 +518,7 @@
       "translate": "x",
       "from_zone": "storage",
       "to_zone": "storage",
-      "t": 32,
+      "t": 29,
       "atoms": [
         { "qubit": 2, "from": { "x": 72000, "y": 27000 }, "to": { "x": 73500, "y": 27000 } },
         { "qubit": 1, "from": { "x": 84000, "y": 27000 }, "to": { "x": 85500, "y": 27000 } },
@@ -720,7 +534,7 @@
       "translate": "y",
       "from_zone": "storage",
       "to_zone": "transit",
-      "t": 33,
+      "t": 30,
       "atoms": [
         { "qubit": 2, "from": { "x": 73500, "y": 27000 }, "to": { "x": 73500, "y": 33000 } },
         { "qubit": 1, "from": { "x": 85500, "y": 27000 }, "to": { "x": 85500, "y": 33000 } },
@@ -736,7 +550,7 @@
       "translate": "x",
       "from_zone": "transit",
       "to_zone": "transit",
-      "t": 34,
+      "t": 31,
       "atoms": [
         { "qubit": 2, "from": { "x": 73500, "y": 33000 }, "to": { "x": 5000, "y": 33000 } },
         { "qubit": 1, "from": { "x": 85500, "y": 33000 }, "to": { "x": 15000, "y": 33000 } },
@@ -752,7 +566,7 @@
       "translate": "y",
       "from_zone": "transit",
       "to_zone": "readout",
-      "t": 35,
+      "t": 32,
       "atoms": [
         { "qubit": 2, "from": { "x": 5000, "y": 33000 }, "to": { "x": 5000, "y": 175000 } },
         { "qubit": 1, "from": { "x": 15000, "y": 33000 }, "to": { "x": 15000, "y": 175000 } },
@@ -768,7 +582,7 @@
       "translate": "x",
       "from_zone": "readout",
       "to_zone": "readout",
-      "t": 36,
+      "t": 33,
       "atoms": [
         { "qubit": 2, "from": { "x": 5000, "y": 175000 }, "to": { "x": 0, "y": 175000 } },
         { "qubit": 1, "from": { "x": 15000, "y": 175000 }, "to": { "x": 4000, "y": 175000 } },
@@ -784,7 +598,7 @@
       "translate": "y",
       "from_zone": "readout",
       "to_zone": "readout",
-      "t": 37,
+      "t": 34,
       "atoms": [
         { "qubit": 2, "from": { "x": 0, "y": 175000 }, "to": { "x": 0, "y": 177000 } }
       ]
@@ -794,7 +608,7 @@
       "qubit": 2,
       "x": 0,
       "y": 177000,
-      "t": 37
+      "t": 34
     },
     {
       "op": "move",
@@ -802,7 +616,7 @@
       "translate": "y",
       "from_zone": "readout",
       "to_zone": "readout",
-      "t": 37,
+      "t": 34,
       "atoms": [
         { "qubit": 1, "from": { "x": 4000, "y": 175000 }, "to": { "x": 4000, "y": 177000 } }
       ]
@@ -812,7 +626,7 @@
       "qubit": 1,
       "x": 4000,
       "y": 177000,
-      "t": 37
+      "t": 34
     },
     {
       "op": "move",
@@ -820,7 +634,7 @@
       "translate": "y",
       "from_zone": "readout",
       "to_zone": "readout",
-      "t": 37,
+      "t": 34,
       "atoms": [
         { "qubit": 0, "from": { "x": 8000, "y": 175000 }, "to": { "x": 8000, "y": 177000 } }
       ]
@@ -830,7 +644,7 @@
       "qubit": 0,
       "x": 8000,
       "y": 177000,
-      "t": 37
+      "t": 34
     },
     {
       "op": "move",
@@ -838,7 +652,7 @@
       "translate": "y",
       "from_zone": "readout",
       "to_zone": "readout",
-      "t": 37,
+      "t": 34,
       "atoms": [
         { "qubit": 4, "from": { "x": 12000, "y": 175000 }, "to": { "x": 12000, "y": 177000 } }
       ]
@@ -848,7 +662,7 @@
       "qubit": 4,
       "x": 12000,
       "y": 177000,
-      "t": 37
+      "t": 34
     },
     {
       "op": "move",
@@ -856,7 +670,7 @@
       "translate": "y",
       "from_zone": "readout",
       "to_zone": "readout",
-      "t": 37,
+      "t": 34,
       "atoms": [
         { "qubit": 3, "from": { "x": 16000, "y": 175000 }, "to": { "x": 16000, "y": 177000 } }
       ]
@@ -866,7 +680,7 @@
       "qubit": 3,
       "x": 16000,
       "y": 177000,
-      "t": 37
+      "t": 34
     },
     {
       "op": "move",
@@ -874,7 +688,7 @@
       "translate": "y",
       "from_zone": "readout",
       "to_zone": "readout",
-      "t": 37,
+      "t": 34,
       "atoms": [
         { "qubit": 5, "from": { "x": 20000, "y": 175000 }, "to": { "x": 20000, "y": 177000 } }
       ]
@@ -884,13 +698,13 @@
       "qubit": 5,
       "x": 20000,
       "y": 177000,
-      "t": 37
+      "t": 34
     },
     {
       "op": "measure",
       "zone": "readout",
       "basis": "Z",
-      "t": 38,
+      "t": 35,
       "qubits": [0, 1, 2, 3, 4, 5]
     }
   ]

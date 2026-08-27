@@ -250,7 +250,7 @@ pub const Hardware = struct {
         defer register.deinit(s.gpa);
 
         // Manhattan entry into compute SLM[0]'s top row.
-        try s.enterComputeSlm(register.items, slots.cols.items, grid);
+        try s.enterComputeSlm(register.items, slots.cols.items, grid, true);
     }
 
     pub fn moveSlmStorage(s: *Hardware, fixed: []const ?usize) !void {
@@ -260,6 +260,11 @@ pub const Hardware = struct {
         for (fixed) |maybe_q| {
             if (maybe_q) |q| try returning.append(s.gpa, q);
         }
+        if (returning.items.len == 0) return;
+
+        // Fixed atoms sat stored in the compute SLM; lift them out first.
+        for (returning.items) |q| try s.loadAtom(&s.placement[q]);
+        s.step();
 
         try s.returnToStorage(returning.items);
     }
@@ -295,17 +300,11 @@ pub const Hardware = struct {
         try s.returnToStorage(unique.items);
     }
 
-    // Return trip home for `qubits`, in order: load into the AOD, shift into
-    // the inter-column lane, rise to the inter-zone corridor, compress onto
-    // free storage columns, then drop to the bottom row and store.
+    // Return trip home for `qubits`, already held in the AOD, in order.
     fn returnToStorage(s: *Hardware, qubits: []const usize) !void {
         // Half compute zone site spacing — used as clearance from trap sites.
         const d_c = s.cfg.compute_zone.grid(0).halfSepX();
         const y_corridor = s.cfg.corridorY();
-
-        // Load each atom into the AOD so the horizontal highlight shows during the return trip.
-        for (qubits) |q| try s.loadAtom(&s.placement[q]);
-        s.step();
 
         // Step 1: move RIGHT by d_c — rigid shift into the inter-column lane.
         // Shifting by exactly d_c places every atom at an x midpoint between compute
@@ -386,19 +385,23 @@ pub const Hardware = struct {
         var register = try s.pickup(slots.qubits.items);
         defer register.deinit(s.gpa);
 
-        // Manhattan entry into SLM[1] - mirrors moveSlmCompute for SLM[0].
+        // Register stays in the AOD: the sweeps fly it from
+        // row to row and the pulses fire on held atoms.
+        // Only the return trip puts it back into a trap.
         const grid = s.cfg.compute_zone.grid(1);
-        try s.enterComputeSlm(register.items, slots.cols.items, grid);
+        try s.enterComputeSlm(register.items, slots.cols.items, grid, false);
 
         try s.sweepMoveableRows(moveable, fixed, grid);
     }
 
-    /// Manhattan entry of a freshly picked-up register into a compute SLM.
+    /// Manhattan entry of a freshly picked-up register into a compute SLM:
+    /// If `deposit=false` atoms are parked on the sites but stays in the AOD.
     fn enterComputeSlm(
         s: *Hardware,
         register: []const *Atom,
         cols: []const usize,
         grid: arch.Grid,
+        deposit: bool,
     ) !void {
         const d = grid.halfSepX();
 
@@ -415,23 +418,17 @@ pub const Hardware = struct {
         }
         s.step();
 
-        // Step 3: slide left d to land on column x, then place into compute SLM.
+        // Step 3: slide left d to land on column x.
         for (register) |a| {
             try s.moveAtom(a, -d, 0);
-            try s.storeAtom(a);
+            if (deposit) try s.storeAtom(a);
         }
         s.step();
     }
 
-    /// Sweeps each timeframe row: lifts its atoms into AOD, slides them to
-    /// column, deposits them back into SLM, then fires the entangling pulse
-    /// pairing this row's atoms with their fixed SLM[0] partners. This
-    /// timeframe's pairs now sit within blockade range of their partners;
-    /// conflicting CZs live in different rows, so one pulse per row. The
-    /// pulse records its intended pairs (slot i pairs the fixed atom in
-    /// SLM[0] with this row's atom in SLM[1]) so the verifier can prove the
-    /// pulse reaches what the router asked. Rows where nothing moves emit
-    /// nothing, so they consume no timestep.
+    /// Sweeps each timeframe row: slides the held register's atoms to this
+    /// row's columns, then fires the entangling pulse pairing them with
+    /// their fixed SLM[0] partners. The register never leaves the AOD.
     fn sweepMoveableRows(
         s: *Hardware,
         moveable: [][]?usize,
@@ -439,9 +436,6 @@ pub const Hardware = struct {
         grid: arch.Grid,
     ) !void {
         for (moveable) |row| {
-            var moved_q: std.ArrayList(usize) = .empty;
-            defer moved_q.deinit(s.gpa);
-
             var has_qubit = false;
             for (row, 0..) |maybe_q, i| {
                 if (maybe_q) |q| {
@@ -450,14 +444,9 @@ pub const Hardware = struct {
                     const dest_x = grid.x(i + s.col_offset);
                     if (a.pos.x == dest_x) continue;
 
-                    try s.loadAtom(a);
                     try s.moveAtom(a, dest_x - a.pos.x, 0);
-                    try moved_q.append(s.gpa, q);
                 }
             }
-            s.step();
-
-            for (moved_q.items) |q| try s.storeAtom(&s.placement[q]);
             s.step();
 
             if (has_qubit) {
@@ -1484,6 +1473,47 @@ test "moveAodCompute pairs each timeframe's qubits within blockade range" {
     try hw.moveAodCompute(&fixed, &moveable);
 
     try expectRydbergPairsWithinBlockade(cfg, &hw, &fixed, &moveable);
+}
+
+test "sweeps fly the held register between pulses without trap transfers" {
+    const gpa = std.testing.allocator;
+    const cfg = testShuttleCfg();
+
+    var hw = try Hardware.init(gpa, cfg, 3, &.{
+        .{ .row = 2, .col = 0 },
+        .{ .row = 2, .col = 1 },
+        .{ .row = 2, .col = 2 },
+    });
+    defer hw.deinit();
+
+    const fixed = [_]?usize{ 0, 2 };
+    var t0 = [_]?usize{ 1, null };
+    var t1 = [_]?usize{ null, 1 };
+    var moveable = [_][]?usize{ &t0, &t1 };
+
+    try hw.moveSlmCompute(&fixed);
+    try hw.moveAodCompute(&fixed, &moveable);
+
+    var first_pulse: ?usize = null;
+    var last_pulse: usize = 0;
+    for (hw.frames.items, 0..) |frame, t| {
+        for (frame.items) |op| switch (op) {
+            .rydberg => {
+                if (first_pulse == null) first_pulse = t;
+                last_pulse = t;
+            },
+            else => {},
+        };
+    }
+    try std.testing.expect(first_pulse != null);
+    try std.testing.expect(last_pulse > first_pulse.?);
+
+    for (hw.frames.items[first_pulse.?..last_pulse]) |frame| {
+        for (frame.items) |op| switch (op) {
+            .load, .store => return error.TransferBetweenPulses,
+            else => {},
+        };
+    }
 }
 
 // Full driver-shaped schedule for the allocation-failure checks.
