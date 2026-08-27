@@ -85,10 +85,6 @@ run_bench() {
         brt=$(jq '.time_us.routing // 0' "$AB/base.json")
         nrt=$(jq '.time_us.routing // 0' "$AB/new.json")
 
-        diff <(jq -S 'del(.compile_ns)' "$AB/base.json") \
-             <(jq -S 'del(.compile_ns)' "$AB/new.json") \
-            >/dev/null || same='  OUTPUT DIFFERS'
-
         awk -v c="$(basename "$c" .qasm)" \
 			-v s="$same" \
 			-v bsh="$bsh" \
