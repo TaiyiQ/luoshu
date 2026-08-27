@@ -115,6 +115,19 @@ fn writeOp(s: *std.json.Stringify, op: schedule.OpKind, t: usize) !void {
             try s.writer.writeAll("]");
             s.endWriteRaw();
         },
+        .reset => |r| {
+            try field(s, "zone", zoneName(r.zone));
+            try field(s, "t", t);
+            try s.objectField("qubits");
+            try s.beginWriteRaw();
+            try s.writer.writeAll("[");
+            for (r.qubits, 0..) |q, i| {
+                if (i > 0) try s.writer.writeAll(", ");
+                try s.writer.print("{d}", .{q});
+            }
+            try s.writer.writeAll("]");
+            s.endWriteRaw();
+        },
         .load => |ld| {
             try field(s, "qubit", ld.qubit);
             try field(s, "x", ld.position.x);
@@ -145,8 +158,8 @@ pub fn benchToJson(gpa: std.mem.Allocator, m: bench.Metrics) ![]u8 {
     try fieldFmt(
         &s,
         "ops",
-        "{{ \"load\": {d}, \"store\": {d}, \"move\": {d}, \"rydberg\": {d}, \"raman\": {d}, \"measure\": {d} }}",
-        .{ m.n_load, m.n_store, m.n_move, m.n_rydberg, m.n_raman, m.n_measure },
+        "{{ \"load\": {d}, \"store\": {d}, \"move\": {d}, \"rydberg\": {d}, \"raman\": {d}, \"measure\": {d}, \"reset\": {d} }}",
+        .{ m.n_load, m.n_store, m.n_move, m.n_rydberg, m.n_raman, m.n_measure, m.n_reset },
     );
     try fieldFmt(
         &s,
@@ -177,6 +190,7 @@ pub fn benchToJson(gpa: std.mem.Allocator, m: bench.Metrics) ![]u8 {
     try fieldFmt(&s, "store_us", "{d:.3}", .{bench.Timing.store_us});
     try fieldFmt(&s, "rydberg_us", "{d:.3}", .{bench.Timing.rydberg_us});
     try fieldFmt(&s, "raman_us", "{d:.3}", .{bench.Timing.raman_us});
+    try fieldFmt(&s, "reset_us", "{d:.3}", .{bench.Timing.reset_us});
     try s.endObject();
 
     try field(&s, "compile_ns", m.compile_ns);

@@ -148,10 +148,18 @@ pub fn compile(
     const rank = try gpa.alloc(usize, pipe.num_qubits);
     defer gpa.free(rank);
 
-    for (pipe.stages.items) |*stage| {
-        // A stage with no CZ gates has nothing to route, so it is pure Raman pulses.
-        if (stage.cz_gates.items.len > 0) {
-            const sequences = try routeStage(gpa, stage.cz_gates.items, pipe.num_qubits, stats);
+    // Per-qubit dedup scratch for reset stages.
+    const seen = try gpa.alloc(bool, pipe.num_qubits);
+    defer gpa.free(seen);
+
+    for (pipe.stages.items) |*stage| switch (stage.*) {
+        .cz => |czs| {
+            const sequences = try routeStage(
+                gpa,
+                czs.items,
+                pipe.num_qubits,
+                stats,
+            );
             defer {
                 for (sequences) |*s| s.deinit();
                 gpa.free(sequences);
@@ -165,56 +173,71 @@ pub fn compile(
                 try hw.moveAodStorage(sequence.moveable);
                 try hw.moveSlmStorage(sequence.fixed);
             }
-        }
+        },
 
-        // U gates fire last: within a stage, CZs precede the U's, and by
-        // now all atoms are back at their storage positions. A stage may hold
-        // a run of U's per qubit, and same-qubit pulses cannot share a timestep,
-        // so the k-th pulse on each qubit fires in the stage's k-th raman wave.
-        const Pulse = struct {
-            wave: usize,
-            gate: schedule.RamanGate,
-        };
-
-        const pulses = try gpa.alloc(Pulse, stage.u_gates.items.len);
-        defer gpa.free(pulses);
-
-        @memset(rank, 0);
-
-        var n: usize = 0;
-        for (stage.u_gates.items) |gate| {
-            const p = lowerU(&frame_phase[gate.qubit], gate) orelse continue;
-
-            pulses[n] = .{
-                .wave = rank[gate.qubit],
-                .gate = p,
+        .u => |us| {
+            const Pulse = struct {
+                wave: usize,
+                gate: schedule.RamanGate,
             };
 
-            n += 1;
+            const pulses = try gpa.alloc(Pulse, us.items.len);
+            defer gpa.free(pulses);
 
-            rank[gate.qubit] += 1;
-        }
+            @memset(rank, 0);
 
-        // Waves group contiguously, gate order within a wave holds.
-        std.mem.sort(Pulse, pulses[0..n], {}, struct {
-            fn lt(_: void, a: Pulse, b: Pulse) bool {
-                return a.wave < b.wave;
+            var n: usize = 0;
+            for (us.items) |gate| {
+                const p = lowerU(&frame_phase[gate.qubit], gate) orelse continue;
+
+                pulses[n] = .{
+                    .wave = rank[gate.qubit],
+                    .gate = p,
+                };
+
+                n += 1;
+
+                rank[gate.qubit] += 1;
             }
-        }.lt);
 
-        const batch = try gpa.alloc(schedule.RamanGate, n);
-        defer gpa.free(batch);
+            // Waves group contiguously, gate order within a wave holds.
+            std.mem.sort(Pulse, pulses[0..n], {}, struct {
+                fn lt(_: void, a: Pulse, b: Pulse) bool {
+                    return a.wave < b.wave;
+                }
+            }.lt);
 
-        for (pulses[0..n], batch) |p, *b| b.* = p.gate;
+            const batch = try gpa.alloc(schedule.RamanGate, n);
+            defer gpa.free(batch);
 
-        var start: usize = 0;
-        while (start < n) {
-            var end = start + 1;
-            while (end < n and pulses[end].wave == pulses[start].wave) end += 1;
-            try hw.raman(batch[start..end]);
-            start = end;
-        }
-    }
+            for (pulses[0..n], batch) |p, *b| b.* = p.gate;
+
+            var start: usize = 0;
+            while (start < n) {
+                var end = start + 1;
+                while (end < n and pulses[end].wave == pulses[start].wave) end += 1;
+                try hw.raman(batch[start..end]);
+                start = end;
+            }
+        },
+
+        .reset => |resets| {
+            var qubits: std.ArrayList(u32) = .empty;
+            defer qubits.deinit(gpa);
+            @memset(seen, false);
+
+            for (resets.items) |g| {
+                if (seen[g.qubit]) continue; // reset q; reset q; is one repump
+                seen[g.qubit] = true;
+                frame_phase[g.qubit] = 0;
+                try qubits.append(gpa, g.qubit);
+            }
+
+            try hw.moveResetReadout(qubits.items);
+            try hw.reset(qubits.items);
+            try hw.moveResetStorage(qubits.items);
+        },
+    };
 
     try hw.moveReadout();
 

@@ -23,19 +23,27 @@ pub const Reset = struct {
     qubit: u32,
 };
 
-pub const Native = union(enum) {
+pub const StageKind = enum { u, cz, reset };
+
+pub const Native = union(StageKind) {
     u: U,
     cz: Cz,
     reset: Reset,
 };
 
-pub const Stage = struct {
-    u_gates: std.ArrayList(U) = .empty,
-    cz_gates: std.ArrayList(Cz) = .empty,
+/// One homogeneous episode of the pipeline: the tag is the stage's kind,
+/// so a stage holding two kinds is unrepresentable.
+pub const Stage = union(StageKind) {
+    u: std.ArrayList(U),
+    cz: std.ArrayList(Cz),
+    reset: std.ArrayList(Reset),
 
     fn deinit(s: *Stage, gpa: std.mem.Allocator) void {
-        s.u_gates.deinit(gpa);
-        s.cz_gates.deinit(gpa);
+        switch (s.*) {
+            .u => |*list| list.deinit(gpa),
+            .cz => |*list| list.deinit(gpa),
+            .reset => |*list| list.deinit(gpa),
+        }
     }
 };
 
@@ -44,7 +52,7 @@ pub const Pipeline = struct {
     stages: std.ArrayList(Stage),
     num_qubits: usize,
 
-    fn init(gpa: std.mem.Allocator, n: usize) !Pipeline {
+    fn init(gpa: std.mem.Allocator, n: usize) Pipeline {
         return .{
             .gpa = gpa,
             .stages = .empty,
@@ -57,41 +65,44 @@ pub const Pipeline = struct {
         s.stages.deinit(s.gpa);
     }
 
-    // Place a `gate` into stage `n`, creating intervening stages as needed.
     fn place(s: *Pipeline, n: usize, gate: Native) !void {
-        while (s.stages.items.len <= n) {
-            try s.stages.append(s.gpa, .{});
+        if (s.stages.items.len <= n) {
+            std.debug.assert(s.stages.items.len == n);
+            try s.stages.append(s.gpa, switch (gate) {
+                .u => .{ .u = .empty },
+                .cz => .{ .cz = .empty },
+                .reset => .{ .reset = .empty },
+            });
         }
+
         const stage = &s.stages.items[n];
+
         switch (gate) {
-            .u => |g| try stage.u_gates.append(s.gpa, g),
-            .cz => |g| try stage.cz_gates.append(s.gpa, g),
-            // Resets are never staged (decompose skips them), so one never
-            // reaches `place`.
-            .reset => unreachable,
+            .u => |g| try stage.u.append(s.gpa, g),
+            .cz => |g| try stage.cz.append(s.gpa, g),
+            .reset => |g| try stage.reset.append(s.gpa, g),
         }
     }
 };
 
-/// Group the circuit's gates into stages. Stages are homogeneous - all CZ
-/// or all U - so the pipeline alternates choreographed CZ episodes with
-/// Raman-pulse episodes, and an idle qubit's U joins the nearest U stage
-/// rather than riding along in a CZ stage.
+/// Group the circuit's gates into stages. Stages are homogeneous - all CZ,
+/// all U, or all reset - so the pipeline alternates choreographed CZ episodes
+/// with Raman-pulse and reset episodes, and an idle qubit's U joins the
+/// nearest U stage rather than riding along in a CZ stage.
 ///
 /// Gates never reorder across a shared qubit; across disjoint qubits
 /// a gate may join an earlier stage of its kind, which is safe
 /// exactly because disjoint gates commute.
 pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
-    var pipe = try Pipeline.init(gpa, c.n);
+    var pipe = Pipeline.init(gpa, c.n);
     errdefer pipe.deinit();
 
-    // Earliest stage of the wanted kind at or past `from`. A stage's kind
-    // is whichever list is populated; falling off the end names the fresh stage that
-    // place() then creates.
+    // Earliest stage of the wanted kind at or past `from`; falling off the
+    // end names the fresh stage that place() then creates.
     const fit = struct {
-        fn earliest(stages: []const Stage, from: usize, cz: bool) usize {
+        fn earliest(stages: []const Stage, from: usize, want: StageKind) usize {
             var s = from;
-            while (s < stages.len and (stages[s].cz_gates.items.len != 0) != cz) s += 1;
+            while (s < stages.len and stages[s] != want) s += 1;
             return s;
         }
     }.earliest;
@@ -105,14 +116,14 @@ pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
         const q: [2]u32 = switch (gate) {
             .u => |g| .{ g.qubit, g.qubit },
             .cz => |g| .{ g.control, g.target },
-            // TODO: implement proper reseting.
-            .reset => continue,
+            .reset => |g| .{ g.qubit, g.qubit },
         };
+
         const from = @max(cursors[q[0]], cursors[q[1]]);
-        const stage = fit(pipe.stages.items, from, gate == .cz);
+        const stage = fit(pipe.stages.items, from, gate);
+
         try pipe.place(stage, gate);
-        // Pin every touched qubit to the gate's stage, or a later gate on
-        // a qubit that was lagging would be staged before this one.
+
         cursors[q[0]] = stage;
         cursors[q[1]] = stage;
     }
@@ -139,66 +150,31 @@ pub const Circuit = struct {
     }
 
     pub fn h(s: *Circuit, q: u32) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = PI / 2.0,
-            .phi = 0.0,
-            .lambda = PI,
-        } });
+        try s.u(q, PI / 2.0, 0.0, PI);
     }
 
     pub fn x(s: *Circuit, q: u32) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = PI,
-            .phi = 0.0,
-            .lambda = PI,
-        } });
+        try s.u(q, PI, 0.0, PI);
     }
 
     pub fn y(s: *Circuit, q: u32) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = PI,
-            .phi = PI / 2.0,
-            .lambda = PI / 2.0,
-        } });
+        try s.u(q, PI, PI / 2.0, PI / 2.0);
     }
 
     pub fn z(s: *Circuit, q: u32) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = 0.0,
-            .phi = 0.0,
-            .lambda = PI,
-        } });
+        try s.u(q, 0.0, 0.0, PI);
     }
 
     pub fn rx(s: *Circuit, q: u32, theta: f64) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = theta,
-            .phi = -PI / 2.0,
-            .lambda = PI / 2.0,
-        } });
+        try s.u(q, theta, -PI / 2.0, PI / 2.0);
     }
 
     pub fn ry(s: *Circuit, q: u32, theta: f64) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = theta,
-            .phi = 0.0,
-            .lambda = 0.0,
-        } });
+        try s.u(q, theta, 0.0, 0.0);
     }
 
     pub fn rz(s: *Circuit, q: u32, angle: f64) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = 0.0,
-            .phi = 0.0,
-            .lambda = angle,
-        } });
+        try s.u(q, 0.0, 0.0, angle);
     }
 
     pub fn u(s: *Circuit, q: u32, theta: f64, phi: f64, lambda: f64) !void {
@@ -236,12 +212,7 @@ pub const Circuit = struct {
     }
 
     pub fn sx(s: *Circuit, q: u32) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
-            .qubit = q,
-            .theta = PI / 2.0,
-            .phi = -PI / 2.0,
-            .lambda = PI / 2.0,
-        } });
+        try s.u(q, PI / 2.0, -PI / 2.0, PI / 2.0);
     }
 };
 
@@ -257,7 +228,7 @@ test "decompose merges a run of commuting CZs into one stage" {
     defer pipe.deinit();
 
     try std.testing.expectEqual(1, pipe.stages.items.len);
-    try std.testing.expectEqual(2, pipe.stages.items[0].cz_gates.items.len);
+    try std.testing.expectEqual(2, pipe.stages.items[0].cz.items.len);
 }
 
 test "decompose: a U barrier splits CZs on its qubit into separate stages" {
@@ -273,9 +244,9 @@ test "decompose: a U barrier splits CZs on its qubit into separate stages" {
     // The barrier H gets its own stage between the CZs: a U and a CZ on
     // the same qubit never share a stage.
     try std.testing.expectEqual(3, pipe.stages.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[0].cz_gates.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[1].u_gates.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[2].cz_gates.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[0].cz.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[1].u.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[2].cz.items.len);
 }
 
 test "decompose never stages a gate before a preceding gate on its qubit" {
@@ -293,17 +264,15 @@ test "decompose never stages a gate before a preceding gate on its qubit" {
     try std.testing.expectEqual(3, pipe.stages.items.len);
 
     const s0 = pipe.stages.items[0];
-    try std.testing.expectEqual(0, s0.cz_gates.items.len);
-    try std.testing.expectEqual(1, s0.u_gates.items.len);
-    try std.testing.expectEqual(1, s0.u_gates.items[0].qubit);
+    try std.testing.expectEqual(1, s0.u.items.len);
+    try std.testing.expectEqual(1, s0.u.items[0].qubit);
 
     const s1 = pipe.stages.items[1];
-    try std.testing.expectEqual(1, s1.cz_gates.items.len);
-    try std.testing.expectEqual(0, s1.u_gates.items.len);
+    try std.testing.expectEqual(1, s1.cz.items.len);
 
     const s2 = pipe.stages.items[2];
-    try std.testing.expectEqual(1, s2.u_gates.items.len);
-    try std.testing.expectEqual(0, s2.u_gates.items[0].qubit);
+    try std.testing.expectEqual(1, s2.u.items.len);
+    try std.testing.expectEqual(0, s2.u.items[0].qubit);
 }
 
 test "decompose keeps stages homogeneous: an idle-qubit U joins the U stage" {
@@ -320,10 +289,27 @@ test "decompose keeps stages homogeneous: an idle-qubit U joins the U stage" {
     defer pipe.deinit();
 
     try std.testing.expectEqual(2, pipe.stages.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[0].cz_gates.items.len);
-    try std.testing.expectEqual(0, pipe.stages.items[0].u_gates.items.len);
-    try std.testing.expectEqual(0, pipe.stages.items[1].cz_gates.items.len);
-    try std.testing.expectEqual(2, pipe.stages.items[1].u_gates.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[0].cz.items.len);
+    try std.testing.expectEqual(2, pipe.stages.items[1].u.items.len);
+}
+
+test "decompose: resets share a stage across disjoint qubits and barrier their own" {
+    // The resets merge into one reset stage (disjoint qubits).
+    var c = Circuit.init(std.testing.allocator, 2);
+    defer c.deinit();
+    try c.h(0);
+    try c.reset(0);
+    try c.reset(1);
+    try c.h(0);
+
+    var pipe = try decompose(std.testing.allocator, c);
+    defer pipe.deinit();
+
+    try std.testing.expectEqual(3, pipe.stages.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[0].u.items.len);
+    try std.testing.expectEqual(2, pipe.stages.items[1].reset.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[2].u.items.len);
+    try std.testing.expectEqual(0, pipe.stages.items[2].u.items[0].qubit);
 }
 
 test "decompose stacks same-qubit U runs into single stages" {
@@ -344,10 +330,9 @@ test "decompose stacks same-qubit U runs into single stages" {
     defer pipe.deinit();
 
     try std.testing.expectEqual(3, pipe.stages.items.len);
-    try std.testing.expectEqual(4, pipe.stages.items[0].u_gates.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[1].cz_gates.items.len);
-    try std.testing.expectEqual(0, pipe.stages.items[1].u_gates.items.len);
-    try std.testing.expectEqual(2, pipe.stages.items[2].u_gates.items.len);
+    try std.testing.expectEqual(4, pipe.stages.items[0].u.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[1].cz.items.len);
+    try std.testing.expectEqual(2, pipe.stages.items[2].u.items.len);
 }
 
 test {

@@ -49,7 +49,7 @@ const SPEED_W: f32 = 160; // speed slider width in the transport bar
 fn opFill(op: OpKind) rl.Color {
     return switch (op) {
         .move => palette.op_move,
-        .raman, .measure => palette.op_raman,
+        .raman, .measure, .reset => palette.op_raman,
         .rydberg => palette.op_rydberg,
         .load => palette.op_load,
         .store => palette.op_store,
@@ -178,8 +178,15 @@ fn drawDimension(cam: Camera, font: rl.Font, d: viewmodel.Dimension) bool {
 
     rl.drawLineEx(qa, qb, 1.5, line);
 
-    const u = rl.Vector2{ .x = dx / len, .y = dy / len };
-    const perp = rl.Vector2{ .x = -u.y, .y = u.x };
+    const u = rl.Vector2{
+        .x = dx / len,
+        .y = dy / len,
+    };
+
+    const perp = rl.Vector2{
+        .x = -u.y,
+        .y = u.x,
+    };
 
     drawArrowHead(qa, u, perp, line);
     drawArrowHead(qb, .{ .x = -u.x, .y = -u.y }, perp, line);
@@ -466,6 +473,9 @@ pub const ScheduleView = struct {
                 v.active[t.qubit] = true;
             },
             .measure => |m| for (m.qubits) |q| {
+                v.active[q] = true;
+            },
+            .reset => |r| for (r.qubits) |q| {
                 v.active[q] = true;
             },
             .load => |ld| v.active[ld.qubit] = true,
@@ -772,6 +782,7 @@ pub const ScheduleView = struct {
         const zone_txt = switch (primary_op) {
             .rydberg => |r| @tagName(r.zone),
             .measure => |m| @tagName(m.zone),
+            .reset => |r| @tagName(r.zone),
             else => "-",
         };
 
@@ -787,7 +798,7 @@ pub const ScheduleView = struct {
         var counts_buf: [160]u8 = undefined;
         const counts_txt = std.fmt.bufPrintSentinel(
             &counts_buf,
-            "  |  frame {d} / {d}  |  move {d}  raman {d}  rydberg {d}  measure {d}",
+            "  |  frame {d} / {d}  |  move {d}  raman {d}  rydberg {d}  measure {d}  reset {d}",
             .{
                 v.frame,
                 v.lastFrame(),
@@ -795,6 +806,7 @@ pub const ScheduleView = struct {
                 v.vm.summary.raman,
                 v.vm.summary.rydberg,
                 v.vm.summary.measure,
+                v.vm.summary.reset,
             },
             0,
         ) catch "?";

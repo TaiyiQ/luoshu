@@ -219,9 +219,14 @@ pub const QasmParser = struct {
     // it correct even when the failure is inside an expanded body, which the
     // unwinding restores out from under `pos`.
     fn fail(s: *QasmParser, reason: []const u8) error{ParseError} {
+        return s.failWith(error.ParseError, reason);
+    }
+
+    // Like `fail`, but raises `err` instead of the generic ParseError.
+    fn failWith(s: *QasmParser, err: anytype, reason: []const u8) @TypeOf(err) {
         s.reason = reason;
         s.err_pos = s.absPos(s.pos);
-        return error.ParseError;
+        return err;
     }
 
     // Appends a located, non-fatal warning at byte offset `at` when a sink is
@@ -333,26 +338,11 @@ pub const QasmParser = struct {
 
     // Skips a brace-delimited body, advancing past the matching `}` of the next
     // `{`. Used in the declaration pass to step over a `gate` body whole, so its
-    // contents are not mistaken for top-level declarations. Tracks nesting so a
-    // body with inner braces is consumed in one go.
+    // contents are not mistaken for top-level declarations.
     fn skipBlock(s: *QasmParser) !void {
         while (s.pos < s.src.len and s.src[s.pos] != '{') s.pos += 1;
         if (s.pos >= s.src.len) return s.fail("expected '{' to open a gate body");
-        var depth: usize = 0;
-        while (s.pos < s.src.len) : (s.pos += 1) {
-            switch (s.src[s.pos]) {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if (depth == 0) {
-                        s.pos += 1;
-                        return;
-                    }
-                },
-                else => {},
-            }
-        }
-        return s.fail("unterminated gate body");
+        _ = try s.captureBlock();
     }
 
     fn readIdent(s: *QasmParser) []const u8 {
@@ -412,89 +402,55 @@ pub const QasmParser = struct {
         return s.qubitReg(name) != null or s.bitRegWidth(name) != null;
     }
 
-    // Validates the qubit operand of a `measure`, flags that the program
-    // produces a readout, records the measured qubits, and returns how many it
-    // measures: 1 for an indexed (`q[0]`) or physical (`$0`) qubit, or the
-    // register width for a whole register (`q`). Anything else — notably
-    // `measure[q]`, which is not valid OpenQASM — errors. The measurement is
-    // not added to the IR (it carries no readout), so this is a syntax/width
-    // check plus measurement tracking; the caller consumes the rest of the
-    // statement, including any `-> bit` target. `stmt_at` locates warnings.
-    fn parseMeasureOperand(s: *QasmParser, stmt_at: usize) !usize {
-        s.skipWs();
-        var first: u32 = 0; // flat index of the first measured qubit
-        var count: usize = 1; // a physical or indexed qubit is a single qubit
-        if (s.pos < s.src.len and s.src[s.pos] == '$') {
-            s.pos += 1;
-            first = @intCast(try s.readUint());
-        } else {
-            const name = s.readIdent();
-            if (name.len == 0) return s.fail("expected a qubit to measure, e.g. `measure q;`");
-            const reg = s.qubitReg(name) orelse {
-                s.reason = "measurement of an undeclared register";
-                s.err_pos = s.absPos(s.pos);
-                return error.UnknownRegister;
-            };
-            s.skipWs();
-            if (s.pos < s.src.len and s.src[s.pos] == '[') {
-                s.pos += 1;
-                const idx = try s.readUint();
-                try s.consume(']');
-                if (idx >= reg.width) return s.fail("qubit index out of range");
-                first = @intCast(reg.base + idx);
-            } else {
-                first = @intCast(reg.base);
-                count = reg.width; // a whole register measures all its qubits
-            }
-        }
-        s.saw_measure = true;
-
-        // Track the measured qubits; warn once if any was already measured.
-        var remeasured = false;
-        for (0..count) |k| {
-            const q = first + @as(u32, @intCast(k));
-            if (s.isMeasured(q)) remeasured = true;
-            s.markMeasured(q);
-        }
-        if (remeasured) s.warn(stmt_at, "qubit measured more than once");
-
-        return count;
-    }
-
-    // Validates the qubit operand of a `reset` — a physical (`$0`) or indexed
-    // (`q[0]`) qubit, or a whole register (`q`, all its qubits) — and returns
-    // the flat range it covers. Also clears the operands' measured flag (a
-    // reset returns them to a fresh state). The caller emits a reset op per
-    // qubit in the range.
-    const ResetTarget = struct { base: u32, count: usize };
-    fn parseResetOperand(s: *QasmParser) !ResetTarget {
+    // Parses a qubit operand that may cover a range: a physical (`$0`) or
+    // indexed (`q[0]`) qubit — a single qubit, the index a constant expression
+    // — or a whole register (`q`, all its qubits). `missing` and `undeclared`
+    // name the statement in the two operand diagnostics.
+    const QubitRange = struct { base: u32, count: usize };
+    fn parseQubitRange(s: *QasmParser, missing: []const u8, undeclared: []const u8) !QubitRange {
         s.skipWs();
         if (s.pos < s.src.len and s.src[s.pos] == '$') {
             s.pos += 1;
-            const q: u32 = @intCast(try s.readUint());
-            s.unmarkMeasured(q, 1);
-            return .{ .base = q, .count = 1 };
+            return .{ .base = @intCast(try s.readUint()), .count = 1 };
         }
         const name = s.readIdent();
-        if (name.len == 0) return s.fail("expected a qubit to reset, e.g. `reset q;`");
-        const reg = s.qubitReg(name) orelse {
-            s.reason = "reset of an undeclared register";
-            s.err_pos = s.absPos(s.pos);
-            return error.UnknownRegister;
-        };
+        if (name.len == 0) return s.fail(missing);
+        const reg = s.qubitReg(name) orelse return s.failWith(error.UnknownRegister, undeclared);
         s.skipWs();
         if (s.pos < s.src.len and s.src[s.pos] == '[') {
             s.pos += 1;
             const idx = try s.evalIndex();
             try s.consume(']');
             if (idx >= reg.width) return s.fail("qubit index out of range");
-            const q: u32 = @intCast(reg.base + idx);
-            s.unmarkMeasured(q, 1);
-            return .{ .base = q, .count = 1 };
+            return .{ .base = @intCast(reg.base + idx), .count = 1 };
         }
-        // A bare register name resets all of its qubits.
-        s.unmarkMeasured(@intCast(reg.base), reg.width);
         return .{ .base = @intCast(reg.base), .count = reg.width };
+    }
+
+    // Validates the qubit operand of a `measure`, flags that the program
+    // produces a readout, records the measured qubits, and returns how many it
+    // measures. Anything else — notably `measure[q]`, which is not valid
+    // OpenQASM — errors. The measurement is not added to the IR (it carries no
+    // readout), so this is a syntax/width check plus measurement tracking; the
+    // caller consumes the rest of the statement, including any `-> bit`
+    // target. `stmt_at` locates warnings.
+    fn parseMeasureOperand(s: *QasmParser, stmt_at: usize) !usize {
+        const r = try s.parseQubitRange(
+            "expected a qubit to measure, e.g. `measure q;`",
+            "measurement of an undeclared register",
+        );
+        s.saw_measure = true;
+
+        // Track the measured qubits; warn once if any was already measured.
+        var remeasured = false;
+        for (0..r.count) |k| {
+            const q = r.base + @as(u32, @intCast(k));
+            if (s.isMeasured(q)) remeasured = true;
+            s.markMeasured(q);
+        }
+        if (remeasured) s.warn(stmt_at, "qubit measured more than once");
+
+        return r.count;
     }
 
     // The classical target of a measuring assignment. `width` is its bit
@@ -520,9 +476,10 @@ pub const QasmParser = struct {
             s.pos += 1;
             s.skipWs();
             idx_at = s.pos;
-            // A non-numeric index (e.g. a loop variable) is not a form we
-            // model: treat the statement as a non-measuring assignment.
-            idx = s.readUint() catch return null;
+            // The index is a constant expression (a literal, or e.g. a loop
+            // variable); anything that doesn't evaluate is not a form we
+            // model, so treat the statement as a non-measuring assignment.
+            idx = s.evalIndex() catch return null;
             s.skipWs();
             if (s.pos >= s.src.len or s.src[s.pos] != ']') return null;
             s.pos += 1;
@@ -659,8 +616,8 @@ pub const QasmParser = struct {
                 for (env.qubits) |b| if (std.mem.eql(u8, b.name, name)) break :blk b.qubit;
             }
             const reg = s.qubitReg(name) orelse {
-                s.err_pos = s.absPos(at);
-                return error.UnknownRegister;
+                s.pos = at;
+                return s.failWith(error.UnknownRegister, "reference to an undeclared register");
             };
             s.skipWs();
             // `q[i]` indexes the register; a bare `q` names the only qubit of a
@@ -1059,8 +1016,8 @@ pub const QasmParser = struct {
                     const arg_at = s.pos;
                     const argname = s.readIdent();
                     const reg = s.qubitReg(argname) orelse {
-                        s.err_pos = s.absPos(arg_at);
-                        return error.UnknownRegister;
+                        s.pos = arg_at;
+                        return s.failWith(error.UnknownRegister, "reference to an undeclared register");
                     };
                     try s.reg.append(s.gpa, .{ .name = p.name, .base = reg.base, .width = reg.width });
                 },
@@ -1085,12 +1042,11 @@ pub const QasmParser = struct {
     }
 
     // Detects and compiles an assignment-form `def` call, `target = NAME(args);`
-    // (the `target` identifier already read). Returns true when it was such a
-    // call — the body is expanded and the statement consumed. Otherwise the
-    // cursor is restored to just after `target` and false is returned, so the
-    // caller can try the other assignment forms.
-    fn maybeAssignDefCall(s: *QasmParser, circ: *Circuit, target: []const u8) !bool {
-        _ = target;
+    // (the target identifier already read by the caller). Returns true when it
+    // was such a call — the body is expanded and the statement consumed.
+    // Otherwise the cursor is restored to just after the target and false is
+    // returned, so the caller can try the other assignment forms.
+    fn maybeAssignDefCall(s: *QasmParser, circ: *Circuit) !bool {
         const after_target = s.pos;
         s.skipWs();
         // An optional index on the target, e.g. `c[0] = …`; stepped over.
@@ -1163,19 +1119,7 @@ pub const QasmParser = struct {
             if (s.pos < s.src.len and s.src[s.pos] == ',') s.pos += 1;
         }
 
-        // Capture the body between the braces, tracking nesting depth.
-        s.pos += 1; // step over '{'
-        const body_start = s.pos;
-        var depth: usize = 1;
-        while (s.pos < s.src.len and depth > 0) : (s.pos += 1) {
-            switch (s.src[s.pos]) {
-                '{' => depth += 1,
-                '}' => depth -= 1,
-                else => {},
-            }
-        }
-        if (depth != 0) return s.fail("unterminated gate body");
-        const body = s.src[body_start .. s.pos - 1]; // exclude closing '}'
+        const body = try s.captureBlock();
 
         const param_names = try s.gpa.alloc([]const u8, nparams);
         errdefer s.gpa.free(param_names);
@@ -1254,6 +1198,34 @@ pub const QasmParser = struct {
         try s.parseGates(circ);
     }
 
+    // The built-in gate set: each entry names the gate, its angle-parameter
+    // and qubit-operand counts (which drive the one generic parse path in
+    // `parseGates`), and the tag its emission switches on. `U` is the
+    // stdgates alias of `u`; the lowerings (`r`, `cx`, `rzz`) live with the
+    // emission, not here.
+    const GateTag = enum { h, x, y, z, sx, rx, ry, rz, u, r, cz, cx, rzz };
+    const Builtin = struct { name: []const u8, n_params: u8, n_qubits: u8, gate: GateTag };
+    const builtins = [_]Builtin{
+        .{ .name = "h", .n_params = 0, .n_qubits = 1, .gate = .h },
+        .{ .name = "x", .n_params = 0, .n_qubits = 1, .gate = .x },
+        .{ .name = "y", .n_params = 0, .n_qubits = 1, .gate = .y },
+        .{ .name = "z", .n_params = 0, .n_qubits = 1, .gate = .z },
+        .{ .name = "sx", .n_params = 0, .n_qubits = 1, .gate = .sx },
+        .{ .name = "rx", .n_params = 1, .n_qubits = 1, .gate = .rx },
+        .{ .name = "ry", .n_params = 1, .n_qubits = 1, .gate = .ry },
+        .{ .name = "rz", .n_params = 1, .n_qubits = 1, .gate = .rz },
+        .{ .name = "u", .n_params = 3, .n_qubits = 1, .gate = .u },
+        .{ .name = "U", .n_params = 3, .n_qubits = 1, .gate = .u },
+        .{ .name = "r", .n_params = 2, .n_qubits = 1, .gate = .r },
+        .{ .name = "cz", .n_params = 0, .n_qubits = 2, .gate = .cz },
+        .{ .name = "cx", .n_params = 0, .n_qubits = 2, .gate = .cx },
+        .{ .name = "rzz", .n_params = 1, .n_qubits = 2, .gate = .rzz },
+    };
+    fn findBuiltin(word: []const u8) ?Builtin {
+        for (builtins) |b| if (std.mem.eql(u8, word, b.name)) return b;
+        return null;
+    }
+
     fn parseGates(s: *QasmParser, circ: *Circuit) !void {
         while (s.pos < s.src.len) {
             s.skipWsAndComments();
@@ -1314,12 +1286,17 @@ pub const QasmParser = struct {
                 // circuit, so the statement is dropped.
                 s.skipToSemicolon();
             } else if (std.mem.eql(u8, word, "reset")) {
-                // Reset is recorded as a front-end IR op (it shows in the
-                // original-circuit drawing) but is not lowered into the
-                // hardware schedule. A whole-register reset emits one op per
-                // qubit.
-                const target = try s.parseResetOperand();
+                // Reset is recorded as a front-end IR op and lowered to a
+                // round-trip shuttle: the reset set repumps to |0> in the
+                // readout zone, then returns to storage. A whole-register
+                // reset emits one op per qubit. The operands' measured flag
+                // is cleared: a reset returns them to a fresh state.
+                const target = try s.parseQubitRange(
+                    "expected a qubit to reset, e.g. `reset q;`",
+                    "reset of an undeclared register",
+                );
                 try s.consume(';');
+                s.unmarkMeasured(target.base, target.count);
                 for (0..target.count) |k|
                     try circ.reset(target.base + @as(u32, @intCast(k)));
             } else if (std.mem.eql(u8, word, "gate")) {
@@ -1332,103 +1309,47 @@ pub const QasmParser = struct {
                 // A bare `def` call, `NAME(args);`.
                 try s.invokeDef(circ, def);
                 try s.consume(';');
-            } else if (std.mem.eql(u8, word, "h")) {
-                const q = try s.parseQubitRef();
-                try s.consume(';');
-                try circ.h(q);
-            } else if (std.mem.eql(u8, word, "x")) {
-                const q = try s.parseQubitRef();
-                try s.consume(';');
-                try circ.x(q);
-            } else if (std.mem.eql(u8, word, "y")) {
-                const q = try s.parseQubitRef();
-                try s.consume(';');
-                try circ.y(q);
-            } else if (std.mem.eql(u8, word, "z")) {
-                const q = try s.parseQubitRef();
-                try s.consume(';');
-                try circ.z(q);
-            } else if (std.mem.eql(u8, word, "rx")) {
-                try s.consume('(');
-                const theta = try s.parseExpr();
-                try s.consume(')');
-                const q = try s.parseQubitRef();
-                try s.consume(';');
-                try circ.rx(q, theta);
-            } else if (std.mem.eql(u8, word, "ry")) {
-                try s.consume('(');
-                const theta = try s.parseExpr();
-                try s.consume(')');
-                const q = try s.parseQubitRef();
-                try s.consume(';');
-                try circ.ry(q, theta);
-            } else if (std.mem.eql(u8, word, "rz")) {
-                try s.consume('(');
-                const angle = try s.parseExpr();
-                try s.consume(')');
-                const q = try s.parseQubitRef();
-                try s.consume(';');
-                try circ.rz(q, angle);
-            } else if (std.mem.eql(u8, word, "u") or std.mem.eql(u8, word, "U")) {
-                try s.consume('(');
-                const theta = try s.parseExpr();
-                try s.consume(',');
-                const phi = try s.parseExpr();
-                try s.consume(',');
-                const lambda = try s.parseExpr();
-                try s.consume(')');
-                const q = try s.parseQubitRef();
-                try s.consume(';');
-                try circ.u(q, theta, phi, lambda);
-            } else if (std.mem.eql(u8, word, "r")) {
-                try s.consume('(');
-                const theta = try s.parseExpr();
-                try s.consume(',');
-                const phi = try s.parseExpr();
-                try s.consume(')');
-                const q = try s.parseQubitRef();
-                try s.consume(';');
-                // r(θ,φ) = U(θ, -π/2+φ, π/2-φ)
-                try circ.u(q, theta, -PI / 2.0 + phi, PI / 2.0 - phi);
-            } else if (std.mem.eql(u8, word, "cz")) {
-                const control = try s.parseQubitRef();
-                try s.consume(',');
-                const target = try s.parseQubitRef();
+            } else if (findBuiltin(word)) |g| {
+                // A built-in gate, `name(p0, …) q0, q1;` — the table's counts
+                // drive one shared parse of the angle parameters and qubit
+                // operands.
+                var p: [3]f64 = undefined;
+                if (g.n_params > 0) {
+                    try s.consume('(');
+                    for (p[0..g.n_params], 0..) |*param, i| {
+                        if (i > 0) try s.consume(',');
+                        param.* = try s.parseExpr();
+                    }
+                    try s.consume(')');
+                }
+                var q: [2]u32 = undefined;
+                for (q[0..g.n_qubits], 0..) |*operand, i| {
+                    if (i > 0) try s.consume(',');
+                    operand.* = try s.parseQubitRef();
+                }
                 try s.consume(';');
                 // A two-qubit gate on one qubit is ill-formed: the operands
                 // must be distinct qubits.
-                if (control == target) {
+                if (g.n_qubits == 2 and q[0] == q[1]) {
                     s.pos = stmt_start;
                     return s.fail("two-qubit gate on a single qubit");
                 }
-                try circ.cz(control, target);
-            } else if (std.mem.eql(u8, word, "cx")) {
-                const control = try s.parseQubitRef();
-                try s.consume(',');
-                const target = try s.parseQubitRef();
-                try s.consume(';');
-                if (control == target) {
-                    s.pos = stmt_start;
-                    return s.fail("two-qubit gate on a single qubit");
+                switch (g.gate) {
+                    .h => try circ.h(q[0]),
+                    .x => try circ.x(q[0]),
+                    .y => try circ.y(q[0]),
+                    .z => try circ.z(q[0]),
+                    .sx => try circ.sx(q[0]),
+                    .rx => try circ.rx(q[0], p[0]),
+                    .ry => try circ.ry(q[0], p[0]),
+                    .rz => try circ.rz(q[0], p[0]),
+                    .u => try circ.u(q[0], p[0], p[1], p[2]),
+                    // r(θ,φ) = U(θ, -π/2+φ, π/2-φ)
+                    .r => try circ.u(q[0], p[0], -PI / 2.0 + p[1], PI / 2.0 - p[1]),
+                    .cz => try circ.cz(q[0], q[1]),
+                    .cx => try circ.cx(q[0], q[1]),
+                    .rzz => try circ.rzz(q[0], q[1], p[0]),
                 }
-                try circ.cx(control, target);
-            } else if (std.mem.eql(u8, word, "sx")) {
-                const q = try s.parseQubitRef();
-                try s.consume(';');
-                try circ.sx(q);
-            } else if (std.mem.eql(u8, word, "rzz")) {
-                try s.consume('(');
-                const theta = try s.parseExpr();
-                try s.consume(')');
-                const a = try s.parseQubitRef();
-                try s.consume(',');
-                const b = try s.parseQubitRef();
-                try s.consume(';');
-                if (a == b) {
-                    s.pos = stmt_start;
-                    return s.fail("two-qubit gate on a single qubit");
-                }
-                try circ.rzz(a, b, theta);
             } else if (std.mem.eql(u8, word, "measure")) {
                 // Leading form: `measure q;` (result discarded) or
                 // `measure q -> c;` (routed to a classical bit).
@@ -1437,7 +1358,7 @@ pub const QasmParser = struct {
                 const routed = s.pos + 1 < s.src.len and s.src[s.pos] == '-' and s.src[s.pos + 1] == '>';
                 if (!routed) s.warn(stmt_start, "measurement result is discarded");
                 s.skipToSemicolon();
-            } else if (try s.maybeAssignDefCall(circ, word)) {
+            } else if (try s.maybeAssignDefCall(circ)) {
                 // Assignment form of a `def` call, `c = NAME(args);`. The
                 // returned value isn't modeled, so only the body is expanded.
             } else if (try s.assignmentMeasure(word)) |lhs| {
@@ -1520,8 +1441,13 @@ pub const QasmParser = struct {
     // unknown gate). Dropping any of these would change the result.
     fn isUnsupportedConstruct(word: []const u8) bool {
         const kws = [_][]const u8{
-            "if",  "while", "defcal", "cal",
-            "box", "creg",  "qreg",
+            "if",
+            "while",
+            "defcal",
+            "cal",
+            "box",
+            "creg",
+            "qreg",
         };
         for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
         return false;
@@ -1536,15 +1462,28 @@ pub const QasmParser = struct {
     // omitted: at one edit they collide with too much to guess usefully.
     const Suggestion = struct { word: []const u8, hint: []const u8 };
     fn suggestStmt(comptime w: []const u8) Suggestion {
-        return .{ .word = w, .hint = "unrecognized statement; did you mean '" ++ w ++ "'?" };
+        return .{
+            .word = w,
+            .hint = "unrecognized statement; did you mean '" ++ w ++ "'?",
+        };
     }
     fn suggestGate(comptime w: []const u8, comptime hint: []const u8) Suggestion {
-        return .{ .word = w, .hint = "unknown gate; did you mean " ++ hint ++ "?" };
+        return .{
+            .word = w,
+            .hint = "unknown gate; did you mean " ++ hint ++ "?",
+        };
     }
     const suggestions = [_]Suggestion{
-        suggestStmt("qubit"),                     suggestStmt("bit"),                suggestStmt("measure"),                   suggestStmt("include"),
-        suggestGate("cx", "'cx' or 'cz'"),        suggestGate("cz", "'cx' or 'cz'"), suggestGate("rx", "'rx', 'ry', or 'rz'"), suggestGate("ry", "'rx', 'ry', or 'rz'"),
-        suggestGate("rz", "'rx', 'ry', or 'rz'"), suggestGate("sx", "'sx'"),
+        suggestStmt("qubit"),
+        suggestStmt("bit"),
+        suggestStmt("measure"),
+        suggestStmt("include"),
+        suggestGate("cx", "'cx' or 'cz'"),
+        suggestGate("cz", "'cx' or 'cz'"),
+        suggestGate("rx", "'rx', 'ry', or 'rz'"),
+        suggestGate("ry", "'rx', 'ry', or 'rz'"),
+        suggestGate("rz", "'rx', 'ry', or 'rz'"),
+        suggestGate("sx", "'sx'"),
     };
 
     // Returns a "did you mean …?" hint when `word` is within one edit of a
@@ -2115,6 +2054,57 @@ test "QasmParser steps a for loop range" {
     try std.testing.expectEqual(0, circ.gates.items[0].u.qubit);
     try std.testing.expectEqual(2, circ.gates.items[1].u.qubit);
     try std.testing.expectEqual(4, circ.gates.items[2].u.qubit);
+}
+
+test "QasmParser measures a loop-indexed qubit" {
+    // The measure operand's index is a constant expression, so a loop
+    // variable resolves per unrolled iteration.
+    const src =
+        \\qubit[3] q;
+        \\bit[3] c;
+        \\for int i in [0:2] {
+        \\    h q[i];
+        \\    measure q[i] -> c[i];
+        \\}
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(3, circ.gates.items.len);
+}
+
+test "QasmParser assigns a loop-indexed measurement" {
+    // Assignment form: the bit index on the target is a constant expression
+    // too, bounds-checked per unrolled iteration.
+    const src =
+        \\qubit[2] q;
+        \\bit[2] c;
+        \\for int i in [0:1] {
+        \\    h q[i];
+        \\    c[i] = measure q[i];
+        \\}
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    var circ = try p.parse();
+    defer circ.deinit();
+
+    try std.testing.expectEqual(2, circ.gates.items.len);
+}
+
+test "QasmParser bit-index-checks a loop-indexed measurement target" {
+    // The loop runs i up to 2, but c has only 2 bits, so the third
+    // iteration's `c[2]` is out of range.
+    const src =
+        \\qubit[3] q;
+        \\bit[2] c;
+        \\for int i in [0:2] {
+        \\    c[i] = measure q[i];
+        \\}
+    ;
+    var p = QasmParser.init(std.testing.allocator, src);
+    try std.testing.expectError(error.ParseError, p.parse());
+    try std.testing.expectEqualStrings("bit index out of range", p.reason.?);
 }
 
 test "QasmParser expands a def with classical and qubit parameters" {

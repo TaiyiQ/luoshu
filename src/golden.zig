@@ -31,6 +31,7 @@ pub const Kind = enum {
     qft5,
     cycle6,
     cyclic_aod,
+    bell_reset,
 };
 
 pub fn buildCircuit(kind: Kind, gpa: std.mem.Allocator) !circuit.Circuit {
@@ -41,6 +42,7 @@ pub fn buildCircuit(kind: Kind, gpa: std.mem.Allocator) !circuit.Circuit {
         .qft5 => buildQft5(gpa),
         .cycle6 => buildCycle6(gpa),
         .cyclic_aod => buildCyclicAod(gpa),
+        .bell_reset => buildBellReset(gpa),
     };
 }
 
@@ -83,6 +85,11 @@ pub const cases = [_]Case{
         .sequence_path = "testdata/cyclic-aod.sequence.json",
         .hardware_path = "testdata/cyclic-aod.hardware.json",
     },
+    .{
+        .kind = .bell_reset,
+        .sequence_path = "testdata/bell-reset.sequence.json",
+        .hardware_path = "testdata/bell-reset.hardware.json",
+    },
 };
 
 pub fn buildBell(gpa: std.mem.Allocator) !circuit.Circuit {
@@ -90,6 +97,21 @@ pub fn buildBell(gpa: std.mem.Allocator) !circuit.Circuit {
     errdefer c.deinit();
     try c.h(0);
     try c.cx(0, 1);
+    return c;
+}
+
+// Bell pair with a mid-circuit reset on q0. The snapshot pins the whole
+// round trip — shuttle out, readout-zone repump, shuttle home — and the
+// frame-phase zeroing: reset(0) voids q0's virtual-Z reference (pi after
+// the first H), so the trailing H fires with a different drive phase than
+// it would without the zeroing.
+pub fn buildBellReset(gpa: std.mem.Allocator) !circuit.Circuit {
+    var c = circuit.Circuit.init(gpa, 2);
+    errdefer c.deinit();
+    try c.h(0);
+    try c.cx(0, 1);
+    try c.reset(0);
+    try c.h(0);
     return c;
 }
 
@@ -188,9 +210,14 @@ pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
     try w.writeAll("[\n");
     var first = true;
     for (pipe.stages.items) |*stage| {
-        if (stage.cz_gates.items.len == 0) continue;
+        if (stage.* != .cz) continue;
 
-        const seqs = try compiler.routeStage(gpa, stage.cz_gates.items, pipe.num_qubits, null);
+        const seqs = try compiler.routeStage(
+            gpa,
+            stage.cz.items,
+            pipe.num_qubits,
+            null,
+        );
         defer {
             for (seqs) |*s| s.deinit();
             gpa.free(seqs);
@@ -276,6 +303,10 @@ test "golden: cyclic-aod" {
     try goldenCase(cases[5]);
 }
 
+test "golden: bell-reset" {
+    try goldenCase(cases[6]);
+}
+
 // Not a snapshot test: pins down that an explicit assembly handoff (a fully
 // occupied storage grid, of which qft-5 uses only its first 5 atoms) still
 // compiles to a schedule the verifier accepts.
@@ -331,6 +362,10 @@ test "qasm: bell compiles legally from testdata/bell.qasm" {
 // All six CZs land in one stage and route as a single pickup round.
 test "qasm: cyclic-aod compiles legally from testdata/cyclic-aod.qasm" {
     try qasmCompilesLegally("testdata/cyclic-aod.qasm");
+}
+
+test "qasm: reset compiles legally from testdata/reset.qasm" {
+    try qasmCompilesLegally("testdata/reset.qasm");
 }
 
 test {
