@@ -17,13 +17,13 @@ pub fn main(init: std.process.Init) !void {
 
     const opts = try cli.parseArgs(arena, init.io, init.minimal.args);
 
-    trace.enabled = opts.settings.verbose;
+    trace.enabled = opts.verbose;
 
     const cfg = arch.load(init.gpa, init.io, opts.settings.arch) catch |err|
         cli.fatal("cannot load architecture '{s}': {t}", .{ opts.settings.arch, err });
     defer cfg.deinit(init.gpa);
 
-    if (opts.settings.verbose) cfg.print();
+    if (opts.verbose) cfg.print();
 
     var asm_doc: ?assembly.Assembly = null;
     defer if (asm_doc) |a| a.deinit(init.gpa);
@@ -126,7 +126,7 @@ fn compileOne(
 
     // Circuit, stages, logical, and schedule views as tabs in one window;
     // suite runs print the metrics table instead.
-    if (opts.settings.viz and opts.jobs.len == 1)
+    if (opts.viz and opts.jobs.len == 1)
         try viz.run(init.gpa, sch, asm_doc, circ, pipeline);
 
     return metrics;

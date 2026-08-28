@@ -1,8 +1,8 @@
 # ── Options ────────────────────────────────────────────────────────
-# One key per CLI flag; commented keys fall back to built-in defaults.
+# Input options, one key per CLI flag; commented keys fall back to
+# built-in defaults. Only read when passed via `gatecomp --cfg <file>`,
+# which cannot be combined with --arch/--asm/--out.
 [options]
 # arch = "cfg/arch.toml"            # architecture TOML (the built-in default)
 # assembly = "cfg/assembly.json"    # storage occupancy from atom-rearrangement
 # out = "zig-out/bench"             # directory for per-circuit job outputs
-# viz = true                        # open the schedule visualizer (off by default)
-# verbose = true                    # trace compiler passes to stderr

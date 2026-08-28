@@ -21,6 +21,8 @@ Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule f
 > ./gatecomp ./ex/mvp/mvp.qasm --viz
 ```
 
+For an in-depth understanding, see [CLI](./doc/cli.md).
+
 ## Configuration
 
 `cfg/` holds the run configuration:
@@ -28,12 +30,25 @@ Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule f
 - `cfg/arch.toml`: the neutral-atom architecture (zones, SLM grids, AOD limits, constraints) — edit it to experiment with different geometries.
 - `cfg/assembly.json`: storage occupancy handoff from the atom-rearrangement package — edit it to experiment with different initial placements.
 
+- `cfg/settings.toml`: encodes the input options (`[options]`: `arch`, `assembly`, `out`) for `--cfg`.
+
 Everything under `cfg/` is user-editable; tests and golden snapshots pin their own copies under `testdata/`, so experiments never break the suite.
-- `cfg/settings.toml`: encodes the CLI flags (`[options]`), so a plain `gatecomp <circuit>.qasm` needs none. Command-line flags always win over settings values.
+
+Inputs come from flags or from a config file, never both:
+
+```shell
+# Flag mode: specify inputs on the command line
+> ./gatecomp circuit.qasm --arch cfg/arch.toml --out zig-out
+
+# Config mode: reference a settings TOML instead
+> ./gatecomp circuit.qasm --cfg cfg/settings.toml
+```
+
+Mixing `--cfg` with `--arch`, `--asm`, or `--out` is an error. The runtime toggles `--viz` and `-v/--verbose` are CLI-only and work in either mode. With neither flags nor `--cfg`, the built-in defaults apply.
 
 ## Benchmark
 
-Passing several circuits runs them as a suite: the visualizer stays closed, each circuit writes `<out>/<name>-schedule.json` and `<name>-bench.json` when the `out` directory is set, and a schedule-quality table prints:
+Passing several circuits runs them as a suite: the visualizer stays closed, each circuit writes [Schedule](./doc/schedule.md) and [Benchmark](./doc/benchmark.md) when the `out` directory is set, and a schedule-quality table prints:
 
 ```shell
 > ./gatecomp ex/graph/*.qasm --out zig-out
