@@ -54,7 +54,7 @@ const Store = struct {
     position: Point,
 };
 
-const Move = struct {
+pub const Move = struct {
     qubit: u32,
     src: Point,
     dest: Point,

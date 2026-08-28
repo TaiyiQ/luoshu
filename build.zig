@@ -116,6 +116,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/serialize.zig"),
         .target = target,
     });
+    serialize_mod.addImport("arch", arch_mod);
     serialize_mod.addImport("schedule", schedule_mod);
     serialize_mod.addImport("bench", bench_mod);
     exe.root_module.addImport("serialize", serialize_mod);

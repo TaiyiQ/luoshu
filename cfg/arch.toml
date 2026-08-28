@@ -10,7 +10,7 @@
 # ── Platform identity ──────────────────────────────────────────
 [platform]
 name = "arch-default"
-version = "0.1"
+version = "0.2"
 
 # ── Single AOD array ───────────────────────────────────────────
 # One AOD is sufficient for MVP — add aod_id = 1 later for
