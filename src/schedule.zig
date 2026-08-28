@@ -997,7 +997,7 @@ test "bestColOffset lands the block above its atoms" {
         .{ .id = 1, .pos = .{ .x = 6200, .y = 0 } },
     };
     const off = bestColOffset(grid, 2, &.{ 0, 1 }, &.{ 0, 1 }, &placement);
-    try std.testing.expectEqual(@as(usize, 5), off);
+    try std.testing.expectEqual(5, off);
 }
 
 test "bestColOffset minimizes the worst atom's walk" {
@@ -1033,7 +1033,7 @@ test "bestColOffset clamps the block to the grid" {
         .{ .id = 0, .pos = .{ .x = 20_000, .y = 0 } },
     };
     const off = bestColOffset(grid, 9, &.{0}, &.{0}, &placement);
-    try std.testing.expectEqual(@as(usize, 1), off);
+    try std.testing.expectEqual(1, off);
 }
 
 test "init rejects more qubits than loading-window sites" {

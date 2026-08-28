@@ -418,7 +418,7 @@ test "routeStage gates every stage edge exactly once across rounds" {
         for (gates.items) |gate| {
             const lo: usize = @min(gate.control, gate.target);
             const hi: usize = @max(gate.control, gate.target);
-            try std.testing.expectEqual(@as(usize, 1), fired[lo * g.n + hi]);
+            try std.testing.expectEqual(1, fired[lo * g.n + hi]);
         }
 
         var total: usize = 0;
