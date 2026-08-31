@@ -854,14 +854,11 @@ fn fitsWithin(xs: []const i32, free: []const i32, bound: i64, dest: ?[]i32) bool
     // Visit each atom left to right; i is its site in dest.
     for (xs, 0..) |x, i| {
 
-        // Skip spots that are out of reach; stop at the first spot within bound.
-        // Columns are sorted: once past x, they only get farther.
-        while (j < free.len and @abs(x - free[j]) > bound) : (j += 1) {
-            if (free[j] > x) return false;
-        }
+        // Columns too far left can't serve this atom or any later one.
+        while (j < free.len and x - free[j] > bound) j += 1;
 
-        // No usable spot left for this atom.
-        if (j == free.len) return false;
+        // The first surviving column must be within reach to the right.
+        if (j == free.len or free[j] - x > bound) return false;
 
         // Site found.
         if (dest) |d| d[i] = free[j];
