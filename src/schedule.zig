@@ -713,19 +713,22 @@ pub const Hardware = struct {
 
         if (ord.len == 0) return register;
 
-        // Pick up the first atom in place.
+        // Loads accumulate in one frame until the register must move:
+        // A run of same-row rightward pickups is a single parallel load phase.
         try s.loadAtom(&s.placement[ord[0]]);
         try register.append(s.gpa, &s.placement[ord[0]]);
-        s.step();
 
         var front = s.placement[ord[0]].pos;
 
         for (ord[1..]) |q| {
             const next = s.placement[q].pos;
 
-            // Advancing rightward along the row needs no traversal: the
-            // register always parks left of the last pickup, so the atom loads in place.
+            // Advancing rightward along the row needs no traversal:
+            // The register always parks left of the last pickup,
+            // so the atom loads in the order required in the compute zone.
             if (next.y != front.y or next.x < front.x) {
+                s.step();
+
                 for (register.items) |a| try s.moveAtom(a, 0, -d);
                 s.step();
 
@@ -737,10 +740,10 @@ pub const Hardware = struct {
 
             try s.loadAtom(&s.placement[q]);
             try register.append(s.gpa, &s.placement[q]);
-            s.step();
 
             front = next;
         }
+        s.step();
 
         // Stage the register in the trap-free band past the bottom storage
         // row. From the bottom row that is a plain drop; from any other row
