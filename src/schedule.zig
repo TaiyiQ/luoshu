@@ -315,11 +315,7 @@ pub const Hardware = struct {
         try s.compressToStorage(qubits);
     }
 
-    // Final legs of any return trip: from the inter-zone corridor, atoms
-    // move to sequential storage columns in left-to-right order — skipping
-    // columns already occupied by atoms that stayed in the storage zone —
-    // then drop to the bottom storage row and emit a Store op to mark each
-    // atom as back in the SLM (no longer in the AOD).
+    // Atoms come home to the nearest free columns instead of packing the left edge.
     fn compressToStorage(s: *Hardware, qubits: []const usize) !void {
         const sgrid = s.cfg.storage_zone.grid();
         const y_storage_bottom = sgrid.bottomRowY();
@@ -327,14 +323,27 @@ pub const Hardware = struct {
         var occ = try occupiedStorageX(s.gpa, qubits, s.placement, y_storage_bottom);
         defer occ.deinit();
 
-        var col: usize = 0;
-        for (qubits) |q| {
-            while (occ.contains(sgrid.x(col))) col += 1;
+        var free: std.ArrayList(i32) = .empty;
+        defer free.deinit(s.gpa);
 
+        for (0..sgrid.num_col) |col| {
+            const cx = sgrid.x(col);
+            if (!occ.contains(cx)) try free.append(s.gpa, cx);
+        }
+
+        if (free.items.len < qubits.len) return error.StorageRowFull;
+
+        const xs = try s.gpa.alloc(i32, qubits.len);
+        defer s.gpa.free(xs);
+
+        for (qubits, xs) |q, *x| x.* = s.placement[q].pos.x;
+
+        const dest = try assignNearestColumns(s.gpa, xs, free.items);
+        defer s.gpa.free(dest);
+
+        for (qubits, dest) |q, dest_x| {
             const a = &s.placement[q];
-            const dest_x = sgrid.x(col);
             if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
-            col += 1;
         }
         s.step();
 
@@ -831,6 +840,109 @@ fn occupiedStorageX(
     }
 
     return occ;
+}
+
+// Can every atom take an unused free column within `bound`?
+// Two-pointer technique.
+fn fitsWithin(xs: []const i32, free: []const i32, bound: i64, dest: ?[]i32) bool {
+
+    // Free site pointer (j):
+    // Index of the first free column not yet taken.
+    var j: usize = 0;
+
+    // Atom pointer (i):
+    // Visit each atom left to right; i is its site in dest.
+    for (xs, 0..) |x, i| {
+
+        // Columns too far left can't serve this atom or any later one.
+        while (j < free.len and x - free[j] > bound) j += 1;
+
+        // The first surviving column must be within reach to the right.
+        if (j == free.len or free[j] - x > bound) return false;
+
+        // Site found.
+        if (dest) |d| d[i] = free[j];
+
+        // Site consumed: next atom starts looking one to the right.
+        j += 1;
+    }
+
+    return true;
+}
+
+// Assignment of x-sorted atoms onto sorted free column
+// positions, minimizing the worst displacement.
+// Binary-search finds the optimal bound and the same
+// greedy sweep that checks it builds the witness.
+fn assignNearestColumns(
+    gpa: std.mem.Allocator,
+    xs: []const i32,
+    free: []const i32,
+) ![]i32 {
+    const dest = try gpa.alloc(i32, xs.len);
+    errdefer gpa.free(dest);
+
+    if (xs.len == 0) return dest;
+
+    // Corner distances defines the upper bound.
+    var lo: i64 = 0;
+    var hi: i64 = @max(
+        @abs(xs[0] - free[free.len - 1]),
+        @abs(xs[xs.len - 1] - free[0]),
+    );
+
+    while (lo < hi) {
+        const mid = lo + @divTrunc(hi - lo, 2);
+        if (fitsWithin(xs, free, mid, null)) hi = mid else lo = mid + 1;
+    }
+
+    const ok = fitsWithin(xs, free, lo, dest);
+    std.debug.assert(ok);
+
+    return dest;
+}
+
+test "assignNearestColumns keeps right-side atoms on the right" {
+    const gpa = std.testing.allocator;
+
+    const dest = try assignNearestColumns(
+        gpa,
+        &.{ 60_000, 71_000 },
+        &.{ 0, 1000, 60_000, 62_000, 70_000 },
+    );
+    defer gpa.free(dest);
+
+    try std.testing.expectEqualSlices(i32, &.{ 60_000, 70_000 }, dest);
+}
+
+test "assignNearestColumns trades one atom's slack for the worst case" {
+    const gpa = std.testing.allocator;
+
+    // Nearest-per-atom would give atom 0 the column at 9 and push atom 1
+    // to 30 (worst 20); the minimax split is 8 -> 0, 10 -> 9 (worst 8).
+    const dest = try assignNearestColumns(
+        gpa,
+        &.{ 8, 10 },
+        &.{ 0, 9, 30 },
+    );
+    defer gpa.free(dest);
+
+    try std.testing.expectEqualSlices(i32, &.{ 0, 9 }, dest);
+}
+
+test "assignNearestColumns fills an exact fit across an occupied gap" {
+    const gpa = std.testing.allocator;
+
+    // Atom 3000 sits on a free column but must
+    // cede it to atom 2000 and shift right.
+    const dest = try assignNearestColumns(
+        gpa,
+        &.{ 1000, 2000, 3000 },
+        &.{ 1000, 3000, 4000 },
+    );
+    defer gpa.free(dest);
+
+    try std.testing.expectEqualSlices(i32, &.{ 1000, 3000, 4000 }, dest);
 }
 
 test "init rejects more qubits than loading-window sites" {
