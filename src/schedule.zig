@@ -842,7 +842,7 @@ fn occupiedStorageX(
 
 // Can every atom take an unused free column within `bound`?
 // Two-pointer technique.
-fn fitsWithin(xs: []const i32, free: []const i32, bound: i64, dest: ?[]i32) bool {
+fn fitsWithin(xs: []const i32, free: []const i32, bound: i32, dest: ?[]i32) bool {
 
     // Free site pointer (j):
     // Index of the first free column not yet taken.
@@ -883,11 +883,11 @@ fn assignNearestColumns(
     if (xs.len == 0) return dest;
 
     // Corner distances defines the upper bound.
-    var lo: i64 = 0;
-    var hi: i64 = @max(
+    var lo: i32 = 0;
+    var hi: i32 = @intCast(@max(
         @abs(xs[0] - free[free.len - 1]),
         @abs(xs[xs.len - 1] - free[0]),
-    );
+    ));
 
     while (lo < hi) {
         const mid = lo + @divTrunc(hi - lo, 2);
