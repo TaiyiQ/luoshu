@@ -113,6 +113,10 @@ pub const Hardware = struct {
     // Current timestep. Never touch directly: emit() stamps it, step() advances it.
     t: u32 = 0,
 
+    // Column offset of the current sequence's compute block, chosen by
+    // moveSlmCompute so the block lands in the closest storage columns.
+    col_offset: usize = 0,
+
     pub fn init(
         gpa: std.mem.Allocator,
         cfg: arch.ArchConfig,
@@ -233,12 +237,20 @@ pub const Hardware = struct {
         var slots = try occupiedSlots(s.gpa, fixed);
         defer slots.deinit(s.gpa);
 
+        const grid = s.cfg.compute_zone.grid(0);
+        s.col_offset = bestColOffset(
+            grid,
+            fixed.len,
+            slots.qubits.items,
+            slots.cols.items,
+            s.placement,
+        );
+
         var register = try s.pickup(slots.qubits.items);
         defer register.deinit(s.gpa);
 
-        // Manhattan entry into compute SLM[0]'s top row
-        // Gates pack into the top-left corner, nearest the storage corridor.
-        try s.enterComputeSlm(register.items, slots.cols.items, s.cfg.compute_zone.grid(0));
+        // Manhattan entry into compute SLM[0]'s top row.
+        try s.enterComputeSlm(register.items, slots.cols.items, grid);
     }
 
     pub fn moveSlmStorage(s: *Hardware, fixed: []const ?usize) !void {
@@ -381,10 +393,7 @@ pub const Hardware = struct {
         try s.sweepMoveableRows(moveable, fixed, grid);
     }
 
-    /// Manhattan entry of a freshly picked-up register into a compute SLM:
-    /// move each atom to its target column (offset by half the column pitch
-    /// to avoid crossings), drop to the SLM's top row, then slide onto the
-    /// column and store.
+    /// Manhattan entry of a freshly picked-up register into a compute SLM.
     fn enterComputeSlm(
         s: *Hardware,
         register: []const *Atom,
@@ -395,7 +404,7 @@ pub const Hardware = struct {
 
         // Step 1: move each atom to its target column x + d
         for (register, cols) |a, col| {
-            try s.moveAtom(a, grid.x(col) - a.pos.x + d, 0);
+            try s.moveAtom(a, grid.x(col + s.col_offset) - a.pos.x + d, 0);
         }
         s.step();
 
@@ -438,7 +447,7 @@ pub const Hardware = struct {
                 if (maybe_q) |q| {
                     has_qubit = true;
                     const a = &s.placement[q];
-                    const dest_x = grid.x(i);
+                    const dest_x = grid.x(i + s.col_offset);
                     if (a.pos.x == dest_x) continue;
 
                     try s.loadAtom(a);
@@ -943,6 +952,99 @@ test "assignNearestColumns fills an exact fit across an occupied gap" {
     defer gpa.free(dest);
 
     try std.testing.expectEqualSlices(i32, &.{ 1000, 3000, 4000 }, dest);
+}
+
+// Column offset that lands a fetched compute block closest to picker up atoms:
+// Scans every legal shift of the n-slots-wide block and keeps the one minimizing
+// the worst horizontal rearrangment.
+fn bestColOffset(
+    grid: arch.Grid,
+    n_slots: usize,
+    qubits: []const usize,
+    cols: []const usize,
+    placement: []const Atom,
+) usize {
+    if (qubits.len == 0 or n_slots >= grid.num_col) return 0;
+
+    const d = grid.halfSepX();
+
+    // Closest column to move the atom from storage to compute.
+    var best: usize = 0;
+
+    // Minimal x-direction (cost) to move atom.
+    var best_cost: i64 = std.math.maxInt(i64);
+
+    for (0..grid.num_col - n_slots + 1) |c| {
+        var cost: i64 = 0;
+
+        for (qubits, cols) |q, col| {
+            const dx: i64 = @abs(grid.x(col + c) + d - placement[q].pos.x);
+            if (dx > cost) cost = dx;
+        }
+
+        // If a "closer" column if found, update
+        // the best column and cost values.
+        if (cost < best_cost) {
+            best_cost = cost;
+            best = c;
+        }
+    }
+
+    return best;
+}
+
+test "bestColOffset lands the block above its atoms" {
+    const grid = arch.Grid{
+        .origin_nm = .{ 0, 0 },
+        .sep_nm = .{ 1000, 1000 },
+        .num_row = 1,
+        .num_col = 10,
+    };
+
+    // Both atoms park near columns 5-6; packing at column 0 would walk
+    // them ~5 pitches left.
+    const placement = [_]Atom{
+        .{ .id = 0, .pos = .{ .x = 5200, .y = 0 } },
+        .{ .id = 1, .pos = .{ .x = 6200, .y = 0 } },
+    };
+    const off = bestColOffset(grid, 2, &.{ 0, 1 }, &.{ 0, 1 }, &placement);
+    try std.testing.expectEqual(@as(usize, 5), off);
+}
+
+test "bestColOffset minimizes the worst atom's walk" {
+    const grid = arch.Grid{
+        .origin_nm = .{ 0, 0 },
+        .sep_nm = .{ 1000, 1000 },
+        .num_row = 1,
+        .num_col = 10,
+    };
+
+    // The atoms pull in opposite directions: the summed walk ties at
+    // 4400 for every offset 3-7, so only the worst-case cost singles
+    // out 5, where the longer walk bottoms out at 2400.
+    const placement = [_]Atom{
+        .{ .id = 0, .pos = .{ .x = 3500, .y = 0 } },
+        .{ .id = 1, .pos = .{ .x = 8900, .y = 0 } },
+    };
+    const off = bestColOffset(grid, 2, &.{ 0, 1 }, &.{ 0, 1 }, &placement);
+    try std.testing.expectEqual(@as(usize, 5), off);
+}
+
+test "bestColOffset clamps the block to the grid" {
+    const grid = arch.Grid{
+        .origin_nm = .{ 0, 0 },
+        .sep_nm = .{ 1000, 1000 },
+        .num_row = 1,
+        .num_col = 10,
+    };
+
+    // A 9-slot block can only shift by one column, however far right
+    // the atom sits.
+    const placement = [_]Atom{
+        .{ .id = 0, .pos = .{ .x = 20_000, .y = 0 } },
+    };
+    const off = bestColOffset(grid, 9, &.{0}, &.{0}, &placement);
+    try std.testing.expectEqual(@as(usize, 1), off);
 }
 
 test "init rejects more qubits than loading-window sites" {
