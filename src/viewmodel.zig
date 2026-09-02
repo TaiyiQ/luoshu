@@ -16,30 +16,18 @@ const Point = schedule.Point;
 pub fn allSlmSites(gpa: std.mem.Allocator, layout: arch.ArchConfig) ![]const Point {
     var sites: std.ArrayList(Point) = .empty;
 
-    try appendSlmSites(gpa, &sites, layout.storage_zone.offset_nm, layout.storage_zone.slm);
-    for (layout.compute_zone.slms) |slm| {
-        try appendSlmSites(gpa, &sites, layout.compute_zone.offset_nm, slm);
+    try appendSlmSites(gpa, &sites, layout.storage_zone.grid());
+    for (0..layout.compute_zone.slms.len) |i| {
+        try appendSlmSites(gpa, &sites, layout.compute_zone.grid(i));
     }
-    try appendSlmSites(gpa, &sites, layout.readout_zone.offset_nm, layout.readout_zone.slm);
+    try appendSlmSites(gpa, &sites, layout.readout_zone.grid());
 
     return try sites.toOwnedSlice(gpa);
 }
 
-fn appendSlmSites(
-    gpa: std.mem.Allocator,
-    sites: *std.ArrayList(Point),
-    zone_offset_nm: [2]i32,
-    slm: arch.Slm,
-) !void {
-    const x0 = zone_offset_nm[0] + slm.offset_nm[0];
-    const y0 = zone_offset_nm[1] + slm.offset_nm[1];
-    const x_sep: i32 = @intCast(slm.sep_nm[0]);
-    const y_sep: i32 = @intCast(slm.sep_nm[1]);
-    for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-        try sites.append(gpa, .{
-            .x = x0 + @as(i32, @intCast(ci)) * x_sep,
-            .y = y0 + @as(i32, @intCast(ri)) * y_sep,
-        });
+fn appendSlmSites(gpa: std.mem.Allocator, sites: *std.ArrayList(Point), g: arch.Grid) !void {
+    for (0..g.num_row) |ri| for (0..g.num_col) |ci| {
+        try sites.append(gpa, .{ .x = g.x(ci), .y = g.y(ri) });
     };
 }
 

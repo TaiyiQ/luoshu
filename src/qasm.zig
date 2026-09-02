@@ -91,13 +91,13 @@ fn defaultReason(err: anyerror) []const u8 {
 pub const QasmParser = struct {
     const Register = struct {
         name: []const u8,
-        base: usize,
-        width: usize,
+        base: u32,
+        width: u32,
     };
 
     const BitReg = struct {
         name: []const u8,
-        width: usize,
+        width: u32,
     };
 
     gpa: std.mem.Allocator,
@@ -106,7 +106,7 @@ pub const QasmParser = struct {
     reg: std.ArrayList(Register),
     // Classical bit registers, tracked only to width-check measurements.
     bits: std.ArrayList(BitReg),
-    total_qubits: usize,
+    total_qubits: u32,
     saw_measure: bool,
     // A static, human-readable reason for the most recent failure, when the
     // generic error name (e.g. "ParseError") is not specific enough. `load`
@@ -171,9 +171,10 @@ pub const QasmParser = struct {
     // Clears the measured flag for `count` qubits from `base`: a `reset` returns
     // them to a fresh state, so a later operation on them must not warn as if
     // they were still measured.
-    fn unmarkMeasured(s: *QasmParser, base: u32, count: usize) void {
+    fn unmarkMeasured(s: *QasmParser, base: u32, count: u32) void {
         if (s.warn_sink == null) return;
-        for (0..count) |k| _ = s.measured.remove(base + @as(u32, @intCast(k)));
+        var q = base;
+        while (q < base + count) : (q += 1) _ = s.measured.remove(q);
     }
 
     fn isMeasured(s: *QasmParser, q: u32) bool {
@@ -272,7 +273,7 @@ pub const QasmParser = struct {
         return null;
     }
 
-    fn bitRegWidth(s: *QasmParser, name: []const u8) ?usize {
+    fn bitRegWidth(s: *QasmParser, name: []const u8) ?u32 {
         for (s.bits.items) |b| {
             if (std.mem.eql(u8, b.name, name)) return b.width;
         }
@@ -289,7 +290,7 @@ pub const QasmParser = struct {
     // qubit — a single qubit, the index a constant expression — or a whole
     // register (`q`, all its qubits). `missing` and `undeclared` name the
     // statement in the two operand diagnostics.
-    const QubitRange = struct { base: u32, count: usize };
+    const QubitRange = struct { base: u32, count: u32 };
     fn parseQubitRange(s: *QasmParser, missing: []const u8, undeclared: []const u8) !QubitRange {
         s.skipWs();
         const name = s.readIdent();
@@ -301,9 +302,9 @@ pub const QasmParser = struct {
             const idx = try s.evalIndex();
             try s.consume(']');
             if (idx >= reg.width) return s.fail("qubit index out of range");
-            return .{ .base = @intCast(reg.base + idx), .count = 1 };
+            return .{ .base = reg.base + idx, .count = 1 };
         }
-        return .{ .base = @intCast(reg.base), .count = reg.width };
+        return .{ .base = reg.base, .count = reg.width };
     }
 
     // Validates the qubit operand of a `measure`, flags that the program
@@ -313,7 +314,7 @@ pub const QasmParser = struct {
     // readout), so this is a syntax/width check plus measurement tracking; the
     // caller consumes the rest of the statement, including any `-> bit`
     // target. `stmt_at` locates warnings.
-    fn parseMeasureOperand(s: *QasmParser, stmt_at: usize) !usize {
+    fn parseMeasureOperand(s: *QasmParser, stmt_at: usize) !u32 {
         const r = try s.parseQubitRange(
             "expected a qubit to measure, e.g. `measure q;`",
             "measurement of an undeclared register",
@@ -322,8 +323,8 @@ pub const QasmParser = struct {
 
         // Track the measured qubits; warn once if any was already measured.
         var remeasured = false;
-        for (0..r.count) |k| {
-            const q = r.base + @as(u32, @intCast(k));
+        var q = r.base;
+        while (q < r.base + r.count) : (q += 1) {
             if (s.isMeasured(q)) remeasured = true;
             s.markMeasured(q);
         }
@@ -336,7 +337,7 @@ pub const QasmParser = struct {
     // count — 1 for a single bit (`c[0]`, indexed) or the declared register
     // width for a whole register (`c`) — or null when the target register was
     // not declared, so its width is unknown and the caller skips the check.
-    const MeasureLhs = struct { width: ?usize };
+    const MeasureLhs = struct { width: ?u32 };
 
     // Probes whether the current statement is `<target>[idx]? = measure ...`,
     // with the target identifier (`name`) already consumed by the caller.
@@ -347,7 +348,7 @@ pub const QasmParser = struct {
     fn assignmentMeasure(s: *QasmParser, name: []const u8) !?MeasureLhs {
         s.skipWs();
         var indexed = false;
-        var idx: usize = 0;
+        var idx: u32 = 0;
         var idx_at: usize = 0;
         // An optional index on the classical target, e.g. `c[0] = ...`.
         if (s.pos < s.src.len and s.src[s.pos] == '[') {
@@ -398,10 +399,10 @@ pub const QasmParser = struct {
                 const idx = try s.evalIndex();
                 try s.consume(']');
                 if (idx >= reg.width) return s.fail("qubit index out of range");
-                break :blk @intCast(reg.base + idx);
+                break :blk reg.base + idx;
             }
             if (reg.width != 1) return s.fail("a multi-qubit register needs an index");
-            break :blk @intCast(reg.base);
+            break :blk reg.base;
         };
         if (s.isMeasured(q)) s.warn(at, "operation on an already-measured qubit");
         return q;
@@ -493,17 +494,21 @@ pub const QasmParser = struct {
 
     // Evaluates a register width or array size: a constant expression,
     // rounded to a non-negative integer.
-    fn readWidth(s: *QasmParser) !usize {
+    fn readWidth(s: *QasmParser) !u32 {
         const v = try s.parseExpr();
         if (v < 0) return s.fail("negative register width");
+        // Negated form so NaN also lands on the error path.
+        if (!(v <= std.math.maxInt(u32))) return s.fail("register width too large");
         return @intFromFloat(@round(v));
     }
 
     // Evaluates a subscript expression (e.g. `q[2]`) to a non-negative
     // index. Negative results are rejected by the caller's bounds check.
-    fn evalIndex(s: *QasmParser) !usize {
+    fn evalIndex(s: *QasmParser) !u32 {
         const v = try s.parseExpr();
         if (v < 0) return s.fail("negative qubit index");
+        // Negated form so NaN also lands on the error path.
+        if (!(v <= std.math.maxInt(u32))) return s.fail("qubit index out of range");
         return @intFromFloat(@round(v));
     }
 
@@ -560,7 +565,7 @@ pub const QasmParser = struct {
                 // `qubit[n] q;` declares an n-wide register; `qubit q;` a
                 // single qubit.
                 s.skipWs();
-                var n: usize = 1;
+                var n: u32 = 1;
                 if (s.pos < s.src.len and s.src[s.pos] == '[') {
                     s.pos += 1;
                     n = try s.readWidth();
@@ -575,8 +580,10 @@ pub const QasmParser = struct {
                 if (s.declared(name)) {
                     s.warn(stmt_start, "register redeclared");
                 } else {
+                    const total = std.math.add(u32, s.total_qubits, n) catch
+                        return s.fail("too many qubits");
                     try s.reg.append(s.gpa, .{ .name = name, .base = s.total_qubits, .width = n });
-                    s.total_qubits += n;
+                    s.total_qubits = total;
                 }
             } else if (std.mem.eql(u8, word, "bit")) {
                 // `bit[n] c;` declares an n-wide register; `bit c;` a single
@@ -584,7 +591,7 @@ pub const QasmParser = struct {
                 // `bit b = measure q;` form also initializes it: the
                 // measurement is validated and tracked in place.
                 s.skipWs();
-                var width: usize = 1;
+                var width: u32 = 1;
                 if (s.pos < s.src.len and s.src[s.pos] == '[') {
                     s.pos += 1;
                     width = try s.readWidth();
@@ -622,8 +629,9 @@ pub const QasmParser = struct {
                 );
                 try s.consume(';');
                 s.unmarkMeasured(target.base, target.count);
-                for (0..target.count) |k|
-                    try circ.reset(target.base + @as(u32, @intCast(k)));
+                var q = target.base;
+                while (q < target.base + target.count) : (q += 1)
+                    try circ.reset(q);
             } else if (findBuiltin(word)) |g| {
                 // A built-in gate, `name(p0, …) q0, q1;` — the table's counts
                 // drive one shared parse of the angle parameters and qubit

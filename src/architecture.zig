@@ -64,7 +64,7 @@ pub const Slm = struct {
     slm_id: u32,
     num_row: u32,
     num_col: u32,
-    sep_nm: [2]u32,
+    sep_nm: [2]i32,
     offset_nm: [2]i32,
 };
 
@@ -136,10 +136,7 @@ fn slmGrid(zone_offset_nm: [2]i32, slm: Slm) Grid {
             zone_offset_nm[0] + slm.offset_nm[0],
             zone_offset_nm[1] + slm.offset_nm[1],
         },
-        .sep_nm = .{
-            @intCast(slm.sep_nm[0]),
-            @intCast(slm.sep_nm[1]),
-        },
+        .sep_nm = slm.sep_nm,
         .num_row = slm.num_row,
         .num_col = slm.num_col,
     };
@@ -380,8 +377,8 @@ pub fn validate(cfg: ArchConfig) ConfigError!void {
 fn validateSlm(zone: []const u8, slm: Slm) ConfigError!void {
     if (slm.num_row == 0 or
         slm.num_col == 0 or
-        slm.sep_nm[0] == 0 or
-        slm.sep_nm[1] == 0)
+        slm.sep_nm[0] <= 0 or
+        slm.sep_nm[1] <= 0)
     {
         cfail("{s} slm {d}: rows, cols, and separations must be positive", .{ zone, slm.slm_id });
         return error.InvalidSlmGrid;
@@ -424,8 +421,8 @@ fn convertSlm(raw: RawSlm) Slm {
         .num_row = raw.num_row,
         .num_col = raw.num_col,
         .sep_nm = .{
-            umToNm(raw.sep_um[0]),
-            umToNm(raw.sep_um[1]),
+            umToNmSigned(raw.sep_um[0]),
+            umToNmSigned(raw.sep_um[1]),
         },
         .offset_nm = .{
             umToNmSigned(raw.offset_um[0]),
@@ -438,7 +435,7 @@ fn convertSlm(raw: RawSlm) Slm {
 fn lastRowY(zone_y: i32, slms: []const Slm) i32 {
     var last = zone_y;
     for (slms, 0..) |slm, i| {
-        const span = @as(i32, @intCast(slm.num_row -| 1)) * @as(i32, @intCast(slm.sep_nm[1]));
+        const span = @as(i32, @intCast(slm.num_row -| 1)) * slm.sep_nm[1];
         const y = zone_y + slm.offset_nm[1] + span;
         last = if (i == 0) y else @max(last, y);
     }
