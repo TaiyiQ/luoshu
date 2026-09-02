@@ -7,6 +7,22 @@ const std = @import("std");
 const rl = @import("raylib");
 const viewmodel = @import("viewmodel");
 
+const circuit_model = @import("circuit");
+fn uLabel(kind: circuit_model.UKind) [:0]const u8 {
+    return switch (kind) {
+        .h => "H",
+        .x => "X",
+        .y => "Y",
+        .z => "Z",
+        .sx => "SX",
+        .rx => "Rx",
+        .ry => "Ry",
+        .rz => "Rz",
+        .u => "U",
+        .r => "R",
+    };
+}
+
 const common = @import("common.zig");
 const palette = common.palette;
 const drawTextCentered = common.drawTextCentered;
@@ -111,7 +127,7 @@ pub const CircuitView = struct {
                     font,
                     lg.col,
                     g.qubit,
-                    "U",
+                    uLabel(g.kind),
                     palette.accent,
                     box,
                     fs,

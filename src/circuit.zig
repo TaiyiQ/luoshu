@@ -7,7 +7,21 @@ const std = @import("std");
 
 const PI = std.math.pi;
 
+pub const UKind = enum {
+    h,
+    x,
+    y,
+    z,
+    sx,
+    rx,
+    ry,
+    rz,
+    u,
+    r,
+};
+
 pub const U = struct {
+    kind: UKind = .u, // specific type of U gate, by default the generic U(θ, φ, λ) gate.
     qubit: u32,
     theta: f64,
     phi: f64,
@@ -150,40 +164,92 @@ pub const Circuit = struct {
     }
 
     pub fn h(s: *Circuit, q: u32) !void {
-        try s.u(q, PI / 2.0, 0.0, PI);
+        try s.u(.{
+            .kind = .h,
+            .qubit = q,
+            .theta = PI / 2.0,
+            .phi = 0.0,
+            .lambda = PI,
+        });
     }
 
     pub fn x(s: *Circuit, q: u32) !void {
-        try s.u(q, PI, 0.0, PI);
+        try s.u(.{
+            .kind = .x,
+            .qubit = q,
+            .theta = PI,
+            .phi = 0.0,
+            .lambda = PI,
+        });
     }
 
     pub fn y(s: *Circuit, q: u32) !void {
-        try s.u(q, PI, PI / 2.0, PI / 2.0);
+        try s.u(.{
+            .kind = .y,
+            .qubit = q,
+            .theta = PI,
+            .phi = PI / 2.0,
+            .lambda = PI / 2.0,
+        });
     }
 
     pub fn z(s: *Circuit, q: u32) !void {
-        try s.u(q, 0.0, 0.0, PI);
+        try s.u(.{
+            .kind = .z,
+            .qubit = q,
+            .theta = 0.0,
+            .phi = 0.0,
+            .lambda = PI,
+        });
     }
 
     pub fn rx(s: *Circuit, q: u32, theta: f64) !void {
-        try s.u(q, theta, -PI / 2.0, PI / 2.0);
+        try s.u(.{
+            .kind = .rx,
+            .qubit = q,
+            .theta = theta,
+            .phi = -PI / 2.0,
+            .lambda = PI / 2.0,
+        });
     }
 
     pub fn ry(s: *Circuit, q: u32, theta: f64) !void {
-        try s.u(q, theta, 0.0, 0.0);
+        try s.u(.{
+            .kind = .ry,
+            .qubit = q,
+            .theta = theta,
+            .phi = 0.0,
+            .lambda = 0.0,
+        });
     }
 
     pub fn rz(s: *Circuit, q: u32, angle: f64) !void {
-        try s.u(q, 0.0, 0.0, angle);
+        try s.u(.{
+            .kind = .rz,
+            .qubit = q,
+            .theta = 0.0,
+            .phi = 0.0,
+            .lambda = angle,
+        });
     }
 
-    pub fn u(s: *Circuit, q: u32, theta: f64, phi: f64, lambda: f64) !void {
-        try s.gates.append(s.gpa, .{ .u = .{
+    pub fn u(s: *Circuit, gate: U) !void {
+        try s.gates.append(s.gpa, .{ .u = gate });
+    }
+
+    pub fn r(
+        s: *Circuit,
+        q: u32,
+        theta: f64,
+        phi: f64,
+    ) !void {
+        try s.u(.{
+            .kind = .r,
             .qubit = q,
             .theta = theta,
-            .phi = phi,
-            .lambda = lambda,
-        } });
+            .phi = -PI / 2.0 + phi,
+            .lambda = PI / 2.0 - phi,
+        });
     }
 
     pub fn cz(s: *Circuit, control: u32, target: u32) !void {
@@ -212,7 +278,13 @@ pub const Circuit = struct {
     }
 
     pub fn sx(s: *Circuit, q: u32) !void {
-        try s.u(q, PI / 2.0, -PI / 2.0, PI / 2.0);
+        try s.u(.{
+            .kind = .sx,
+            .qubit = q,
+            .theta = PI / 2.0,
+            .phi = -PI / 2.0,
+            .lambda = PI / 2.0,
+        });
     }
 };
 
