@@ -1,6 +1,6 @@
 {
   "version": "1.1",
-  "platform": "taiyi-v1",
+  "platform": "arch-default",
   "num_qubits": 2,
   "ops": [
     {

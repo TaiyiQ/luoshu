@@ -50,18 +50,12 @@ build_binaries() {
 }
 
 min_ns() { # <binary> <circuit> <json-out>
-    local i old stem
+    local i stem
     stem=$(basename "$2" .qasm)
-    # Pre-merge binaries take --bench <file>; current ones --out <dir>.
-    old=$("$1" -h 2>&1 | grep -c -- '--bench ' || true)
 
     for ((i = 0; i < RUNS; i++)); do
-        if [[ $old -gt 0 ]]; then
-            "$1" "$2" --bench "$3" 2>/dev/null
-        else
-            "$1" "$2" --out "$AB" 2>/dev/null
-            mv "$AB/$stem-bench.json" "$3"
-        fi
+        "$1" "$2" --out "$AB" 2>/dev/null
+        mv "$AB/$stem-bench.json" "$3"
         jq .compile_ns "$3"
     done | sort -n | head -1
 }

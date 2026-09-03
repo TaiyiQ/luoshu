@@ -4,7 +4,7 @@
 
 ## Semantics
 
-- **Time is Logical**: `t` is a frame index, not a physical time. All ops sharing one `t` execute simultaneously; within a frame, array order applies. hysical durations are the pulse compiler's job.
+- **Time is Logical**: `t` is a frame index, not a physical time. All ops sharing one `t` execute simultaneously; within a frame, array order applies. Physical durations are the pulse compiler's job.
 - **Units**: Positions are absolute integer **nanometers**. Angles and phases are **radians**.
 - **Geometry is External**: Trap grids, zone extents, and AOD limits live in the architecture TOML (`cfg/arch.toml`).
 - **Zones**: `"storage"`, `"compute"`, `"readout"`, plus `"transit"` for move endpoints staged in the trap-free gaps between zones.

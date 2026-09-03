@@ -53,17 +53,10 @@ build_binaries() {
 }
 
 bench_json() { # <binary> <circuit> <json-out>
-    local old stem
+    local stem
     stem=$(basename "$2" .qasm)
-    # Pre-merge binaries take --bench <file>; current ones --out <dir>.
-    old=$("$1" -h 2>&1 | grep -c -- '--bench ' || true)
-
-    if [[ $old -gt 0 ]]; then
-        "$1" "$2" --bench "$3" 2>/dev/null
-    else
-        "$1" "$2" --out "$AB" 2>/dev/null
-        mv "$AB/$stem-bench.json" "$3"
-    fi
+    "$1" "$2" --out "$AB" 2>/dev/null
+    mv "$AB/$stem-bench.json" "$3"
 }
 
 run_bench() {

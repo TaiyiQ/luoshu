@@ -1,4 +1,6 @@
 zig-out/
 zig-pkg/
 .zig-cache/
+.jj/
+.DS_Store
 gatecomp

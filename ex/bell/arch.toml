@@ -9,7 +9,7 @@
 
 # ── Platform identity ──────────────────────────────────────────
 [platform]
-name = "taiyi-v1"
+name = "arch-default"
 version = "0.1"
 
 # ── Single AOD array ───────────────────────────────────────────
