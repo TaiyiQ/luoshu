@@ -4,14 +4,15 @@ Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule f
 
 ## Requirements
 
-- [zig](https://ziglang.org/)
-- [just](https://github.com/casey/just)
+- [zig](https://ziglang.org/) 0.16.0 or newer
+- [just](https://github.com/casey/just) — optional; every recipe maps to a plain `zig build` command
+- [jq](https://jqlang.org/) — only for the `script/bench-*.sh` A/B benchmarks
 
 ## Usage
 
 - Quick start leveraging defaults.
 ```shell
-# Build the binary
+# Build the binary (or: zig build && cp zig-out/bin/gatecomp .)
 > just build
 
 # Run the CLI with help options
@@ -63,6 +64,10 @@ ex/graph/graph-90-9.qasm      90     392      135/135      13/6     10.38     23
 -----------------------------------------------------------------------------------------------------------------------
 5 circuits                                    390/390     54/28               58910.0     11440.0   70360.8      111.74
 ```
+
+## Testing
+
+`just test` (or `zig build test --summary all`) runs the suite. Compiler output is compared byte-for-byte against golden snapshots in `testdata/`, so an intentional output change fails the suite until the goldens are regenerated with `just update` — review the resulting `testdata/` diff as part of the change.
 
 ## License
 

@@ -8,8 +8,8 @@
 #
 # ReleaseFast binaries; the baseline builds once in a throwaway git
 # worktree and is cached per commit in zig-out/ab/. Time = min
-# compile_ns over RUNS. Mem = peak memory footprint (/usr/bin/time -l),
-# one run. Positive % = new binary is better. Flags any circuit whose
+# compile_ns over RUNS. Mem = peak RSS via /usr/bin/time (-l on macOS,
+# -v elsewhere), one run. Positive % = new binary is better. Flags any circuit whose
 # bench JSON (minus compile_ns) differs between the two binaries; use
 # script/bench-hardware.sh to quantify a flagged difference.
 
@@ -61,8 +61,14 @@ min_ns() { # <binary> <circuit> <json-out>
 }
 
 peak_mem() { # <binary> <circuit> -> bytes
-    /usr/bin/time -l "$1" "$2" 2>&1 >/dev/null |
-        awk '/peak memory footprint/ {print $1}'
+    # macOS/BSD time reports bytes with -l; GNU time reports kbytes with -v.
+    if [[ $(uname -s) == Darwin ]]; then
+        /usr/bin/time -l "$1" "$2" 2>&1 >/dev/null |
+            awk '/peak memory footprint/ {print $1}'
+    else
+        /usr/bin/time -v "$1" "$2" 2>&1 >/dev/null |
+            awk '/Maximum resident set size/ {print $NF * 1024}'
+    fi
 }
 
 run_bench() {
