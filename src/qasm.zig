@@ -664,7 +664,6 @@ pub const QasmParser = struct {
                         .phi = p[1],
                         .lambda = p[2],
                     }),
-                    // r(θ,φ) = U(θ, -π/2+φ, π/2-φ)
                     .r => try circ.r(q[0], p[0], p[1]),
                     .cz => try circ.cz(q[0], q[1]),
                     .cx => try circ.cx(q[0], q[1]),

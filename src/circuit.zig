@@ -20,8 +20,9 @@ pub const UKind = enum {
     r,
 };
 
+// specific type of U gate, by default the generic U gate.
 pub const U = struct {
-    kind: UKind = .u, // specific type of U gate, by default the generic U(θ, φ, λ) gate.
+    kind: UKind = .u,
     qubit: u32,
     theta: f64,
     phi: f64,
