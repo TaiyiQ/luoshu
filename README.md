@@ -1,12 +1,16 @@
+<p align="center">
+  <img src="doc/logo.svg" alt="Neutral Atom Gate Compiler" width="600">
+</p>
+
 # Gate Compiler
 
-Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule for a neutral-atom quantum computer - native U/CZ transpilation, qubit routing, and atom-move / pulse scheduling.
+Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule for a neutral-atom quantum computer. Native gate transpilation, qubit routing, and atom-move / pulse scheduling.
 
 ## Requirements
 
-- [zig](https://ziglang.org/) 0.16.0 or newer
-- [just](https://github.com/casey/just) — optional; every recipe maps to a plain `zig build` command
-- [jq](https://jqlang.org/) — only for the `script/bench-*.sh` A/B benchmarks
+- [zig](https://ziglang.org/): `>= 0.16.0`
+- [just](https://github.com/casey/just) (optional): Every recipe maps to a plain `zig build` command
+- [jq](https://jqlang.org/) (optional): Only for the `script/bench-*.sh` AB benchmarks
 
 ## Usage
 
@@ -28,20 +32,23 @@ For an in-depth understanding, see [CLI](./doc/cli.md).
 
 `cfg/` holds the run configuration:
 
-- `cfg/arch.toml`: the neutral-atom architecture (zones, SLM grids, AOD limits, constraints) — edit it to experiment with different geometries.
-- `cfg/assembly.json`: storage occupancy handoff from the atom-rearrangement package — edit it to experiment with different initial placements.
-
-- `cfg/settings.toml`: encodes the input options (`[options]`: `arch`, `assembly`, `out`) for `--cfg`.
+- `cfg/arch.toml`: The neutral-atom architecture (zones, SLM grids, AOD limits, constraints).
+    - Edit it to experiment with different geometries.
+- `cfg/assembly.json`: Storage occupancy handoff from the atom-rearrangement package.
+    - Edit it to experiment with different initial placements.
+- `cfg/settings.toml`: Encodes the input options (`[options]`: `arch`, `assembly`, `out`) for `--cfg`.
 
 Everything under `cfg/` is user-editable; tests and golden snapshots pin their own copies under `testdata/`, so experiments never break the suite.
 
 Inputs come from flags or from a config file, never both:
 
 ```shell
-# Flag mode: specify inputs on the command line
+# Flag Mode:
+# Specify inputs on the command line
 > ./gatecomp circuit.qasm --arch cfg/arch.toml --out zig-out
 
-# Config mode: reference a settings TOML instead
+# Config Mode:
+# Reference a settings TOML instead
 > ./gatecomp circuit.qasm --cfg cfg/settings.toml
 ```
 
