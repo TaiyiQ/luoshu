@@ -56,6 +56,8 @@ Mixing `--cfg` with `--arch`, `--asm`, or `--out` is an error. The runtime toggl
 
 ## Benchmark
 
+For a comparison against MQT QMAP's NALAC compiler on the MQT Bench 20-qubit suite - see the [benchmark report](./doc/nalac-benchmark.md).
+
 Passing several circuits runs them as a suite: the visualizer stays closed, each circuit writes [Schedule](./doc/schedule.md) and [Benchmark](./doc/benchmark.md) when the `out` directory is set, and a schedule-quality table prints:
 
 ```shell
