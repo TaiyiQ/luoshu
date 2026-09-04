@@ -142,18 +142,20 @@ pub fn build(b: *std.Build) void {
     verify_mod.addImport("trace", trace_mod);
     exe.root_module.addImport("verify", verify_mod);
 
-    // Golden tests over the full pipeline: circuit -> Sequence/Hardware JSON,
-    // compared byte-for-byte against testdata/ snapshots.
+    // Golden tests over the full pipeline: verify + CZ coverage per case,
+    // bench metrics against testdata/metrics.json, and the bell/bell-reset
+    // Hardware JSON byte-pinned as the serialization contract.
     const golden_mod = b.createModule(.{
         .root_source_file = b.path("src/golden.zig"),
         .target = target,
     });
     golden_mod.addImport("arch", arch_mod);
     golden_mod.addImport("assembly", assembly_mod);
-    golden_mod.addImport("route", route_mod);
+    golden_mod.addImport("bench", bench_mod);
     golden_mod.addImport("circuit", circuit_mod);
     golden_mod.addImport("qasm", qasm_mod);
     golden_mod.addImport("compiler", compiler_mod);
+    golden_mod.addImport("schedule", schedule_mod);
     golden_mod.addImport("serialize", serialize_mod);
     golden_mod.addImport("verify", verify_mod);
 
