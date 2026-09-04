@@ -217,9 +217,9 @@ pub const Table = struct {
         .{ .header = "cz", .w = 11 },
         .{ .header = "colors", .w = 8 },
         .{ .header = "cz/pulse", .w = 8 },
-        .{ .header = "shuttle_us", .w = 10 },
-        .{ .header = "loading_us", .w = 10 },
-        .{ .header = "total_us", .w = 8 },
+        .{ .header = "shuttle_ms", .w = 10 },
+        .{ .header = "load_ms", .w = 10 },
+        .{ .header = "route_ms", .w = 8 },
         .{ .header = "compile_ms", .w = 10 },
     };
 
@@ -241,7 +241,7 @@ pub const Table = struct {
         max_degree: usize = 0,
         shuttling_us: f64 = 0,
         loading_us: f64 = 0,
-        total_us: f64 = 0,
+        routing_us: f64 = 0,
         compile_ns: u64 = 0,
 
         pub fn add(t: *Totals, m: Metrics) void {
@@ -252,7 +252,7 @@ pub const Table = struct {
             t.max_degree += m.max_degree orelse 0;
             t.shuttling_us += m.shuttling_us;
             t.loading_us += m.loading_us;
-            t.total_us += m.totalUs();
+            t.routing_us += m.routingUs();
             t.compile_ns += m.compile_ns orelse 0;
         }
     };
@@ -277,9 +277,9 @@ pub const Table = struct {
             fmtCell(&bufs[2], "{d}/{d}", .{ m.cz_pairs, m.cz_requested orelse 0 }),
             fmtCell(&bufs[3], "{d}/{d}", .{ m.colors orelse 0, m.max_degree orelse 0 }),
             fmtCell(&bufs[4], "{d:.2}", .{m.avgCzPerPulse()}),
-            fmtCell(&bufs[5], "{d:.1}", .{m.shuttling_us}),
-            fmtCell(&bufs[6], "{d:.1}", .{m.loading_us}),
-            fmtCell(&bufs[7], "{d:.1}", .{m.totalUs()}),
+            fmtCell(&bufs[5], "{d:.1}", .{usToMs(m.shuttling_us)}),
+            fmtCell(&bufs[6], "{d:.1}", .{usToMs(m.loading_us)}),
+            fmtCell(&bufs[7], "{d:.1}", .{usToMs(m.routingUs())}),
             fmtCell(&bufs[8], "{d:.2}", .{compileMs(m.compile_ns orelse 0)}),
         });
     }
@@ -294,9 +294,9 @@ pub const Table = struct {
             fmtCell(&bufs[2], "{d}/{d}", .{ sum.cz_pairs, sum.cz_requested }),
             fmtCell(&bufs[3], "{d}/{d}", .{ sum.colors, sum.max_degree }),
             "",
-            fmtCell(&bufs[5], "{d:.1}", .{sum.shuttling_us}),
-            fmtCell(&bufs[6], "{d:.1}", .{sum.loading_us}),
-            fmtCell(&bufs[7], "{d:.1}", .{sum.total_us}),
+            fmtCell(&bufs[5], "{d:.1}", .{usToMs(sum.shuttling_us)}),
+            fmtCell(&bufs[6], "{d:.1}", .{usToMs(sum.loading_us)}),
+            fmtCell(&bufs[7], "{d:.1}", .{usToMs(sum.routing_us)}),
             fmtCell(&bufs[8], "{d:.2}", .{compileMs(sum.compile_ns)}),
         });
     }
@@ -322,6 +322,10 @@ pub const Table = struct {
 
     fn compileMs(ns: u64) f64 {
         return @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms;
+    }
+
+    fn usToMs(us: f64) f64 {
+        return us / std.time.us_per_ms;
     }
 };
 
