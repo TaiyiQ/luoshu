@@ -1,6 +1,7 @@
 //! Regenerates every golden snapshot in testdata/: the route-level Sequence
-//! snapshots (graph -> route.computeSequence -> JSON) and the circuit-level goldens
-//! (circuit -> Sequence JSON per stage, and -> Hardware JSON).
+//! snapshots (graph -> route.computeSequence -> JSON), the metrics golden
+//! (one line of bench numbers per circuit), and the two byte-pinned
+//! Hardware JSON files that pin the serialization format.
 //!
 //! Run via `zig build update-snapshots`, then review the diff with git.
 const std = @import("std");
@@ -25,15 +26,19 @@ pub fn main(init: std.process.Init) !void {
     const cfg = try arch.load(gpa, io, golden.arch_path);
     defer cfg.deinit(gpa);
 
-    // caseJson runs the verifier, so an illegal schedule can never be
-    // blessed as a golden baseline.
+    // runCase verifies the schedule and checks CZ coverage, so an illegal
+    // or lossy schedule can never be blessed as a baseline.
     for (golden.cases) |case| {
-        const json = try golden.caseJson(gpa, cfg, case);
-        defer gpa.free(json.seq);
-        defer gpa.free(json.hw);
+        const path = case.hardware_path orelse continue;
+        const res = try golden.runCase(gpa, cfg, case.kind);
+        defer gpa.free(res.hw_json);
 
-        try serialize.writeJsonFile(io, case.sequence_path, json.seq);
-        try serialize.writeJsonFile(io, case.hardware_path, json.hw);
-        std.debug.print("wrote {s}\nwrote {s}\n", .{ case.sequence_path, case.hardware_path });
+        try serialize.writeJsonFile(io, path, res.hw_json);
+        std.debug.print("wrote {s}\n", .{path});
     }
+
+    const json = try golden.metricsJson(gpa, cfg);
+    defer gpa.free(json);
+    try serialize.writeJsonFile(io, golden.metrics_path, json);
+    std.debug.print("wrote {s}\n", .{golden.metrics_path});
 }

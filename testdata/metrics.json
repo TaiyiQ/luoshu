@@ -1,0 +1,9 @@
+{
+  "bell": { "qubits": 2, "frames": 30, "load": 5, "store": 5, "move": 28, "rydberg": 1, "raman": 3, "measure": 1, "reset": 0, "cz_pairs": 1, "cz_requested": 1, "colors": 1, "max_degree": 1, "total_move_nm": 585000.0, "max_move_nm": 142000.0, "total_us": 805.655 },
+  "ghz-3": { "qubits": 3, "frames": 51, "load": 9, "store": 9, "move": 50, "rydberg": 2, "raman": 5, "measure": 1, "reset": 0, "cz_pairs": 2, "cz_requested": 2, "colors": 2, "max_degree": 2, "total_move_nm": 923000.0, "max_move_nm": 142000.0, "total_us": 1134.945 },
+  "grid": { "qubits": 9, "frames": 42, "load": 22, "store": 22, "move": 159, "rydberg": 6, "raman": 0, "measure": 1, "reset": 0, "cz_pairs": 12, "cz_requested": 12, "colors": 6, "max_degree": 4, "total_move_nm": 3643000.0, "max_move_nm": 142000.0, "total_us": 1330.291 },
+  "qft-5": { "qubits": 5, "frames": 104, "load": 29, "store": 29, "move": 147, "rydberg": 10, "raman": 5, "measure": 1, "reset": 0, "cz_pairs": 10, "cz_requested": 10, "colors": 10, "max_degree": 10, "total_move_nm": 2110000.0, "max_move_nm": 142000.0, "total_us": 2022.000 },
+  "cycle-6": { "qubits": 6, "frames": 36, "load": 15, "store": 15, "move": 92, "rydberg": 3, "raman": 0, "measure": 1, "reset": 0, "cz_pairs": 6, "cz_requested": 6, "colors": 3, "max_degree": 2, "total_move_nm": 1900000.0, "max_move_nm": 142000.0, "total_us": 974.236 },
+  "cyclic-aod": { "qubits": 6, "frames": 60, "load": 19, "store": 19, "move": 111, "rydberg": 4, "raman": 0, "measure": 1, "reset": 0, "cz_pairs": 6, "cz_requested": 6, "colors": 4, "max_degree": 4, "total_move_nm": 2059000.0, "max_move_nm": 142000.0, "total_us": 1387.164 },
+  "bell-reset": { "qubits": 2, "frames": 44, "load": 7, "store": 7, "move": 38, "rydberg": 1, "raman": 4, "measure": 1, "reset": 1, "cz_pairs": 1, "cz_requested": 1, "colors": 1, "max_degree": 1, "total_move_nm": 897000.0, "max_move_nm": 143000.0, "total_us": 1582.018 }
+}

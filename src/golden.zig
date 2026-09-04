@@ -1,19 +1,27 @@
 //! End-to-end golden tests: each case runs the full pipeline (circuit ->
-//! decompose -> route -> compile) and byte-compares the logical routing
-//! output (Sequence JSON, one object per CZ stage) and the physical
-//! schedule (Hardware JSON) against checked-in snapshots in testdata/.
+//! decompose -> route -> compile) and asserts three things:
 //!
-//! Snapshots pin stability, not correctness: any change to MIS/coloring/
-//! choreography shows up as a reviewable diff. Regenerate with `zig build
-//! update-snapshots`. Correctness comes from verify.verify, which runs in
-//! every case, so a blessed snapshot is always a legal schedule.
+//!  - legality: verify.verify accepts the schedule;
+//!  - semantics: every CZ in the decomposed pipeline is entangled by a
+//!    rydberg pulse (the verifier only checks the schedule's own claims,
+//!    so a silently dropped gate would still verify);
+//!  - quality: the case's bench metrics match one line in
+//!    testdata/metrics.json, so a routing regression shows up as a
+//!    one-line reviewable diff instead of hundreds of coordinates.
+//!
+//! Only bell and bell-reset keep a byte-pinned Hardware JSON snapshot:
+//! together they cover gates, measure, reset, and phase zeroing, and pin
+//! the serialization format the pulse compiler will consume. Regenerate
+//! with `zig build update-snapshots`.
 
 const std = @import("std");
 const arch = @import("arch");
 const assembly = @import("assembly");
+const bench = @import("bench");
 const circuit = @import("circuit");
 const qasm = @import("qasm");
 const compiler = @import("compiler");
+const schedule = @import("schedule");
 const serialize = @import("serialize");
 const verify = @import("verify");
 
@@ -48,48 +56,28 @@ pub fn buildCircuit(kind: Kind, gpa: std.mem.Allocator) !circuit.Circuit {
 
 pub const Case = struct {
     kind: Kind,
-    sequence_path: []const u8,
-    hardware_path: []const u8,
+
+    /// Key in testdata/metrics.json.
+    name: []const u8,
+
+    /// When set, this case's Hardware JSON is byte-pinned: the
+    /// serialization contract consumed by the future pulse compiler.
+    hardware_path: ?[]const u8 = null,
 };
+
+/// The metrics golden: one line of bench numbers per case, keyed by name.
+pub const metrics_path = "testdata/metrics.json";
 
 /// Walked by the per-case tests below and by `zig build update-snapshots`,
 /// so the regenerator can never drift from the tests.
 pub const cases = [_]Case{
-    .{
-        .kind = .bell,
-        .sequence_path = "testdata/bell.sequence.json",
-        .hardware_path = "testdata/bell.hardware.json",
-    },
-    .{
-        .kind = .ghz3,
-        .sequence_path = "testdata/ghz-3.sequence.json",
-        .hardware_path = "testdata/ghz-3.hardware.json",
-    },
-    .{
-        .kind = .grid,
-        .sequence_path = "testdata/grid.sequence.json",
-        .hardware_path = "testdata/grid.hardware.json",
-    },
-    .{
-        .kind = .qft5,
-        .sequence_path = "testdata/qft-5.sequence.json",
-        .hardware_path = "testdata/qft-5.hardware.json",
-    },
-    .{
-        .kind = .cycle6,
-        .sequence_path = "testdata/cycle-6.sequence.json",
-        .hardware_path = "testdata/cycle-6.hardware.json",
-    },
-    .{
-        .kind = .cyclic_aod,
-        .sequence_path = "testdata/cyclic-aod.sequence.json",
-        .hardware_path = "testdata/cyclic-aod.hardware.json",
-    },
-    .{
-        .kind = .bell_reset,
-        .sequence_path = "testdata/bell-reset.sequence.json",
-        .hardware_path = "testdata/bell-reset.hardware.json",
-    },
+    .{ .kind = .bell, .name = "bell", .hardware_path = "testdata/bell.hardware.json" },
+    .{ .kind = .ghz3, .name = "ghz-3" },
+    .{ .kind = .grid, .name = "grid" },
+    .{ .kind = .qft5, .name = "qft-5" },
+    .{ .kind = .cycle6, .name = "cycle-6" },
+    .{ .kind = .cyclic_aod, .name = "cyclic-aod" },
+    .{ .kind = .bell_reset, .name = "bell-reset", .hardware_path = "testdata/bell-reset.hardware.json" },
 };
 
 pub fn buildBell(gpa: std.mem.Allocator) !circuit.Circuit {
@@ -199,112 +187,176 @@ pub fn buildQft5(gpa: std.mem.Allocator) !circuit.Circuit {
     return c;
 }
 
-/// Serializes the routing output of every CZ-carrying stage as a JSON array,
-/// one Sequence object per routing round (a stage routes in rounds until
-/// every CZ is covered). U-only stages route nothing and are skipped.
-pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
-    var buf: std.Io.Writer.Allocating = .init(gpa);
-    defer buf.deinit();
-    const w = &buf.writer;
+pub const CaseResult = struct {
+    metrics: bench.Metrics,
+    hw_json: []u8,
+};
 
-    try w.writeAll("[\n");
-    var first = true;
-    for (pipe.stages.items) |*stage| {
-        if (stage.* != .cz) continue;
-
-        const seqs = try compiler.routeStage(
-            gpa,
-            stage.cz.items,
-            pipe.num_qubits,
-            null,
-        );
-        defer {
-            for (seqs) |*s| s.deinit();
-            gpa.free(seqs);
-        }
-
-        for (seqs) |*seq| {
-            const json = try serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
-            defer gpa.free(json);
-
-            if (!first) try w.writeAll(",\n");
-            first = false;
-            try w.writeAll(json);
-        }
-    }
-    try w.writeAll("\n]");
-
-    return gpa.dupe(u8, buf.written());
-}
-
-/// Runs `case` through the full pipeline and returns both snapshot payloads,
-/// verifying the schedule on the way so an illegal one can never be blessed
-/// as a golden baseline. Shared by the per-case tests and
-/// `zig build update-snapshots`, so the two can never drift.
-pub fn caseJson(
-    gpa: std.mem.Allocator,
-    cfg: arch.ArchConfig,
-    case: Case,
-) !struct { seq: []u8, hw: []u8 } {
-    var circ = try buildCircuit(case.kind, gpa);
+/// Runs `kind` through the full pipeline, verifies the schedule, asserts CZ
+/// coverage against the decomposed pipeline, and returns metrics plus the
+/// Hardware JSON. Shared by the tests and `zig build update-snapshots`, so
+/// an illegal or lossy schedule can never be blessed as a baseline.
+pub fn runCase(gpa: std.mem.Allocator, cfg: arch.ArchConfig, kind: Kind) !CaseResult {
+    var circ = try buildCircuit(kind, gpa);
     defer circ.deinit();
 
     var pipe = try circuit.decompose(gpa, circ);
     defer pipe.deinit();
 
-    const seq_json = try sequencesJson(gpa, &pipe);
-    errdefer gpa.free(seq_json);
-
-    var hw = try compiler.compile(gpa, &pipe, cfg, null, null);
+    var stats = compiler.RouteStats{};
+    var hw = try compiler.compile(gpa, &pipe, cfg, null, &stats);
     defer hw.deinit();
 
     try verify.verify(gpa, &hw);
+    try expectCzCoverage(gpa, &pipe, &hw);
+
+    var m = bench.measure(&hw);
+    m.cz_requested = stats.cz_requested;
+    m.colors = stats.colors;
+    m.max_degree = stats.max_degree;
 
     const hw_json = try serialize.hardwareToJson(gpa, &hw);
-    return .{ .seq = seq_json, .hw = hw_json };
+    return .{ .metrics = m, .hw_json = hw_json };
 }
 
-fn goldenCase(case: Case) !void {
+fn pairLessThan(_: void, a: [2]u32, b: [2]u32) bool {
+    if (a[0] != b[0]) return a[0] < b[0];
+    return a[1] < b[1];
+}
+
+/// The multiset of CZ pairs recorded on the schedule's rydberg ops must
+/// equal the pipeline's CZ gates. Closes the hole the verifier cannot see:
+/// verify checks pulse positions against the pairs recorded on the op — the
+/// schedule's own claim — so a silently dropped gate would still verify.
+/// Golden circuits never repeat a pair within one stage; a circuit that
+/// does fails here by design (the interaction graph deduplicates, and
+/// CZ^2 = I makes that dedup semantically lossy).
+fn expectCzCoverage(
+    gpa: std.mem.Allocator,
+    pipe: *const circuit.Pipeline,
+    hw: *const schedule.Hardware,
+) !void {
+    var wanted: std.ArrayList([2]u32) = .empty;
+    defer wanted.deinit(gpa);
+    for (pipe.stages.items) |stage| {
+        if (stage != .cz) continue;
+        for (stage.cz.items) |g|
+            try wanted.append(gpa, .{ @min(g.control, g.target), @max(g.control, g.target) });
+    }
+
+    var got: std.ArrayList([2]u32) = .empty;
+    defer got.deinit(gpa);
+    for (hw.frames.items) |frame| {
+        for (frame.items) |op| {
+            if (op != .rydberg) continue;
+            for (op.rydberg.pairs) |p|
+                try got.append(gpa, .{ @min(p[0], p[1]), @max(p[0], p[1]) });
+        }
+    }
+
+    std.mem.sort([2]u32, wanted.items, {}, pairLessThan);
+    std.mem.sort([2]u32, got.items, {}, pairLessThan);
+
+    if (!std.mem.eql([2]u32, wanted.items, got.items)) {
+        std.debug.print(
+            "CZ coverage mismatch: circuit wants {any}, schedule entangles {any}\n",
+            .{ wanted.items, got.items },
+        );
+        return error.CzCoverageMismatch;
+    }
+}
+
+/// Builds the metrics golden: one line of bench numbers per case, keyed by
+/// name, in `cases` order. compile_ns is excluded (non-deterministic);
+/// everything else is deterministic arithmetic over a deterministic
+/// schedule, so the file is byte-stable.
+pub fn metricsJson(gpa: std.mem.Allocator, cfg: arch.ArchConfig) ![]u8 {
+    var buf: std.Io.Writer.Allocating = .init(gpa);
+    defer buf.deinit();
+    const w = &buf.writer;
+
+    try w.writeAll("{\n");
+    for (cases, 0..) |case, i| {
+        const res = try runCase(gpa, cfg, case.kind);
+        defer gpa.free(res.hw_json);
+        const m = res.metrics;
+
+        if (i > 0) try w.writeAll(",\n");
+        try w.print(
+            "  \"{s}\": {{ \"qubits\": {d}, \"frames\": {d}, \"load\": {d}, \"store\": {d}, " ++
+                "\"move\": {d}, \"rydberg\": {d}, \"raman\": {d}, \"measure\": {d}, \"reset\": {d}, " ++
+                "\"cz_pairs\": {d}, \"cz_requested\": {d}, \"colors\": {d}, \"max_degree\": {d}, " ++
+                "\"total_move_nm\": {d:.1}, \"max_move_nm\": {d:.1}, \"total_us\": {d:.3} }}",
+            .{
+                case.name,     m.num_qubits,     m.frames,   m.n_load,       m.n_store,
+                m.n_move,      m.n_rydberg,      m.n_raman,  m.n_measure,    m.n_reset,
+                m.cz_pairs,    m.cz_requested.?, m.colors.?, m.max_degree.?, m.total_move_nm,
+                m.max_move_nm, m.totalUs(),
+            },
+        );
+    }
+    try w.writeAll("\n}");
+
+    return gpa.dupe(u8, buf.written());
+}
+
+fn goldenCase(case: Case) !bench.Metrics {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
 
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    const json = try caseJson(gpa, cfg, case);
-    defer gpa.free(json.seq);
-    defer gpa.free(json.hw);
+    const res = try runCase(gpa, cfg, case.kind);
+    defer gpa.free(res.hw_json);
 
-    try serialize.expectMatchesFile(gpa, io, case.sequence_path, json.seq);
-    try serialize.expectMatchesFile(gpa, io, case.hardware_path, json.hw);
+    if (case.hardware_path) |path|
+        try serialize.expectMatchesFile(gpa, io, path, res.hw_json);
+
+    return res.metrics;
 }
 
 test "golden: bell" {
-    try goldenCase(cases[0]);
+    _ = try goldenCase(cases[0]);
 }
 
 test "golden: ghz-3" {
-    try goldenCase(cases[1]);
+    _ = try goldenCase(cases[1]);
 }
 
 test "golden: grid" {
-    try goldenCase(cases[2]);
+    _ = try goldenCase(cases[2]);
 }
 
 test "golden: qft-5" {
-    try goldenCase(cases[3]);
+    _ = try goldenCase(cases[3]);
 }
 
 test "golden: cycle-6" {
-    try goldenCase(cases[4]);
+    _ = try goldenCase(cases[4]);
 }
 
 test "golden: cyclic-aod" {
-    try goldenCase(cases[5]);
+    _ = try goldenCase(cases[5]);
 }
 
 test "golden: bell-reset" {
-    try goldenCase(cases[6]);
+    const m = try goldenCase(cases[6]);
+    try std.testing.expect(m.n_reset >= 1);
+    try std.testing.expect(m.n_measure >= 1);
+}
+
+test "golden: metrics match testdata/metrics.json" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    const cfg = try arch.load(gpa, io, arch_path);
+    defer cfg.deinit(gpa);
+
+    const json = try metricsJson(gpa, cfg);
+    defer gpa.free(json);
+
+    try serialize.expectMatchesFile(gpa, io, metrics_path, json);
 }
 
 // Not a snapshot test: pins down that an explicit assembly handoff (a fully
