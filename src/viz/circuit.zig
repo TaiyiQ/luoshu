@@ -6,6 +6,7 @@
 const std = @import("std");
 const rl = @import("raylib");
 const viewmodel = @import("viewmodel");
+const circuit = @import("circuit");
 
 const common = @import("common.zig");
 const palette = common.palette;
@@ -24,6 +25,22 @@ const CZ_R: f32 = 8;
 /// Width of the pinned qubit-label gutter; run() starts the circuit
 /// regions past it.
 pub const GUTTER_W: f32 = 80;
+
+const UKind = circuit.UKind;
+fn uLabel(kind: UKind) [:0]const u8 {
+    return switch (kind) {
+        .h => "H",
+        .x => "X",
+        .y => "Y",
+        .z => "Z",
+        .sx => "Sx",
+        .rx => "Rx",
+        .ry => "Ry",
+        .rz => "Rz",
+        .u => "U",
+        .r => "R",
+    };
+}
 
 pub const CircuitView = struct {
     lay: viewmodel.CircuitLayout,
@@ -111,7 +128,7 @@ pub const CircuitView = struct {
                     font,
                     lg.col,
                     g.qubit,
-                    "U",
+                    uLabel(g.kind),
                     palette.accent,
                     box,
                     fs,
