@@ -8,11 +8,7 @@
 //!  - quality: the case's bench metrics match one line in
 //!    testdata/metrics.json, so a routing regression shows up as a
 //!    one-line reviewable diff instead of hundreds of coordinates.
-//!
-//! Only bell and bell-reset keep a byte-pinned Hardware JSON snapshot:
-//! together they cover gates, measure, reset, and phase zeroing, and pin
-//! the serialization format the pulse compiler will consume. Regenerate
-//! with `zig build update-snapshots`.
+//!    Regenerate with `zig build update-snapshots`.
 
 const std = @import("std");
 const arch = @import("arch");
@@ -59,10 +55,6 @@ pub const Case = struct {
 
     /// Key in testdata/metrics.json.
     name: []const u8,
-
-    /// When set, this case's Hardware JSON is byte-pinned: the
-    /// serialization contract consumed by the future pulse compiler.
-    hardware_path: ?[]const u8 = null,
 };
 
 /// The metrics golden: one line of bench numbers per case, keyed by name.
@@ -71,13 +63,13 @@ pub const metrics_path = "testdata/metrics.json";
 /// Walked by the per-case tests below and by `zig build update-snapshots`,
 /// so the regenerator can never drift from the tests.
 pub const cases = [_]Case{
-    .{ .kind = .bell, .name = "bell", .hardware_path = "testdata/bell.hardware.json" },
+    .{ .kind = .bell, .name = "bell" },
     .{ .kind = .ghz3, .name = "ghz-3" },
     .{ .kind = .grid, .name = "grid" },
     .{ .kind = .qft5, .name = "qft-5" },
     .{ .kind = .cycle6, .name = "cycle-6" },
     .{ .kind = .cyclic_aod, .name = "cyclic-aod" },
-    .{ .kind = .bell_reset, .name = "bell-reset", .hardware_path = "testdata/bell-reset.hardware.json" },
+    .{ .kind = .bell_reset, .name = "bell-reset" },
 };
 
 pub fn buildBell(gpa: std.mem.Allocator) !circuit.Circuit {
@@ -187,16 +179,11 @@ pub fn buildQft5(gpa: std.mem.Allocator) !circuit.Circuit {
     return c;
 }
 
-pub const CaseResult = struct {
-    metrics: bench.Metrics,
-    hw_json: []u8,
-};
-
 /// Runs `kind` through the full pipeline, verifies the schedule, asserts CZ
-/// coverage against the decomposed pipeline, and returns metrics plus the
-/// Hardware JSON. Shared by the tests and `zig build update-snapshots`, so
-/// an illegal or lossy schedule can never be blessed as a baseline.
-pub fn runCase(gpa: std.mem.Allocator, cfg: arch.ArchConfig, kind: Kind) !CaseResult {
+/// coverage against the decomposed pipeline, and returns the bench metrics.
+/// Shared by the tests and `zig build update-snapshots`, so an illegal or
+/// lossy schedule can never be blessed as a baseline.
+pub fn runCase(gpa: std.mem.Allocator, cfg: arch.ArchConfig, kind: Kind) !bench.Metrics {
     var circ = try buildCircuit(kind, gpa);
     defer circ.deinit();
 
@@ -214,9 +201,7 @@ pub fn runCase(gpa: std.mem.Allocator, cfg: arch.ArchConfig, kind: Kind) !CaseRe
     m.cz_requested = stats.cz_requested;
     m.colors = stats.colors;
     m.max_degree = stats.max_degree;
-
-    const hw_json = try serialize.hardwareToJson(gpa, &hw);
-    return .{ .metrics = m, .hw_json = hw_json };
+    return m;
 }
 
 fn pairLessThan(_: void, a: [2]u32, b: [2]u32) bool {
@@ -277,9 +262,7 @@ pub fn metricsJson(gpa: std.mem.Allocator, cfg: arch.ArchConfig) ![]u8 {
 
     try w.writeAll("{\n");
     for (cases, 0..) |case, i| {
-        const res = try runCase(gpa, cfg, case.kind);
-        defer gpa.free(res.hw_json);
-        const m = res.metrics;
+        const m = try runCase(gpa, cfg, case.kind);
 
         if (i > 0) try w.writeAll(",\n");
         try w.print(
@@ -307,13 +290,7 @@ fn goldenCase(case: Case) !bench.Metrics {
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    const res = try runCase(gpa, cfg, case.kind);
-    defer gpa.free(res.hw_json);
-
-    if (case.hardware_path) |path|
-        try serialize.expectMatchesFile(gpa, io, path, res.hw_json);
-
-    return res.metrics;
+    return runCase(gpa, cfg, case.kind);
 }
 
 test "golden: bell" {

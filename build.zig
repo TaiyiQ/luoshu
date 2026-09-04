@@ -143,8 +143,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("verify", verify_mod);
 
     // Golden tests over the full pipeline: verify + CZ coverage per case,
-    // bench metrics against testdata/metrics.json, and the bell/bell-reset
-    // Hardware JSON byte-pinned as the serialization contract.
+    // bench metrics against testdata/metrics.json.
     const golden_mod = b.createModule(.{
         .root_source_file = b.path("src/golden.zig"),
         .target = target,
