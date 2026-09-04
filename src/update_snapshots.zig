@@ -1,7 +1,6 @@
 //! Regenerates every golden snapshot in testdata/: the route-level Sequence
-//! snapshots (graph -> route.computeSequence -> JSON), the metrics golden
-//! (one line of bench numbers per circuit), and the two byte-pinned
-//! Hardware JSON files that pin the serialization format.
+//! snapshots (graph -> route.computeSequence -> JSON) and the metrics golden
+//! (one line of bench numbers per circuit).
 //!
 //! Run via `zig build update-snapshots`, then review the diff with git.
 const std = @import("std");
@@ -26,17 +25,9 @@ pub fn main(init: std.process.Init) !void {
     const cfg = try arch.load(gpa, io, golden.arch_path);
     defer cfg.deinit(gpa);
 
-    // runCase verifies the schedule and checks CZ coverage, so an illegal
-    // or lossy schedule can never be blessed as a baseline.
-    for (golden.cases) |case| {
-        const path = case.hardware_path orelse continue;
-        const res = try golden.runCase(gpa, cfg, case.kind);
-        defer gpa.free(res.hw_json);
-
-        try serialize.writeJsonFile(io, path, res.hw_json);
-        std.debug.print("wrote {s}\n", .{path});
-    }
-
+    // metricsJson runs every case through runCase, which verifies the
+    // schedule and checks CZ coverage, so an illegal or lossy schedule can
+    // never be blessed as a baseline.
     const json = try golden.metricsJson(gpa, cfg);
     defer gpa.free(json);
     try serialize.writeJsonFile(io, golden.metrics_path, json);
