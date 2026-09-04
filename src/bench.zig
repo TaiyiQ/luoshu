@@ -214,11 +214,11 @@ pub const Table = struct {
     const cols = [_]Col{
         .{ .header = "qubits", .w = 6 },
         .{ .header = "frames", .w = 6 },
-        .{ .header = "cz", .w = 11 },
-        .{ .header = "colors", .w = 8 },
+        .{ .header = "cz", .w = 7 },
+        .{ .header = "colors", .w = 7 },
         .{ .header = "cz/pulse", .w = 8 },
         .{ .header = "shuttle_ms", .w = 10 },
-        .{ .header = "load_ms", .w = 10 },
+        .{ .header = "load_ms", .w = 7 },
         .{ .header = "route_ms", .w = 8 },
         .{ .header = "compile_ms", .w = 10 },
     };
@@ -230,7 +230,7 @@ pub const Table = struct {
         break :blk n;
     };
 
-    const sep = "  ";
+    const sep = " | ";
 
     /// Running sums for the totals row; `add` once per circuit.
     pub const Totals = struct {

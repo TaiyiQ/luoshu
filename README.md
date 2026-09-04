@@ -59,22 +59,25 @@ Mixing `--cfg` with `--arch`, `--asm`, or `--out` is an error. The runtime toggl
 Passing several circuits runs them as a suite: the visualizer stays closed, each circuit writes [Schedule](./doc/schedule.md) and [Benchmark](./doc/benchmark.md) when the `out` directory is set, and a schedule-quality table prints:
 
 ```shell
-> ./gatecomp ex/graph/*.qasm --out zig-out
+> ./gatecomp ex/mqt/*.qasm --out zig-out
 
-circuit                   qubits  frames           cz    colors  cz/pulse  shuttle_ms     load_ms  route_ms  compile_ms
------------------------------------------------------------------------------------------------------------------------
-ex/graph/graph-10-9.qasm      10      94        15/15       6/6      2.50         1.7         0.5       2.2        0.19
-ex/graph/graph-50-5.qasm      50     190        75/75      12/6      6.25        10.0         0.9      10.9        0.35
-ex/graph/graph-50-9.qasm      50     154        75/75      11/5      6.82         9.1         0.7       9.8        0.26
-ex/graph/graph-60-5.qasm      60     218        90/90      12/5      7.50        12.9         1.0      13.9        0.38
-ex/graph/graph-90-9.qasm      90     305      135/135      13/6     10.38        21.9         1.5      23.4        1.21
------------------------------------------------------------------------------------------------------------------------
-5 circuits                                    390/390     54/28                  55.6         4.6      60.2        2.38
+circuit           | qubits | frames |      cz |  colors | cz/pulse | shuttle_ms | load_ms | route_ms | compile_ms
+-----------------------------------------------------------------------------------------------------------------
+ae_20             |     20 |   2347 | 380/380 | 108/108 |     3.52 |       26.5 |    13.3 |     39.8 |       1.63
+dj_20             |     20 |     67 |   19/19 |   19/19 |     1.00 |        1.4 |     0.2 |      1.5 |       0.16
+ghz_20            |     20 |    426 |   19/19 |   19/19 |     1.00 |        5.5 |     2.3 |      7.8 |       0.24
+graphstate_20     |     20 |     82 |   20/20 |     4/3 |     5.00 |        2.4 |     0.4 |      2.8 |       0.12
+qft_20            |     20 |   1742 | 410/410 |   77/77 |     5.32 |       22.1 |     9.9 |     32.0 |       1.15
+qftentangled_20   |     20 |   1842 | 429/429 |   79/79 |     5.43 |       22.9 |    10.3 |     33.2 |       1.05
+qnn_20            |     20 |   2293 | 779/779 | 167/135 |     4.66 |       39.9 |    11.5 |     51.4 |       1.40
+qpeexact_20       |     20 |   2436 | 407/407 | 111/111 |     3.67 |       28.8 |    13.8 |     42.6 |       1.07
+qpeinexact_20     |     20 |   2436 | 407/407 | 111/111 |     3.67 |       28.8 |    13.8 |     42.6 |       0.86
+realamprandom_20  |     20 |   2067 | 570/570 | 469/468 |     1.22 |       30.6 |     6.4 |     37.0 |       1.30
+su2random_20      |     20 |   2068 | 570/570 | 469/468 |     1.22 |       30.6 |     6.4 |     37.0 |       1.12
+twolocalrandom_20 |     20 |   2067 | 570/570 | 469/468 |     1.22 |       30.6 |     6.4 |     37.0 |       1.05
+wstate_20         |     20 |    473 |   38/38 |   38/38 |     1.00 |        5.3 |     2.4 |      7.8 |       0.15
+-----------------------------------------------------------------------------------------------------------------
 ```
-
-## Testing
-
-`just test` (or `zig build test --summary all`) runs the suite. Compiler output is compared byte-for-byte against golden snapshots in `testdata/`, so an intentional output change fails the suite until the goldens are regenerated with `just update` — review the resulting `testdata/` diff as part of the change.
 
 ## License
 
