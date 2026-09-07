@@ -4,7 +4,7 @@ The circuits below derive from their upstream distributions, converted to OpenQA
 
 ### ZAP: `graph/`
 
-Graph-state circuits from the benchmark suite of [ZAP](https://github.com/BAQIS-Quantum/neutral-atom-compilation), the BAQIS zoned neutral-atom compiler. MIT License.
+Graph-state circuits from the benchmark suite of [ZAP](https://github.com/BAQIS-Quantum/neutral-atom-compilation), the BAQIS zoned neutral-atom compiler. Copyright © 2026, Beijing Academy of Quantum Information Sciences. MIT License - full text retained in [`graph/LICENSE`](graph/LICENSE).
 
 > C. Huang et al. "ZAP: Zoned Architecture and Performant Compiler for
 > Field Programmable Atom Array." IEEE Transactions on Quantum Engineering.
@@ -21,7 +21,7 @@ Circuits from [QASMBench](https://github.com/pnnl/QASMBench), a low-level quantu
 
 ### MQT Bench: `mqt/`
 
-Circuits from [MQT Bench](https://github.com/munich-quantum-toolkit/bench), the Munich Quantum Toolkit benchmark library. MIT License.
+Circuits from [MQT Bench](https://github.com/munich-quantum-toolkit/bench), the Munich Quantum Toolkit benchmark library. Copyright © Chair for Design Automation, TUM and Munich Quantum Software Company GmbH. MIT License - full text retained in [`mqt/LICENSE`](mqt/LICENSE).
 
 > Nils Quetschlich, Lukas Burgholzer, and Robert Wille.
 > "MQT Bench: Benchmarking Software and Design Automation Tools for

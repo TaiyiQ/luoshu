@@ -82,3 +82,5 @@ wstate_20         |     20 |    473 |   38/38 |   38/38 |     1.00 |        5.3 
 ## License
 
 This project is released under the MIT License - see [LICENSE](LICENSE).
+
+The benchmark circuits under `ex/` are redistributed under their original licenses - see [`ex/README.md`](ex/README.md).
