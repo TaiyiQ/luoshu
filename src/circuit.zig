@@ -80,6 +80,26 @@ pub const Pipeline = struct {
         s.stages.deinit(s.gpa);
     }
 
+    /// The requested CZ gates as normalized (lo, hi) pairs in stage order:
+    /// the wanted side of verify.verify's CZ coverage check.
+    pub fn czPairs(s: *const Pipeline, gpa: std.mem.Allocator) ![][2]u32 {
+        var pairs: std.ArrayList([2]u32) = .empty;
+        defer pairs.deinit(gpa);
+
+        for (s.stages.items) |stage| {
+            if (stage != .cz) continue;
+
+            for (stage.cz.items) |g| {
+                try pairs.append(gpa, .{
+                    @min(g.control, g.target),
+                    @max(g.control, g.target),
+                });
+            }
+        }
+
+        return pairs.toOwnedSlice(gpa);
+    }
+
     fn place(s: *Pipeline, n: usize, gate: Native) !void {
         if (s.stages.items.len <= n) {
             std.debug.assert(s.stages.items.len == n);

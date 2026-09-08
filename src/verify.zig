@@ -30,6 +30,12 @@
 //!    `db_nm` at pulse time (a pair parked farther apart entangles nothing,
 //!    legally — this is the check that proves the pulse does what the
 //!    router asked);
+//!  - CZ coverage: the multiset of pairs carried on rydberg ops equals the
+//!    requested CZ list the caller passes in. Every other check audits the
+//!    schedule's own claims, so this is what catches a silently dropped
+//!    gate. A circuit that repeats a pair within one stage fails here by
+//!    design: routing's interaction graph deduplicates, and CZ^2 = I makes
+//!    that dedup semantically lossy;
 //!  - measurement: measured qubits lie inside the named zone;
 //!  - reset: reset qubits sit in an SLM trap and lie inside the named zone.
 //!
@@ -48,7 +54,11 @@ const Trap = enum { slm, aod };
 
 const MoveRec = struct { q: usize, src: Point, dest: Point };
 
-pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
+pub fn verify(
+    gpa: std.mem.Allocator,
+    hw: *const schedule.Hardware,
+    wanted_cz: []const [2]u32,
+) !void {
     const n = hw.initial.len;
 
     const pos = try gpa.alloc(Point, n);
@@ -86,6 +96,43 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
     }
 
     try checkTerminalState(hw.frames.items.len, n, trap);
+    try checkCzCoverage(gpa, hw, wanted_cz);
+}
+
+fn pairLessThan(_: void, a: [2]u32, b: [2]u32) bool {
+    if (a[0] != b[0]) return a[0] < b[0];
+    return a[1] < b[1];
+}
+
+/// The multiset of CZ pairs recorded on the schedule's rydberg ops must
+/// equal the requested gates. Pair intent proves each recorded pair is
+/// physically entangled; this proves the recorded pairs are the ones the
+/// circuit asked for, so a silently dropped gate cannot verify.
+fn checkCzCoverage(
+    gpa: std.mem.Allocator,
+    hw: *const schedule.Hardware,
+    wanted_cz: []const [2]u32,
+) !void {
+    const wanted = try gpa.dupe([2]u32, wanted_cz);
+    defer gpa.free(wanted);
+
+    var got: std.ArrayList([2]u32) = .empty;
+    defer got.deinit(gpa);
+    for (hw.frames.items) |frame| {
+        for (frame.items) |op| {
+            if (op != .rydberg) continue;
+            for (op.rydberg.pairs) |p|
+                try got.append(gpa, .{ @min(p[0], p[1]), @max(p[0], p[1]) });
+        }
+    }
+
+    std.mem.sort([2]u32, wanted, {}, pairLessThan);
+    std.mem.sort([2]u32, got.items, {}, pairLessThan);
+
+    if (!std.mem.eql([2]u32, wanted, got.items)) {
+        trace.diag(quiet, "schedule verify: CZ coverage mismatch: circuit wants {any}, schedule entangles {any}", .{ wanted, got.items });
+        return error.CzCoverageMismatch;
+    }
 }
 
 /// Replays one frame's ops in emission order: trap-state machine (load only
@@ -587,6 +634,21 @@ fn pt(x: i32, y: i32) Point {
     return .{ .x = x, .y = y };
 }
 
+/// Verifies `hw` against its own rydberg pairs. The legality tests below
+/// hand-build schedules with no source circuit and coverage is not their
+/// subject; the dedicated coverage tests feed a real mismatch.
+fn verifySelf(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
+    var pairs: std.ArrayList([2]u32) = .empty;
+    defer pairs.deinit(gpa);
+    for (hw.frames.items) |frame| {
+        for (frame.items) |op| {
+            if (op != .rydberg) continue;
+            try pairs.appendSlice(gpa, op.rydberg.pairs);
+        }
+    }
+    return verify(gpa, hw, pairs.items);
+}
+
 test "accepts a legal load-move-store round trip" {
     const gpa = std.testing.allocator;
 
@@ -638,7 +700,7 @@ test "accepts a legal load-move-store round trip" {
         },
     });
 
-    try verify(gpa, &hw);
+    try verifySelf(gpa, &hw);
 }
 
 test "catches a load while already in the AOD" {
@@ -665,7 +727,7 @@ test "catches a load while already in the AOD" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.LoadWhileInAod, verify(gpa, &hw));
+    try std.testing.expectError(error.LoadWhileInAod, verifySelf(gpa, &hw));
 }
 
 test "catches a move of a stored atom" {
@@ -686,7 +748,7 @@ test "catches a move of a stored atom" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.MoveWhileStored, verify(gpa, &hw));
+    try std.testing.expectError(error.MoveWhileStored, verifySelf(gpa, &hw));
 }
 
 test "catches a move whose source disagrees with the replayed position" {
@@ -711,7 +773,7 @@ test "catches a move whose source disagrees with the replayed position" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.MoveSourceMismatch, verify(gpa, &hw));
+    try std.testing.expectError(error.MoveSourceMismatch, verifySelf(gpa, &hw));
 }
 
 test "catches a sweep through an occupied trap site" {
@@ -743,7 +805,7 @@ test "catches a sweep through an occupied trap site" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.MoveThroughOccupiedSite, verify(gpa, &hw));
+    try std.testing.expectError(error.MoveThroughOccupiedSite, verifySelf(gpa, &hw));
 }
 
 test "atoms loaded in the same frame are not path obstacles" {
@@ -800,7 +862,7 @@ test "atoms loaded in the same frame are not path obstacles" {
         },
     });
 
-    try verify(gpa, &hw);
+    try verifySelf(gpa, &hw);
 }
 
 test "catches two atoms on the same site at end of frame" {
@@ -831,7 +893,7 @@ test "catches two atoms on the same site at end of frame" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.SiteConflict, verify(gpa, &hw));
+    try std.testing.expectError(error.SiteConflict, verifySelf(gpa, &hw));
 }
 
 test "catches an AOD order inversion" {
@@ -878,7 +940,7 @@ test "catches an AOD order inversion" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.AodOrderInversion, verify(gpa, &hw));
+    try std.testing.expectError(error.AodOrderInversion, verifySelf(gpa, &hw));
 }
 
 test "catches AOD columns closer than the minimum separation" {
@@ -916,7 +978,7 @@ test "catches AOD columns closer than the minimum separation" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.AodSeparationViolation, verify(gpa, &hw));
+    try std.testing.expectError(error.AodSeparationViolation, verifySelf(gpa, &hw));
 }
 
 test "catches more AOD columns than the hardware has" {
@@ -968,7 +1030,7 @@ test "catches more AOD columns than the hardware has" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.AodCapacityExceeded, verify(gpa, &hw));
+    try std.testing.expectError(error.AodCapacityExceeded, verifySelf(gpa, &hw));
 }
 
 test "catches an AOD register split across rows" {
@@ -1006,7 +1068,7 @@ test "catches an AOD register split across rows" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.AodRowSplit, verify(gpa, &hw));
+    try std.testing.expectError(error.AodRowSplit, verifySelf(gpa, &hw));
 }
 
 test "catches a load while the register hovers on another row" {
@@ -1053,7 +1115,7 @@ test "catches a load while the register hovers on another row" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.LoadOffRegisterRow, verify(gpa, &hw));
+    try std.testing.expectError(error.LoadOffRegisterRow, verifySelf(gpa, &hw));
 }
 
 test "catches an atom left in the AOD at end of schedule" {
@@ -1073,7 +1135,7 @@ test "catches an atom left in the AOD at end of schedule" {
 
     quiet = true;
     defer quiet = false;
-    try std.testing.expectError(error.AtomLeftInAod, verify(gpa, &hw));
+    try std.testing.expectError(error.AtomLeftInAod, verifySelf(gpa, &hw));
 }
 
 test "catches a blockade violation during a rydberg pulse" {
@@ -1093,7 +1155,7 @@ test "catches a blockade violation during a rydberg pulse" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.BlockadeViolation, verify(gpa, &hw));
+    try std.testing.expectError(error.BlockadeViolation, verifySelf(gpa, &hw));
 }
 
 test "accepts an isolated pair during a rydberg pulse" {
@@ -1108,7 +1170,7 @@ test "accepts an isolated pair during a rydberg pulse" {
 
     try addFrame(&hw, &.{.{ .rydberg = .{ .zone = .compute } }});
 
-    try verify(gpa, &hw);
+    try verifySelf(gpa, &hw);
 }
 
 test "catches a routed pair parked outside blockade range" {
@@ -1134,7 +1196,7 @@ test "catches a routed pair parked outside blockade range" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.PairOutOfBlockadeRange, verify(gpa, &hw));
+    try std.testing.expectError(error.PairOutOfBlockadeRange, verifySelf(gpa, &hw));
 }
 
 test "accepts a routed pair within blockade range" {
@@ -1155,7 +1217,52 @@ test "accepts a routed pair within blockade range" {
         },
     });
 
-    try verify(gpa, &hw);
+    try verifySelf(gpa, &hw);
+}
+
+test "catches a dropped CZ: a wanted pair no rydberg op entangles" {
+    const gpa = std.testing.allocator;
+
+    var hw = try makeHw(gpa, &.{
+        pt(1000, 6000),
+        pt(1200, 6000),
+    });
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{.{ .rydberg = .{ .zone = .compute } }});
+
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(
+        error.CzCoverageMismatch,
+        verify(gpa, &hw, &.{.{ 0, 1 }}),
+    );
+}
+
+test "catches an unrequested CZ: an entangled pair the circuit never asked for" {
+    const gpa = std.testing.allocator;
+
+    var hw = try makeHw(gpa, &.{
+        pt(1000, 6000),
+        pt(1200, 6000),
+    });
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{
+        .{
+            .rydberg = .{
+                .zone = .compute,
+                .pairs = &.{.{ 1, 0 }},
+            },
+        },
+    });
+
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(
+        error.CzCoverageMismatch,
+        verify(gpa, &hw, &.{}),
+    );
 }
 
 test "catches a measurement outside its zone" {
@@ -1178,7 +1285,7 @@ test "catches a measurement outside its zone" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.MeasureOutsideZone, verify(gpa, &hw));
+    try std.testing.expectError(error.MeasureOutsideZone, verifySelf(gpa, &hw));
 }
 
 test "catches a reset outside its zone" {
@@ -1201,7 +1308,7 @@ test "catches a reset outside its zone" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.ResetOutsideZone, verify(gpa, &hw));
+    try std.testing.expectError(error.ResetOutsideZone, verifySelf(gpa, &hw));
 }
 
 test "catches a reset of a qubit held in the AOD" {
@@ -1229,7 +1336,7 @@ test "catches a reset of a qubit held in the AOD" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.ResetWhileInAod, verify(gpa, &hw));
+    try std.testing.expectError(error.ResetWhileInAod, verifySelf(gpa, &hw));
 }
 
 test "catches a sweep along a storage row across an empty trap site" {
@@ -1257,7 +1364,7 @@ test "catches a sweep along a storage row across an empty trap site" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.SweptTrapSite, verify(gpa, &hw));
+    try std.testing.expectError(error.SweptTrapSite, verifySelf(gpa, &hw));
 }
 
 test "catches a descent along a storage column through an empty trap site" {
@@ -1284,7 +1391,7 @@ test "catches a descent along a storage column through an empty trap site" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.SweptTrapSite, verify(gpa, &hw));
+    try std.testing.expectError(error.SweptTrapSite, verifySelf(gpa, &hw));
 }
 
 // The compute zone is exempt from the trap-sweep rule: the dip choreography
@@ -1311,7 +1418,7 @@ test "accepts a slide along a compute row" {
         .{ .store = .{ .qubit = 0, .position = pt(3000, 5800) } },
     });
 
-    try verify(gpa, &hw);
+    try verifySelf(gpa, &hw);
 }
 
 test {
