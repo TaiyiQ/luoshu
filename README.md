@@ -34,7 +34,7 @@ For an in-depth understanding, see [CLI](./doc/cli.md).
     - Edit it to experiment with different initial placements.
 - `cfg/settings.toml`: Encodes the input options (`[options]`: `arch`, `assembly`, `out`) for `--cfg`.
 
-Everything under `cfg/` is user-editable; tests and golden snapshots pin their own copies under `testdata/`, so experiments never break the suite.
+Everything under `cfg/` is user-editable; tests and goldens pin their own copies under `testdata/`, so experiments never break the suite.
 
 Inputs come from flags or from a config file, never both:
 

@@ -2,7 +2,6 @@ const std = @import("std");
 const resting = @import("resting");
 const trace = @import("trace");
 const color = @import("color");
-const serialize = @import("serialize");
 
 const Graph = @import("graph").Graph;
 
@@ -295,10 +294,10 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-/// Graph snapshot cases, routed and byte-compared against testdata/. The
-/// snapshot tests below and `zig build update-snapshots` both walk this
-/// table, so the regenerator can never drift from the tests.
-pub const SnapshotKind = enum {
+/// Graph coverage cases: hand-built interaction graphs walked by the
+/// single-round coverage test below and by compiler.zig's multi-round
+/// completeness test, so both layers pin the same fixtures.
+pub const GraphKind = enum {
     mvp,
     cycle,
     ladder,
@@ -308,7 +307,7 @@ pub const SnapshotKind = enum {
     graph_10_0,
 };
 
-pub fn buildSnapshotGraph(kind: SnapshotKind, gpa: std.mem.Allocator) !Graph {
+pub fn buildGraph(kind: GraphKind, gpa: std.mem.Allocator) !Graph {
     return switch (kind) {
         .mvp => buildMvpGraph(gpa),
         .cycle => buildCycleGraph(gpa),
@@ -320,9 +319,8 @@ pub fn buildSnapshotGraph(kind: SnapshotKind, gpa: std.mem.Allocator) !Graph {
     };
 }
 
-pub const SnapshotCase = struct {
-    kind: SnapshotKind,
-    path: []const u8,
+pub const GraphCase = struct {
+    kind: GraphKind,
 
     /// A single computeSequence round cannot cover this graph: it is
     /// non-bipartite, so the greedy MIS leaves SLM-SLM edges uncolored.
@@ -332,52 +330,30 @@ pub const SnapshotCase = struct {
     known_incomplete: bool = false,
 };
 
-pub const snapshot_cases = [_]SnapshotCase{
+pub const graph_cases = [_]GraphCase{
     // aod set, coloring, schedule shape; triangle {2,3,4}
-    .{ .kind = .mvp, .path = "testdata/mvp.json", .known_incomplete = true },
+    .{ .kind = .mvp, .known_incomplete = true },
 
     // detect cycle in graph.
-    .{ .kind = .cycle, .path = "testdata/cycle.json" },
+    .{ .kind = .cycle },
 
     // parallel AOD lanes
-    .{ .kind = .ladder, .path = "testdata/ladder.json" },
+    .{ .kind = .ladder },
 
     // complex MIS and gap pressure
-    .{ .kind = .grid, .path = "testdata/grid.json" },
+    .{ .kind = .grid },
 
     // binary tree
-    .{ .kind = .ghz, .path = "testdata/ghz.json" },
+    .{ .kind = .ghz },
 
     // K5: SLM set is K4
-    .{ .kind = .qft, .path = "testdata/qft.json", .known_incomplete = true },
+    .{ .kind = .qft, .known_incomplete = true },
 
     // only known graph exercising the mid-sweep flush in
     // resting.mergeConstraints; triangles {0,3,8} and {4,6,9} force
     // SLM-SLM edges, so the cover is incomplete.
-    .{ .kind = .graph_10_0, .path = "testdata/graph-10-0.json", .known_incomplete = true },
+    .{ .kind = .graph_10_0, .known_incomplete = true },
 };
-
-/// Routes the graph built for `kind` and serialises the result: the payload
-/// of the route-level snapshots, shared by the snapshot test below and
-/// `zig build update-snapshots`.
-pub fn snapshotJson(gpa: std.mem.Allocator, kind: SnapshotKind) ![]u8 {
-    var g = try buildSnapshotGraph(kind, gpa);
-    defer g.deinit();
-
-    var seq = try computeSequence(gpa, &g);
-    defer seq.deinit();
-
-    return serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
-}
-
-test "snapshots: routed graphs match testdata/" {
-    const gpa = std.testing.allocator;
-    for (snapshot_cases) |case| {
-        const actual = try snapshotJson(gpa, case.kind);
-        defer gpa.free(actual);
-        try serialize.expectMatchesFile(gpa, std.testing.io, case.path, actual);
-    }
-}
 
 // Asserts `seq` realizes `g` exactly: every edge appears as an active pair
 // (fixed[i] and moveable[t][i] both non-null) in exactly one timeframe,
@@ -390,6 +366,7 @@ fn expectSequenceCoversGraph(gpa: std.mem.Allocator, g: *const Graph, seq: *cons
     var is_fixed = try gpa.alloc(bool, g.n);
     defer gpa.free(is_fixed);
     @memset(is_fixed, false);
+
     for (seq.fixed) |maybe_q| {
         if (maybe_q) |q| is_fixed[q] = true;
     }
@@ -432,10 +409,10 @@ fn expectSequenceCoversGraph(gpa: std.mem.Allocator, g: *const Graph, seq: *cons
     if (!complete) return error.SequenceIncomplete;
 }
 
-test "computeSequence covers every snapshot graph's edges exactly once" {
+test "computeSequence covers every case graph's edges exactly once" {
     const gpa = std.testing.allocator;
-    for (snapshot_cases) |case| {
-        var g = try buildSnapshotGraph(case.kind, gpa);
+    for (graph_cases) |case| {
+        var g = try buildGraph(case.kind, gpa);
         defer g.deinit();
 
         var seq = try computeSequence(gpa, &g);
