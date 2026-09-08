@@ -153,7 +153,6 @@ pub fn build(b: *std.Build) void {
     golden_mod.addImport("circuit", circuit_mod);
     golden_mod.addImport("qasm", qasm_mod);
     golden_mod.addImport("compiler", compiler_mod);
-    golden_mod.addImport("schedule", schedule_mod);
     golden_mod.addImport("serialize", serialize_mod);
     golden_mod.addImport("verify", verify_mod);
 

@@ -1,10 +1,9 @@
 //! End-to-end golden tests: each case runs the full pipeline
-//! (circuit -> decompose -> route -> compile) and asserts three things:
+//! (circuit -> decompose -> route -> compile) and asserts two things:
 //!
-//! - legality: verify.verify accepts the schedule;
-//! - semantics: every CZ in the decomposed pipeline is entangled by a
-//!   rydberg pulse (the verifier only checks the schedule's own claims,
-//!   so a silently dropped gate would still verify);
+//! - correctness: verify.verify accepts the schedule, including CZ
+//!   coverage against the decomposed pipeline, so neither an illegal
+//!   schedule nor a silently dropped gate can pass;
 //! - quality: the case's bench metrics match one line in
 //!   testdata/metrics.json, so a routing regression shows up as a
 //!   one-line reviewable diff instead of hundreds of coordinates.
@@ -17,7 +16,6 @@ const bench = @import("bench");
 const circuit = @import("circuit");
 const qasm = @import("qasm");
 const compiler = @import("compiler");
-const schedule = @import("schedule");
 const serialize = @import("serialize");
 const verify = @import("verify");
 
@@ -180,10 +178,10 @@ pub fn buildQft5(gpa: std.mem.Allocator) !circuit.Circuit {
     return c;
 }
 
-/// Runs `kind` through the full pipeline, verifies the schedule, asserts CZ
-/// coverage against the decomposed pipeline, and returns the bench metrics.
-/// Shared by the tests and `zig build update-goldens`, so an illegal or
-/// lossy schedule can never be blessed as a baseline.
+/// Runs `kind` through the full pipeline, verifies the schedule (CZ
+/// coverage included), and returns the bench metrics. Shared by the tests
+/// and `zig build update-goldens`, so an illegal or lossy schedule can
+/// never be blessed as a baseline.
 pub fn runCase(gpa: std.mem.Allocator, cfg: arch.ArchConfig, kind: Kind) !bench.Metrics {
     var circ = try buildCircuit(kind, gpa);
     defer circ.deinit();
@@ -195,61 +193,17 @@ pub fn runCase(gpa: std.mem.Allocator, cfg: arch.ArchConfig, kind: Kind) !bench.
     var hw = try compiler.compile(gpa, &pipe, cfg, null, &stats);
     defer hw.deinit();
 
-    try verify.verify(gpa, &hw);
-    try expectCzCoverage(gpa, &pipe, &hw);
+    const wanted = try pipe.czPairs(gpa);
+    defer gpa.free(wanted);
+
+    try verify.verify(gpa, &hw, wanted);
 
     var m = bench.measure(&hw);
     m.cz_requested = stats.cz_requested;
     m.colors = stats.colors;
     m.max_degree = stats.max_degree;
+
     return m;
-}
-
-fn pairLessThan(_: void, a: [2]u32, b: [2]u32) bool {
-    if (a[0] != b[0]) return a[0] < b[0];
-    return a[1] < b[1];
-}
-
-/// The multiset of CZ pairs recorded on the schedule's rydberg ops must
-/// equal the pipeline's CZ gates. Closes the hole the verifier cannot see:
-/// verify checks pulse positions against the pairs recorded on the op — the
-/// schedule's own claim — so a silently dropped gate would still verify.
-/// Golden circuits never repeat a pair within one stage; a circuit that
-/// does fails here by design (the interaction graph deduplicates, and
-/// CZ^2 = I makes that dedup semantically lossy).
-fn expectCzCoverage(
-    gpa: std.mem.Allocator,
-    pipe: *const circuit.Pipeline,
-    hw: *const schedule.Hardware,
-) !void {
-    var wanted: std.ArrayList([2]u32) = .empty;
-    defer wanted.deinit(gpa);
-    for (pipe.stages.items) |stage| {
-        if (stage != .cz) continue;
-        for (stage.cz.items) |g|
-            try wanted.append(gpa, .{ @min(g.control, g.target), @max(g.control, g.target) });
-    }
-
-    var got: std.ArrayList([2]u32) = .empty;
-    defer got.deinit(gpa);
-    for (hw.frames.items) |frame| {
-        for (frame.items) |op| {
-            if (op != .rydberg) continue;
-            for (op.rydberg.pairs) |p|
-                try got.append(gpa, .{ @min(p[0], p[1]), @max(p[0], p[1]) });
-        }
-    }
-
-    std.mem.sort([2]u32, wanted.items, {}, pairLessThan);
-    std.mem.sort([2]u32, got.items, {}, pairLessThan);
-
-    if (!std.mem.eql([2]u32, wanted.items, got.items)) {
-        std.debug.print(
-            "CZ coverage mismatch: circuit wants {any}, schedule entangles {any}\n",
-            .{ wanted.items, got.items },
-        );
-        return error.CzCoverageMismatch;
-    }
 }
 
 /// Builds the metrics golden: one line of bench numbers per case, keyed by
@@ -359,7 +313,10 @@ test "assembly: qft-5 compiles legally from assembly.json" {
     var hw = try compiler.compile(gpa, &pipe, cfg, asm_doc.sites, null);
     defer hw.deinit();
 
-    try verify.verify(gpa, &hw);
+    const wanted = try pipe.czPairs(gpa);
+    defer gpa.free(wanted);
+
+    try verify.verify(gpa, &hw, wanted);
 }
 
 /// The CLI input path: parse a vendored .qasm with qasm.load (the case
@@ -382,7 +339,10 @@ fn qasmCompilesLegally(path: []const u8) !void {
     var hw = try compiler.compile(gpa, &pipe, cfg, null, null);
     defer hw.deinit();
 
-    try verify.verify(gpa, &hw);
+    const wanted = try pipe.czPairs(gpa);
+    defer gpa.free(wanted);
+
+    try verify.verify(gpa, &hw, wanted);
 }
 
 test "qasm: bell compiles legally from testdata/bell.qasm" {

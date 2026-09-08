@@ -70,6 +70,7 @@ pub fn routeStage(
 
             var delta: usize = 0;
             for (g.degree) |d| delta = @max(delta, d);
+
             s.max_degree += delta;
         }
 
@@ -80,7 +81,10 @@ pub fn routeStage(
             var e = g.edges[x];
             while (e) |edge| : (e = edge.next) {
                 if (x < edge.y and edge.color == null) {
-                    try remaining.append(gpa, .{ .control = @intCast(x), .target = @intCast(edge.y) });
+                    try remaining.append(gpa, .{
+                        .control = @intCast(x),
+                        .target = @intCast(edge.y),
+                    });
                 }
             }
         }
