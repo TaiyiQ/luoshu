@@ -79,8 +79,15 @@ wstate_20         |     20 |    473 |   38/38 |   38/38 |     1.00 |        5.3 
 -----------------------------------------------------------------------------------------------------------------
 ```
 
+## Compilation Visualizer
+
+https://github.com/user-attachments/assets/bdd6b96a-4bdc-489e-afdb-a5bfef5e6dd1
+
 ## License
 
 This project is released under the MIT License - see [LICENSE](LICENSE).
 
 The benchmark circuits under `ex/` are redistributed under their original licenses - see [`ex/README.md`](ex/README.md).
+
+
+
