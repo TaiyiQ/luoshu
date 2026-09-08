@@ -37,7 +37,7 @@ pub fn main(init: std.process.Init) !void {
     const suite = opts.jobs.len > 1;
 
     var name_w: usize = 0;
-    for (opts.jobs) |j| name_w = @max(name_w, j.qasm.len);
+    for (opts.jobs) |j| name_w = @max(name_w, std.fs.path.stem(j.qasm).len);
 
     const table = bench.Table.init(name_w);
     if (suite) table.header();
@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init) !void {
     for (opts.jobs) |job| {
         const metrics = try compileOne(init, opts, cfg, asm_doc, job);
         if (suite) {
-            table.row(job.qasm, metrics);
+            table.row(std.fs.path.stem(job.qasm), metrics);
             sum.add(metrics);
         }
     }

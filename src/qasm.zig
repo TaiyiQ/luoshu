@@ -690,9 +690,8 @@ pub const QasmParser = struct {
                 }
                 s.skipToSemicolon();
             } else if (isIgnorableDirective(word)) {
-                // Safe to drop: these don't change the measured result, so a
-                // warning suffices.
-                s.warn(stmt_start, "directive ignored");
+                // Safe to drop silently: these don't change the measured
+                // result, and there is nothing actionable to report.
                 s.skipToSemicolon();
             } else {
                 // Everything else is an operation we cannot faithfully compile.
@@ -726,8 +725,9 @@ pub const QasmParser = struct {
     }
 
     // Directives with no effect on the measured result: dropping them is safe,
-    // so they warn rather than error. (`gphase` is a global phase; `barrier`
-    // and `delay` are scheduling/timing hints this compiler does not model.)
+    // so they are skipped without complaint. (`gphase` is a global phase;
+    // `barrier` and `delay` are scheduling/timing hints this compiler does
+    // not model.)
     fn isIgnorableDirective(word: []const u8) bool {
         const kws = [_][]const u8{ "barrier", "delay", "gphase" };
         for (kws) |kw| if (std.mem.eql(u8, word, kw)) return true;
@@ -1008,21 +1008,19 @@ test "QasmParser does not bit-index-check a non-measuring assignment" {
     try std.testing.expectEqualStrings("unrecognized statement", p.reason.?);
 }
 
-test "QasmParser warns on (and drops) an ignorable directive" {
+test "QasmParser silently drops an ignorable directive" {
     var warns: std.ArrayList(Diagnostic) = .empty;
     defer warns.deinit(std.testing.allocator);
 
-    // `barrier` has no effect on the measured result, so it is dropped with a
-    // warning rather than erroring.
+    // `barrier` has no effect on the measured result, so it is dropped
+    // without a warning.
     const src = "qubit[2] q;\nbit[2] c;\ncz q[0], q[1];\nbarrier q;\nc = measure q;\n";
     var p = QasmParser.init(std.testing.allocator, src);
     p.warn_sink = &warns;
     var circ = try p.parse();
     circ.deinit();
 
-    try std.testing.expectEqual(1, warns.items.len);
-    try std.testing.expectEqualStrings("directive ignored", warns.items[0].reason);
-    try std.testing.expectEqual(4, warns.items[0].line);
+    try std.testing.expectEqual(0, warns.items.len);
 }
 
 test "QasmParser errors with a suggestion on a mistyped keyword" {
