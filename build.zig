@@ -120,7 +120,6 @@ pub fn build(b: *std.Build) void {
     serialize_mod.addImport("schedule", schedule_mod);
     serialize_mod.addImport("bench", bench_mod);
     exe.root_module.addImport("serialize", serialize_mod);
-    route_mod.addImport("serialize", serialize_mod); // route's snapshot tests
 
     const compiler_mod = b.addModule("compiler", .{
         .root_source_file = b.path("src/compiler.zig"),
@@ -221,27 +220,26 @@ pub fn build(b: *std.Build) void {
     for (test_mods) |mod| {
         const t = b.addTest(.{ .root_module = mod });
         const run_t = b.addRunArtifact(t);
-        run_t.setCwd(b.path(".")); // snapshot tests read testdata/ relative to repo root
+        run_t.setCwd(b.path(".")); // golden tests read testdata/ relative to repo root
         test_step.dependOn(&run_t.step);
     }
 
-    // --- Snapshot regeneration: `zig build update-snapshots`.
+    // --- Golden regeneration: `zig build update-goldens`.
 
     const update_exe = b.addExecutable(.{
-        .name = "update-snapshots",
+        .name = "update-goldens",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/update_snapshots.zig"),
+            .root_source_file = b.path("src/update_goldens.zig"),
             .target = target,
             .optimize = optimize,
         }),
     });
     update_exe.root_module.addImport("arch", arch_mod);
-    update_exe.root_module.addImport("route", route_mod);
     update_exe.root_module.addImport("serialize", serialize_mod);
     update_exe.root_module.addImport("golden", golden_mod);
 
     const update_run = b.addRunArtifact(update_exe);
     update_run.setCwd(b.path("."));
-    const update_step = b.step("update-snapshots", "Regenerate golden snapshots in testdata/");
+    const update_step = b.step("update-goldens", "Regenerate goldens in testdata/");
     update_step.dependOn(&update_run.step);
 }

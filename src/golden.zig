@@ -8,7 +8,7 @@
 //!  - quality: the case's bench metrics match one line in
 //!    testdata/metrics.json, so a routing regression shows up as a
 //!    one-line reviewable diff instead of hundreds of coordinates.
-//!    Regenerate with `zig build update-snapshots`.
+//!    Regenerate with `zig build update-goldens`.
 
 const std = @import("std");
 const arch = @import("arch");
@@ -60,7 +60,7 @@ pub const Case = struct {
 /// The metrics golden: one line of bench numbers per case, keyed by name.
 pub const metrics_path = "testdata/metrics.json";
 
-/// Walked by the per-case tests below and by `zig build update-snapshots`,
+/// Walked by the per-case tests below and by `zig build update-goldens`,
 /// so the regenerator can never drift from the tests.
 pub const cases = [_]Case{
     .{ .kind = .bell, .name = "bell" },
@@ -80,7 +80,7 @@ pub fn buildBell(gpa: std.mem.Allocator) !circuit.Circuit {
     return c;
 }
 
-// Bell pair with a mid-circuit reset on q0. The snapshot pins the whole
+// Bell pair with a mid-circuit reset on q0. The case exercises the whole
 // round trip — shuttle out, readout-zone repump, shuttle home — and the
 // frame-phase zeroing: reset(0) voids q0's virtual-Z reference (pi after
 // the first H), so the trailing H fires with a different drive phase than
@@ -181,7 +181,7 @@ pub fn buildQft5(gpa: std.mem.Allocator) !circuit.Circuit {
 
 /// Runs `kind` through the full pipeline, verifies the schedule, asserts CZ
 /// coverage against the decomposed pipeline, and returns the bench metrics.
-/// Shared by the tests and `zig build update-snapshots`, so an illegal or
+/// Shared by the tests and `zig build update-goldens`, so an illegal or
 /// lossy schedule can never be blessed as a baseline.
 pub fn runCase(gpa: std.mem.Allocator, cfg: arch.ArchConfig, kind: Kind) !bench.Metrics {
     var circ = try buildCircuit(kind, gpa);
@@ -336,7 +336,7 @@ test "golden: metrics match testdata/metrics.json" {
     try serialize.expectMatchesFile(gpa, io, metrics_path, json);
 }
 
-// Not a snapshot test: pins down that an explicit assembly handoff (a fully
+// Not a golden case: pins down that an explicit assembly handoff (a fully
 // occupied storage grid, of which qft-5 uses only its first 5 atoms) still
 // compiles to a schedule the verifier accepts.
 test "assembly: qft-5 compiles legally from assembly.json" {
@@ -363,7 +363,7 @@ test "assembly: qft-5 compiles legally from assembly.json" {
 
 /// The CLI input path: parse a vendored .qasm with qasm.load (the case
 /// builders construct Circuits directly, bypassing the parser) and require
-/// a schedule the verifier accepts. Not a snapshot test, so it pins the
+/// a schedule the verifier accepts. Not a golden case, so it pins the
 /// parser-to-schedule path without freezing its output.
 fn qasmCompilesLegally(path: []const u8) !void {
     const gpa = std.testing.allocator;

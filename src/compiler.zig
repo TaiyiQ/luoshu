@@ -367,15 +367,15 @@ test "lowerU: pulse stream plus residual frame phase reproduces the U product" {
 // coverage test: computeSequence provably cannot cover a non-bipartite
 // graph in one round (the known_incomplete cases assert that), so this
 // checks that routeStage's residue loop closes the gap - every edge of
-// every snapshot graph gates exactly once across the rounds, and nothing
+// every case graph gates exactly once across the rounds, and nothing
 // gates that was not asked for. Gates are reconstructed from the sequences
 // themselves: an AOD qubit sharing a column with an SLM qubit at some
 // timestep is one fired CZ.
 test "routeStage gates every stage edge exactly once across rounds" {
     const gpa = std.testing.allocator;
 
-    for (route.snapshot_cases) |case| {
-        var g = try route.buildSnapshotGraph(case.kind, gpa);
+    for (route.graph_cases) |case| {
+        var g = try route.buildGraph(case.kind, gpa);
         defer g.deinit();
 
         // The stage's gate list: one Cz per undirected edge.
