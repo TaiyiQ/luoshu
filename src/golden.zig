@@ -1,14 +1,14 @@
-//! End-to-end golden tests: each case runs the full pipeline (circuit ->
-//! decompose -> route -> compile) and asserts three things:
+//! End-to-end golden tests: each case runs the full pipeline
+//! (circuit -> decompose -> route -> compile) and asserts three things:
 //!
-//!  - legality: verify.verify accepts the schedule;
-//!  - semantics: every CZ in the decomposed pipeline is entangled by a
-//!    rydberg pulse (the verifier only checks the schedule's own claims,
-//!    so a silently dropped gate would still verify);
-//!  - quality: the case's bench metrics match one line in
-//!    testdata/metrics.json, so a routing regression shows up as a
-//!    one-line reviewable diff instead of hundreds of coordinates.
-//!    Regenerate with `zig build update-goldens`.
+//! - legality: verify.verify accepts the schedule;
+//! - semantics: every CZ in the decomposed pipeline is entangled by a
+//!   rydberg pulse (the verifier only checks the schedule's own claims,
+//!   so a silently dropped gate would still verify);
+//! - quality: the case's bench metrics match one line in
+//!   testdata/metrics.json, so a routing regression shows up as a
+//!   one-line reviewable diff instead of hundreds of coordinates.
+//!   Regenerate with `zig build update-goldens`.
 
 const std = @import("std");
 const arch = @import("arch");
@@ -129,7 +129,8 @@ pub fn buildGrid(gpa: std.mem.Allocator) !circuit.Circuit {
     return c;
 }
 
-// CZ ring over 6 qubits — mirrors route.buildCycleGraph. Its first
+// CZ ring over 6 qubits — the even cycle from route.zig's coverage
+// test, taken through the full pipeline. Its first
 // timeframe places the AOD atoms away from the leftmost compute columns,
 // pinning down that the entry move stores atoms directly at their
 // first-timeframe positions.
