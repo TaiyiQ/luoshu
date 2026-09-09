@@ -344,7 +344,7 @@ test "repeated identical constraint merges to one gap" {
     var resting: std.ArrayList(Constraint) = .empty;
     try resting.append(arena, .{ .min_slot = 0, .max_slot = 1 });
     try mergeConstraints(arena, &resting, &.{.{ .min_slot = 0, .max_slot = 1 }});
-    try std.testing.expectEqual(@as(usize, 1), resting.items.len);
+    try std.testing.expectEqual(1, resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 0, .max_slot = 1 }, resting.items[0]);
 }
 
@@ -362,7 +362,7 @@ test "non-overlapping constraints accumulate to two gaps" {
     var resting: std.ArrayList(Constraint) = .empty;
     try resting.append(arena, .{ .min_slot = 0, .max_slot = 0 });
     try mergeConstraints(arena, &resting, &.{.{ .min_slot = 3, .max_slot = 9 }});
-    try std.testing.expectEqual(@as(usize, 2), resting.items.len);
+    try std.testing.expectEqual(2, resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 0, .max_slot = 0 }, resting.items[0]);
     try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 9 }, resting.items[1]);
 }
@@ -382,7 +382,7 @@ test "overlap with acc leading narrows to the intersection" {
     var resting: std.ArrayList(Constraint) = .empty;
     try resting.append(arena, .{ .min_slot = 0, .max_slot = 5 });
     try mergeConstraints(arena, &resting, &.{.{ .min_slot = 3, .max_slot = 9 }});
-    try std.testing.expectEqual(@as(usize, 1), resting.items.len);
+    try std.testing.expectEqual(1, resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 5 }, resting.items[0]);
 }
 
@@ -400,7 +400,7 @@ test "overlap with new leading narrows to the intersection" {
     var resting: std.ArrayList(Constraint) = .empty;
     try resting.append(arena, .{ .min_slot = 3, .max_slot = 9 });
     try mergeConstraints(arena, &resting, &.{.{ .min_slot = 0, .max_slot = 5 }});
-    try std.testing.expectEqual(@as(usize, 1), resting.items.len);
+    try std.testing.expectEqual(1, resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 5 }, resting.items[0]);
 }
 
@@ -418,7 +418,7 @@ test "intervals touching at one slot narrow to it" {
     var resting: std.ArrayList(Constraint) = .empty;
     try resting.append(arena, .{ .min_slot = 0, .max_slot = 3 });
     try mergeConstraints(arena, &resting, &.{.{ .min_slot = 3, .max_slot = 9 }});
-    try std.testing.expectEqual(@as(usize, 1), resting.items.len);
+    try std.testing.expectEqual(1, resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 3, .max_slot = 3 }, resting.items[0]);
 }
 
@@ -445,7 +445,7 @@ test "a candidate never narrows an entry it does not overlap" {
         .{ .min_slot = 4, .max_slot = 4 },
         .{ .min_slot = 5, .max_slot = 10 },
     });
-    try std.testing.expectEqual(@as(usize, 3), resting.items.len);
+    try std.testing.expectEqual(3, resting.items.len);
     for (resting.items) |gap| try std.testing.expect(gap.min_slot <= gap.max_slot);
 }
 
@@ -464,7 +464,7 @@ test "adjacent intervals without a shared slot stay two gaps" {
     var resting: std.ArrayList(Constraint) = .empty;
     try resting.append(arena, .{ .min_slot = 0, .max_slot = 3 });
     try mergeConstraints(arena, &resting, &.{.{ .min_slot = 4, .max_slot = 9 }});
-    try std.testing.expectEqual(@as(usize, 2), resting.items.len);
+    try std.testing.expectEqual(2, resting.items.len);
     try std.testing.expectEqual(Constraint{ .min_slot = 0, .max_slot = 3 }, resting.items[0]);
     try std.testing.expectEqual(Constraint{ .min_slot = 4, .max_slot = 9 }, resting.items[1]);
 }

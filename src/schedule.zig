@@ -842,7 +842,7 @@ fn occupiedStorageX(
 
 // Can every atom take an unused free column within `bound`?
 // Two-pointer technique.
-fn fitsWithin(xs: []const i32, free: []const i32, bound: i64, dest: ?[]i32) bool {
+fn fitsWithin(xs: []const i32, free: []const i32, bound: i32, dest: ?[]i32) bool {
 
     // Free site pointer (j):
     // Index of the first free column not yet taken.
@@ -883,11 +883,11 @@ fn assignNearestColumns(
     if (xs.len == 0) return dest;
 
     // Corner distances defines the upper bound.
-    var lo: i64 = 0;
-    var hi: i64 = @max(
+    var lo: i32 = 0;
+    var hi: i32 = @intCast(@max(
         @abs(xs[0] - free[free.len - 1]),
         @abs(xs[xs.len - 1] - free[0]),
-    );
+    ));
 
     while (lo < hi) {
         const mid = lo + @divTrunc(hi - lo, 2);
@@ -997,7 +997,7 @@ test "bestColOffset lands the block above its atoms" {
         .{ .id = 1, .pos = .{ .x = 6200, .y = 0 } },
     };
     const off = bestColOffset(grid, 2, &.{ 0, 1 }, &.{ 0, 1 }, &placement);
-    try std.testing.expectEqual(@as(usize, 5), off);
+    try std.testing.expectEqual(5, off);
 }
 
 test "bestColOffset minimizes the worst atom's walk" {
@@ -1033,7 +1033,7 @@ test "bestColOffset clamps the block to the grid" {
         .{ .id = 0, .pos = .{ .x = 20_000, .y = 0 } },
     };
     const off = bestColOffset(grid, 9, &.{0}, &.{0}, &placement);
-    try std.testing.expectEqual(@as(usize, 1), off);
+    try std.testing.expectEqual(1, off);
 }
 
 test "init rejects more qubits than loading-window sites" {

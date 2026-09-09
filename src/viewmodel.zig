@@ -16,30 +16,18 @@ const Point = schedule.Point;
 pub fn allSlmSites(gpa: std.mem.Allocator, layout: arch.ArchConfig) ![]const Point {
     var sites: std.ArrayList(Point) = .empty;
 
-    try appendSlmSites(gpa, &sites, layout.storage_zone.offset_nm, layout.storage_zone.slm);
-    for (layout.compute_zone.slms) |slm| {
-        try appendSlmSites(gpa, &sites, layout.compute_zone.offset_nm, slm);
+    try appendSlmSites(gpa, &sites, layout.storage_zone.grid());
+    for (0..layout.compute_zone.slms.len) |i| {
+        try appendSlmSites(gpa, &sites, layout.compute_zone.grid(i));
     }
-    try appendSlmSites(gpa, &sites, layout.readout_zone.offset_nm, layout.readout_zone.slm);
+    try appendSlmSites(gpa, &sites, layout.readout_zone.grid());
 
     return try sites.toOwnedSlice(gpa);
 }
 
-fn appendSlmSites(
-    gpa: std.mem.Allocator,
-    sites: *std.ArrayList(Point),
-    zone_offset_nm: [2]i32,
-    slm: arch.Slm,
-) !void {
-    const x0 = zone_offset_nm[0] + slm.offset_nm[0];
-    const y0 = zone_offset_nm[1] + slm.offset_nm[1];
-    const x_sep: i32 = @intCast(slm.sep_nm[0]);
-    const y_sep: i32 = @intCast(slm.sep_nm[1]);
-    for (0..slm.num_row) |ri| for (0..slm.num_col) |ci| {
-        try sites.append(gpa, .{
-            .x = x0 + @as(i32, @intCast(ci)) * x_sep,
-            .y = y0 + @as(i32, @intCast(ri)) * y_sep,
-        });
+fn appendSlmSites(gpa: std.mem.Allocator, sites: *std.ArrayList(Point), g: arch.Grid) !void {
+    for (0..g.num_row) |ri| for (0..g.num_col) |ci| {
+        try sites.append(gpa, .{ .x = g.x(ci), .y = g.y(ri) });
     };
 }
 
@@ -544,8 +532,8 @@ test "positions track moves and loaded is monotone between load and store" {
         try std.testing.expectEqual(pt(1000, 0), frame_pos[1]);
     }
 
-    try std.testing.expectEqual(@as(usize, 1), vm.num_qubits);
-    try std.testing.expectEqual(@as(u32, 2), vm.summary.move);
+    try std.testing.expectEqual(1, vm.num_qubits);
+    try std.testing.expectEqual(2, vm.summary.move);
 }
 
 test "summary counts ops and num_qubits spans all op kinds" {
@@ -603,7 +591,7 @@ test "summary counts ops and num_qubits spans all op kinds" {
         vm.summary,
     );
 
-    try std.testing.expectEqual(@as(usize, 3), vm.num_qubits);
+    try std.testing.expectEqual(3, vm.num_qubits);
 }
 
 test "flat layout: disjoint gates share a column, a CZ blocks its span" {
@@ -618,12 +606,12 @@ test "flat layout: disjoint gates share a column, a CZ blocks its span" {
     var lay = try CircuitLayout.init(gpa, c, null);
     defer lay.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), lay.n_cols);
-    try std.testing.expectEqual(@as(usize, 0), lay.stage_cols.len);
-    try std.testing.expectEqual(@as(usize, 3), lay.laid.len);
-    try std.testing.expectEqual(@as(usize, 0), lay.laid[0].col); // cz
-    try std.testing.expectEqual(@as(usize, 1), lay.laid[1].col); // z(1)
-    try std.testing.expectEqual(@as(usize, 0), lay.laid[2].col); // z(3)
+    try std.testing.expectEqual(2, lay.n_cols);
+    try std.testing.expectEqual(0, lay.stage_cols.len);
+    try std.testing.expectEqual(3, lay.laid.len);
+    try std.testing.expectEqual(0, lay.laid[0].col); // cz
+    try std.testing.expectEqual(1, lay.laid[1].col); // z(1)
+    try std.testing.expectEqual(0, lay.laid[2].col); // z(3)
 }
 
 test "staged layout: stages never share a column" {
@@ -639,12 +627,12 @@ test "staged layout: stages never share a column" {
     defer pipe.deinit();
     // [cz(0,1)], [h(1)], [cz(0,1)] — stages alternate CZ/U kind, so the U
     // barrier can't share a stage with either CZ.
-    try std.testing.expectEqual(@as(usize, 3), pipe.stages.items.len);
+    try std.testing.expectEqual(3, pipe.stages.items.len);
 
     var lay = try CircuitLayout.init(gpa, c, pipe);
     defer lay.deinit();
 
-    try std.testing.expectEqual(@as(usize, 3), lay.stage_cols.len);
+    try std.testing.expectEqual(3, lay.stage_cols.len);
     // Each stage starts past every column the previous one used.
     for (lay.stage_cols[1..], lay.stage_cols[0 .. lay.stage_cols.len - 1]) |sc, prev| {
         try std.testing.expect(sc > prev);
@@ -676,11 +664,11 @@ test "slot tables reproduce each CZ stage's gates as AOD-over-SLM pairings" {
     var tables = try SlotTables.init(gpa, &pipe);
     defer tables.deinit();
 
-    try std.testing.expectEqual(@as(usize, 1), tables.rounds.len);
+    try std.testing.expectEqual(1, tables.rounds.len);
     const round = tables.rounds[0];
-    try std.testing.expectEqual(@as(usize, 1), round.stage);
-    try std.testing.expectEqual(@as(usize, 0), round.ri);
-    try std.testing.expectEqual(@as(usize, 1), round.n_in_stage);
+    try std.testing.expectEqual(1, round.stage);
+    try std.testing.expectEqual(0, round.ri);
+    try std.testing.expectEqual(1, round.n_in_stage);
 
     // Every timestep row spans the same slots as the SLM row, and the
     // (AOD, SLM) pairings across all timesteps are exactly the stage's
@@ -694,11 +682,11 @@ test "slot tables reproduce each CZ stage's gates as AOD-over-SLM pairings" {
             fired[@min(p, q) * 3 + @max(p, q)] += 1;
         }
     }
-    try std.testing.expectEqual(@as(usize, 1), fired[0 * 3 + 1]);
-    try std.testing.expectEqual(@as(usize, 1), fired[1 * 3 + 2]);
+    try std.testing.expectEqual(1, fired[0 * 3 + 1]);
+    try std.testing.expectEqual(1, fired[1 * 3 + 2]);
     var total: usize = 0;
     for (fired) |n| total += n;
-    try std.testing.expectEqual(@as(usize, 2), total);
+    try std.testing.expectEqual(2, total);
 }
 
 test "buildDimensions anchors seps, dr, and zone gaps to the example config" {

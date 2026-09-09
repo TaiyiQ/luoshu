@@ -960,6 +960,6 @@ pub const SpecSheet = struct {
     }
 };
 
-fn um(nm: u32) f64 {
+fn um(nm: i64) f64 {
     return @as(f64, @floatFromInt(nm)) / 1000.0;
 }

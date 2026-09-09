@@ -161,8 +161,8 @@ test "parse orders sites compute-facing row first, columns left to right" {
     const a = try parse(std.testing.allocator, test_doc);
     defer a.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(@as(u32, 3), a.rows);
-    try std.testing.expectEqual(@as(u32, 4), a.cols);
+    try std.testing.expectEqual(3, a.rows);
+    try std.testing.expectEqual(4, a.cols);
     try std.testing.expectEqualSlices(schedule.Site, &.{
         .{ .row = 2, .col = 1 },
         .{ .row = 2, .col = 2 },
@@ -223,9 +223,9 @@ test "the example assembly file loads" {
     );
     defer a.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(@as(u32, 10), a.rows);
-    try std.testing.expectEqual(@as(u32, 110), a.cols);
-    try std.testing.expectEqual(@as(usize, 50), a.sites.len);
+    try std.testing.expectEqual(10, a.rows);
+    try std.testing.expectEqual(110, a.cols);
+    try std.testing.expectEqual(50, a.sites.len);
     // Fully occupied grid: the first qubit sits in the highest row index
     // (compute-facing) at the left edge.
     try std.testing.expectEqual(

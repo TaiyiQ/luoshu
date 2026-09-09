@@ -402,24 +402,24 @@ test "measureFrames sums routing overhead and parallelism per frame" {
     const frames = [_]schedule.Frame{ f0, f1, f2 };
     const m = measureFrames(&frames, 4);
 
-    try std.testing.expectEqual(@as(usize, 3), m.frames);
-    try std.testing.expectEqual(@as(usize, 2), m.n_load);
-    try std.testing.expectEqual(@as(usize, 2), m.n_store);
-    try std.testing.expectEqual(@as(usize, 2), m.n_move);
-    try std.testing.expectEqual(@as(usize, 1), m.n_rydberg);
-    try std.testing.expectEqual(@as(usize, 2), m.cz_pairs);
+    try std.testing.expectEqual(3, m.frames);
+    try std.testing.expectEqual(2, m.n_load);
+    try std.testing.expectEqual(2, m.n_store);
+    try std.testing.expectEqual(2, m.n_move);
+    try std.testing.expectEqual(1, m.n_rydberg);
+    try std.testing.expectEqual(2, m.cz_pairs);
 
-    try std.testing.expectApproxEqAbs(@as(f64, 1650.0), m.total_move_nm, 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 1100.0), m.max_move_nm, 1e-9);
+    try std.testing.expectApproxEqAbs(1650.0, m.total_move_nm, 1e-9);
+    try std.testing.expectApproxEqAbs(1100.0, m.max_move_nm, 1e-9);
 
     // loading: one load phase (20) + one store phase (20) = 40.
-    try std.testing.expectApproxEqAbs(@as(f64, 40.0), m.loading_us, 1e-9);
+    try std.testing.expectApproxEqAbs(40.0, m.loading_us, 1e-9);
     // shuttling: frame 1's max move 1100 nm / 550 nm/µs = 2.0 µs.
-    try std.testing.expectApproxEqAbs(@as(f64, 2.0), m.shuttling_us, 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.2), m.entangling_us, 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 42.0), m.routingUs(), 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 42.2), m.totalUs(), 1e-9);
-    try std.testing.expectApproxEqAbs(@as(f64, 2.0), m.avgCzPerPulse(), 1e-9);
+    try std.testing.expectApproxEqAbs(2.0, m.shuttling_us, 1e-9);
+    try std.testing.expectApproxEqAbs(0.2, m.entangling_us, 1e-9);
+    try std.testing.expectApproxEqAbs(42.0, m.routingUs(), 1e-9);
+    try std.testing.expectApproxEqAbs(42.2, m.totalUs(), 1e-9);
+    try std.testing.expectApproxEqAbs(2.0, m.avgCzPerPulse(), 1e-9);
 }
 
 test {
