@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     // metricsJson runs every case through runCase, which verifies the
     // schedule and checks CZ coverage, so an illegal or lossy schedule can
     // never be blessed as a baseline.
-    const json = try golden.metricsJson(gpa, cfg);
+    const json = try golden.metricsJson(gpa, io, cfg);
     defer gpa.free(json);
 
     try serialize.writeJsonFile(io, golden.metrics_path, json);

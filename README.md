@@ -19,7 +19,7 @@ A neutral atom gate compiler, that compiles [OpenQASM 3](https://openqasm.com/) 
 > ./luoshu -h
 
 # Run a single circuit and visualize
-> ./luoshu ./ex/mvp/mvp.qasm --viz
+> ./luoshu ./ex/0-simple/mvp.qasm --viz
 ```
 
 For an in-depth understanding, see [CLI](./doc/cli.md).
@@ -34,7 +34,7 @@ For an in-depth understanding, see [CLI](./doc/cli.md).
     - Edit it to experiment with different initial placements.
 - `cfg/settings.toml`: Encodes the input options (`[options]`: `arch`, `assembly`, `out`) for `--cfg`.
 
-Everything under `cfg/` is user-editable; tests and goldens pin their own copies under `testdata/`, so experiments never break the suite.
+Everything under `cfg/` is user-editable and everything under `ex/` is a runnable example or benchmark corpus; the golden suite pins everything it consumes — circuits, architecture, expected metrics — under `testdata/`, so neither experiments nor example edits ever break the suite.
 
 Inputs come from flags or from a config file, never both:
 
