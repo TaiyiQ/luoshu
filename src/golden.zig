@@ -24,9 +24,6 @@ pub const arch_path = "testdata/arch.toml";
 pub const metrics_path = "testdata/metrics.json";
 pub const golden_dir = "testdata/golden";
 
-/// Collects the corpus paths. Walk order is filesystem-dependent, so the
-/// paths are sorted to keep metrics.json byte-stable; within each folder
-/// the number prefixes make sorted order the simplest-first order.
 fn collectCases(gpa: std.mem.Allocator, io: std.Io) ![][]const u8 {
     var list: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -55,6 +52,8 @@ fn collectCases(gpa: std.mem.Allocator, io: std.Io) ![][]const u8 {
     // An empty corpus means the walk ran against the wrong directory.
     if (list.items.len == 0) return error.EmptyGoldenCorpus;
 
+    // Paths are sorted to keep metrics.json byte-stable; within each folder
+    // the number prefixes make sorted order the simplest-first order.
     std.mem.sort([]const u8, list.items, {}, struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
             return std.mem.lessThan(u8, a, b);
@@ -143,6 +142,22 @@ pub fn metricsJson(gpa: std.mem.Allocator, io: std.Io, cfg: arch.ArchConfig) ![]
     try w.writeAll("\n}");
 
     return gpa.dupe(u8, buf.written());
+}
+
+// Entry point of `zig build update-goldens`.
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const io = init.io;
+
+    const cfg = try arch.load(gpa, io, arch_path);
+    defer cfg.deinit(gpa);
+
+    const json = try metricsJson(gpa, io, cfg);
+    defer gpa.free(json);
+
+    try serialize.writeJsonFile(io, metrics_path, json);
+
+    std.debug.print("wrote {s}\n", .{metrics_path});
 }
 
 test "golden: metrics match testdata/metrics.json" {
