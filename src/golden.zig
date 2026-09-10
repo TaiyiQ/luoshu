@@ -358,6 +358,35 @@ test "qasm: reset compiles legally from testdata/reset.qasm" {
     try qasmCompilesLegally("testdata/reset.qasm");
 }
 
+// A repeated CZ pair must survive to the schedule as two pulses: decompose
+// splits it across stages, and verify's coverage check proves both fired.
+// One stage would let routing's interaction graph merge the repeat into a
+// single pulse - the wrong unitary, since CZ^2 = I.
+test "a repeated CZ pair compiles to two entangling pulses" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+
+    var circ = circuit.Circuit.init(gpa, 2);
+    defer circ.deinit();
+    try circ.cz(0, 1);
+    try circ.cz(0, 1);
+
+    var pipe = try circuit.decompose(gpa, circ);
+    defer pipe.deinit();
+
+    const cfg = try arch.load(gpa, io, arch_path);
+    defer cfg.deinit(gpa);
+
+    var hw = try compiler.compile(gpa, &pipe, cfg, null, null);
+    defer hw.deinit();
+
+    const wanted = try pipe.czPairs(gpa);
+    defer gpa.free(wanted);
+    try std.testing.expectEqual(2, wanted.len);
+
+    try verify.verify(gpa, &hw, wanted);
+}
+
 test {
     std.testing.refAllDecls(@This());
 }

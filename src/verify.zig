@@ -33,9 +33,11 @@
 //!  - CZ coverage: the multiset of pairs carried on rydberg ops equals the
 //!    requested CZ list the caller passes in. Every other check audits the
 //!    schedule's own claims, so this is what catches a silently dropped
-//!    gate. A circuit that repeats a pair within one stage fails here by
+//!    gate. A pipeline that repeats a pair within one stage fails here by
 //!    design: routing's interaction graph deduplicates, and CZ^2 = I makes
-//!    that dedup semantically lossy;
+//!    that dedup semantically lossy. decompose never builds such a stage
+//!    (a repeated pair takes the next CZ episode), so this end of the
+//!    check backstops directly built pipelines;
 //!  - measurement: measured qubits lie inside the named zone;
 //!  - reset: reset qubits sit in an SLM trap and lie inside the named zone.
 //!
@@ -107,7 +109,10 @@ fn pairLessThan(_: void, a: [2]u32, b: [2]u32) bool {
 /// The multiset of CZ pairs recorded on the schedule's rydberg ops must
 /// equal the requested gates. Pair intent proves each recorded pair is
 /// physically entangled; this proves the recorded pairs are the ones the
-/// circuit asked for, so a silently dropped gate cannot verify.
+/// circuit asked for, so a silently dropped gate cannot verify. The
+/// duplicate direction backstops directly built pipelines: decompose
+/// splits a repeated pair into separate stages, so its output never
+/// carries a within-stage duplicate for routing to merge away.
 fn checkCzCoverage(
     gpa: std.mem.Allocator,
     hw: *const schedule.Hardware,
