@@ -227,15 +227,8 @@ pub fn build(b: *std.Build) void {
 
     const update_exe = b.addExecutable(.{
         .name = "update-goldens",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/update_goldens.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = golden_mod,
     });
-    update_exe.root_module.addImport("arch", arch_mod);
-    update_exe.root_module.addImport("serialize", serialize_mod);
-    update_exe.root_module.addImport("golden", golden_mod);
 
     const update_run = b.addRunArtifact(update_exe);
     update_run.setCwd(b.path("."));
