@@ -554,10 +554,9 @@ fn contains(b: Bounds, p: Point) bool {
 // were computed by moveAodCompute from the same inputs as the placement,
 // so a bug that corrupts recording and placement consistently passes here,
 // and a pulse that was never emitted leaves nothing to check. That end of
-// the contract is held by schedule.zig's expectRydbergPairsWithinBlockade,
-// which derives the intent independently from (fixed, moveable) and counts
-// the pulses. Breadth here (every schedule, trusted claim); depth there
-// (one scenario, untrusted claim).
+// the contract is held by checkCzCoverage: wrongly recorded or missing
+// pairs no longer match the requested CZ list, so between the two checks
+// the schedule entangles exactly what the circuit asked for.
 fn checkPairs(t: usize, cfg: arch.ArchConfig, pos: []const Point, pairs: []const [2]u32, n: usize) !void {
     const db: i64 = cfg.constraints.db_nm;
     const db2 = db * db;
@@ -1263,6 +1262,78 @@ test "catches an unrequested CZ: an entangled pair the circuit never asked for" 
         error.CzCoverageMismatch,
         verify(gpa, &hw, &.{}),
     );
+}
+
+// Mirror of schedule.zig's shuttle test config: 3x4 storage grid, two
+// compute SLMs whose paired columns sit dr (500nm) apart within db
+// (1000nm), while a wrong-column pairing lands a full 3000nm column
+// separation out of blockade range.
+var shuttle_compute_slms = [2]arch.Slm{
+    .{
+        .slm_id = 1,
+        .num_row = 2,
+        .num_col = 4,
+        .sep_nm = .{ 3000, 2000 },
+        .offset_nm = .{ 0, 0 },
+    },
+    .{
+        .slm_id = 2,
+        .num_row = 2,
+        .num_col = 4,
+        .sep_nm = .{ 3000, 2000 },
+        .offset_nm = .{ 0, 500 },
+    },
+};
+
+fn shuttleCfg() arch.ArchConfig {
+    var cfg = arch.testConfig();
+    cfg.aod = .{ .aod_id = 0, .min_sep_nm = 500, .max_num_row = 1, .max_num_col = 8 };
+    cfg.storage_zone.slm.num_row = 3;
+    cfg.compute_zone.offset_nm = .{ 0, 6000 };
+    cfg.compute_zone.dr_nm = 500;
+    cfg.compute_zone.dw_nm = 2500;
+    cfg.compute_zone.slms = &shuttle_compute_slms;
+    cfg.readout_zone.offset_nm = .{ 0, 12000 };
+    cfg.readout_zone.slm = .{
+        .slm_id = 3,
+        .num_row = 1,
+        .num_col = 4,
+        .sep_nm = .{ 1000, 1000 },
+        .offset_nm = .{ 0, 0 },
+    };
+    cfg.constraints.db_nm = 1000;
+    cfg.constraints.dz_nm = 1000;
+    return cfg;
+}
+
+test "choreographed round trip entangles exactly the requested pairs" {
+    const gpa = std.testing.allocator;
+    const cfg = shuttleCfg();
+
+    // GHZ-shaped rounds through the real producer: q1 entangles with q0
+    // (timeframe 0, column 0), then slides to column 1 to entangle with q2
+    // (timeframe 1), and the register returns to storage. Unlike the
+    // raw-frame tests above, nothing here is hand-recorded: moveAodCompute
+    // derives the rydberg pairs itself, and coverage plus pair intent must
+    // find them equal to the request and within blockade range.
+    var hw = try schedule.Hardware.init(gpa, cfg, 3, &.{
+        .{ .row = 2, .col = 0 },
+        .{ .row = 2, .col = 1 },
+        .{ .row = 2, .col = 2 },
+    });
+    defer hw.deinit();
+
+    const fixed = [_]?usize{ 0, 2 };
+    var t0 = [_]?usize{ 1, null };
+    var t1 = [_]?usize{ null, 1 };
+    var moveable = [_][]?usize{ &t0, &t1 };
+
+    try hw.moveSlmCompute(&fixed);
+    try hw.moveAodCompute(&fixed, &moveable);
+    try hw.moveAodStorage(&moveable);
+    try hw.moveSlmStorage(&fixed);
+
+    try verify(gpa, &hw, &.{ .{ 0, 1 }, .{ 1, 2 } });
 }
 
 test "catches a measurement outside its zone" {
