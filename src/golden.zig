@@ -358,33 +358,18 @@ test "qasm: reset compiles legally from testdata/reset.qasm" {
     try qasmCompilesLegally("testdata/reset.qasm");
 }
 
-// A repeated CZ pair must survive to the schedule as two pulses: decompose
-// splits it across stages, and verify's coverage check proves both fired.
-// One stage would let routing's interaction graph merge the repeat into a
-// single pulse - the wrong unitary, since CZ^2 = I.
-test "a repeated CZ pair compiles to two entangling pulses" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
+// A repeated pair "separated" only by a gate on an unrelated qubit: the
+// disjoint h never advances the pair's cursors, so only decompose's
+// pair-split keeps the repeat out of the first stage. Coverage then
+// proves both pulses fired.
+test "qasm: cz-repeat-disjoint compiles legally from testdata/cz-repeat-disjoint.qasm" {
+    try qasmCompilesLegally("testdata/cz-repeat-disjoint.qasm");
+}
 
-    var circ = circuit.Circuit.init(gpa, 2);
-    defer circ.deinit();
-    try circ.cz(0, 1);
-    try circ.cz(0, 1);
-
-    var pipe = try circuit.decompose(gpa, circ);
-    defer pipe.deinit();
-
-    const cfg = try arch.load(gpa, io, arch_path);
-    defer cfg.deinit(gpa);
-
-    var hw = try compiler.compile(gpa, &pipe, cfg, null, null);
-    defer hw.deinit();
-
-    const wanted = try pipe.czPairs(gpa);
-    defer gpa.free(wanted);
-    try std.testing.expectEqual(2, wanted.len);
-
-    try verify.verify(gpa, &hw, wanted);
+// A repeated edge on a triangle: the pair-split composes with routing's
+// multi-round residue loop (the triangle alone forces a residue round).
+test "qasm: cz-repeat-triangle compiles legally from testdata/cz-repeat-triangle.qasm" {
+    try qasmCompilesLegally("testdata/cz-repeat-triangle.qasm");
 }
 
 test {
