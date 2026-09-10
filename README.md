@@ -56,6 +56,8 @@ Mixing `--cfg` with `--arch`, `--asm`, or `--out` is an error. The runtime toggl
 
 ## Benchmark
 
+For a comparison against MQT QMAP's NALAC compiler on the MQT Bench 20-qubit suite - see the [benchmark report](./doc/nalac-benchmark.md).
+
 Passing several circuits runs them as a suite: the visualizer stays closed, each circuit writes [Schedule](./doc/schedule.md) and [Benchmark](./doc/benchmark.md) when the `out` directory is set, and a schedule-quality table prints:
 
 ```shell
@@ -77,6 +79,23 @@ su2random_20      |     20 |   2068 | 570/570 | 469/468 |     1.22 |       30.6 
 twolocalrandom_20 |     20 |   2067 | 570/570 | 469/468 |     1.22 |       30.6 |     6.4 |     37.0 |       1.05
 wstate_20         |     20 |    473 |   38/38 |   38/38 |     1.00 |        5.3 |     2.4 |      7.8 |       0.15
 -----------------------------------------------------------------------------------------------------------------
+```
+
+## Acknowledgments
+
+This project is an independent implementation of the abstract model and entangling-gate routing approach for zoned neutral-atom architectures introduced by Stade, Schmid, Burgholzer, and Wille in ["An Abstract Model and Efficient Routing for Logical Entangling Gates on Zoned Neutral Atom Architectures"](https://arxiv.org/abs/2405.08068) (IEEE QCE 2024). Many thanks to the authors and the [Chair for Design Automation](https://www.cda.cit.tum.de/) at TUM. Their reference implementation **NALAC**, part of [MQT QMAP](https://github.com/cda-tum/mqt-qmap) (MIT), served as the behavioral reference and benchmark baseline - see the [benchmark report](./doc/nalac-benchmark.md).
+
+If you use this work, please also cite the original paper:
+
+```bibtex
+@inproceedings{stade2024abstract,
+  title     = {An Abstract Model and Efficient Routing for Logical Entangling Gates on Zoned Neutral Atom Architectures},
+  author    = {Stade, Yannick and Schmid, Ludwig and Burgholzer, Lukas and Wille, Robert},
+  booktitle = {IEEE International Conference on Quantum Computing and Engineering (QCE)},
+  year      = {2024},
+  pages     = {784--795},
+  doi       = {10.1109/QCE60285.2024.00098}
+}
 ```
 
 ## License
