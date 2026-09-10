@@ -20,37 +20,49 @@ const compiler = @import("compiler");
 const serialize = @import("serialize");
 const verify = @import("verify");
 
-/// Pinned copy of the architecture config: cfg/arch.toml is user-editable
-/// for experiments, so the goldens compile against this frozen twin.
 pub const arch_path = "testdata/arch.toml";
-
-/// The metrics golden: one line of bench numbers per case, keyed by name.
 pub const metrics_path = "testdata/metrics.json";
+pub const golden_dir = "testdata/golden";
 
-/// The golden corpus, ordered simplest-first per folder. Walked by the
-/// metrics test below and by `zig build update-goldens`, so the
-/// regenerator can never drift from the test.
-pub const cases = [_][]const u8{
-    "testdata/golden/01-even-cycle.qasm",
-    "testdata/golden/02-pendant-cycle.qasm",
-    "testdata/golden/03-grid.qasm",
-    "testdata/golden/04-qft-5.qasm",
-    "testdata/golden/bell/01-bell.qasm",
-    "testdata/golden/bell/02-bell-serial.qasm",
-    "testdata/golden/bell/03-bell-inter.qasm",
-    "testdata/golden/reset/01-reuse.qasm",
-    "testdata/golden/reset/02-register.qasm",
-    "testdata/golden/reset/03-interleave.qasm",
-    "testdata/golden/czpair/01-dup-adjacent.qasm",
-    "testdata/golden/czpair/02-dup-reversed.qasm",
-    "testdata/golden/czpair/03-dup-commuting-cz-between.qasm",
-    "testdata/golden/czpair/04-dup-disjoint-u-between.qasm",
-    "testdata/golden/czpair/05-dup-partner-u-between.qasm",
-    "testdata/golden/czpair/06-dup-triple.qasm",
-    "testdata/golden/czpair/07-dup-reset-between.qasm",
-    "testdata/golden/czpair/08-dup-cx.qasm",
-    "testdata/golden/czpair/09-dup-in-triangle.qasm",
-};
+/// Collects the corpus paths. Walk order is filesystem-dependent, so the
+/// paths are sorted to keep metrics.json byte-stable; within each folder
+/// the number prefixes make sorted order the simplest-first order.
+fn collectCases(gpa: std.mem.Allocator, io: std.Io) ![][]const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (list.items) |p| gpa.free(p);
+        list.deinit(gpa);
+    }
+
+    var dir = try std.Io.Dir.cwd().openDir(
+        io,
+        golden_dir,
+        .{ .iterate = true },
+    );
+    defer dir.close(io);
+
+    var walker = try dir.walk(gpa);
+    defer walker.deinit();
+
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.path, ".qasm")) continue;
+        const full = try std.fmt.allocPrint(gpa, golden_dir ++ "/{s}", .{entry.path});
+        errdefer gpa.free(full);
+        try list.append(gpa, full);
+    }
+
+    // An empty corpus means the walk ran against the wrong directory.
+    if (list.items.len == 0) return error.EmptyGoldenCorpus;
+
+    std.mem.sort([]const u8, list.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+
+    return list.toOwnedSlice(gpa);
+}
 
 /// Metrics key for a corpus path: the path under testdata/golden/, minus
 /// the extension.
@@ -95,16 +107,22 @@ pub fn runCase(
 }
 
 /// Builds the metrics golden: one line of bench numbers per case, keyed by
-/// name, in `cases` order. compile_ns is excluded (non-deterministic);
+/// name, in sorted path order. compile_ns is excluded (non-deterministic);
 /// everything else is deterministic arithmetic over a deterministic
 /// schedule, so the file is byte-stable.
 pub fn metricsJson(gpa: std.mem.Allocator, io: std.Io, cfg: arch.ArchConfig) ![]u8 {
+    const paths = try collectCases(gpa, io);
+    defer {
+        for (paths) |p| gpa.free(p);
+        gpa.free(paths);
+    }
+
     var buf: std.Io.Writer.Allocating = .init(gpa);
     defer buf.deinit();
     const w = &buf.writer;
 
     try w.writeAll("{\n");
-    for (cases, 0..) |path, i| {
+    for (paths, 0..) |path, i| {
         errdefer std.debug.print("golden case failed: {s}\n", .{path});
         const m = try runCase(gpa, io, cfg, path);
 
@@ -138,24 +156,6 @@ test "golden: metrics match testdata/metrics.json" {
     defer gpa.free(json);
 
     try serialize.expectMatchesFile(gpa, io, metrics_path, json);
-}
-
-// The two mistake fixtures are not golden cases: they pin the parser's
-// rejections through the same load path the goldens use.
-test "mistake: cz on a single qubit is rejected" {
-    try std.testing.expectError(error.ParseError, qasm.load(
-        std.testing.allocator,
-        std.testing.io,
-        "testdata/golden/czpair/10-mistake-self-cz.qasm",
-    ));
-}
-
-test "mistake: cz on an undeclared register is rejected" {
-    try std.testing.expectError(error.UnknownRegister, qasm.load(
-        std.testing.allocator,
-        std.testing.io,
-        "testdata/golden/czpair/11-mistake-undeclared.qasm",
-    ));
 }
 
 test {

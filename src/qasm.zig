@@ -1066,6 +1066,14 @@ test "QasmParser errors on a two-qubit gate on a single qubit" {
     try std.testing.expectError(error.ParseError, px.parse());
 }
 
+test "QasmParser errors on a gate operand naming an undeclared register" {
+    // Only `q` is declared, so the cz operands cannot resolve.
+    const cz = "qubit[2] q;\ncz r[0], r[1];\nmeasure q;\n";
+    var pu = QasmParser.init(std.testing.allocator, cz);
+    try std.testing.expectError(error.UnknownRegister, pu.parse());
+    try std.testing.expectEqualStrings("reference to an undeclared register", pu.reason.?);
+}
+
 test "QasmParser names the missing delimiter in a declaration" {
     // Missing the closing ']'.
     const close = "qubit[8 q;\nmeasure q;\n";
