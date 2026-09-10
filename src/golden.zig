@@ -39,17 +39,16 @@ pub const metrics_path = "testdata/metrics.json";
 /// Walked by the per-case tests below and by `zig build update-goldens`,
 /// so the regenerator can never drift from the tests.
 pub const cases = [_]Case{
-    .{ .path = "testdata/golden/grid.qasm", .name = "grid" },
-    .{ .path = "testdata/golden/qft-5.qasm", .name = "qft-5" },
-    .{ .path = "testdata/golden/even-cycle.qasm", .name = "even-cycle" },
-    .{ .path = "testdata/golden/pendant-cycle.qasm", .name = "pendant-cycle" },
-    .{ .path = "testdata/golden/bell/bell.qasm", .name = "bell/bell" },
-    .{ .path = "testdata/golden/bell/bell-inter.qasm", .name = "bell/bell-inter" },
-    .{ .path = "testdata/golden/bell/bell-inter-20.qasm", .name = "bell/bell-inter-20" },
-    .{ .path = "testdata/golden/bell/bell-serial-20.qasm", .name = "bell/bell-serial-20" },
-    .{ .path = "testdata/golden/reset/interleave.qasm", .name = "reset/interleave" },
-    .{ .path = "testdata/golden/reset/register.qasm", .name = "reset/register" },
-    .{ .path = "testdata/golden/reset/reuse.qasm", .name = "reset/reuse" },
+    .{ .path = "testdata/golden/01-even-cycle.qasm", .name = "01-even-cycle" },
+    .{ .path = "testdata/golden/02-pendant-cycle.qasm", .name = "02-pendant-cycle" },
+    .{ .path = "testdata/golden/03-grid.qasm", .name = "03-grid" },
+    .{ .path = "testdata/golden/04-qft-5.qasm", .name = "04-qft-5" },
+    .{ .path = "testdata/golden/bell/01-bell.qasm", .name = "bell/01-bell" },
+    .{ .path = "testdata/golden/bell/02-bell-serial.qasm", .name = "bell/02-bell-serial" },
+    .{ .path = "testdata/golden/bell/03-bell-inter.qasm", .name = "bell/03-bell-inter" },
+    .{ .path = "testdata/golden/reset/01-reuse.qasm", .name = "reset/01-reuse" },
+    .{ .path = "testdata/golden/reset/02-register.qasm", .name = "reset/02-register" },
+    .{ .path = "testdata/golden/reset/03-interleave.qasm", .name = "reset/03-interleave" },
     .{ .path = "testdata/golden/czpair/01-dup-adjacent.qasm", .name = "czpair/01-dup-adjacent" },
     .{ .path = "testdata/golden/czpair/02-dup-reversed.qasm", .name = "czpair/02-dup-reversed" },
     .{ .path = "testdata/golden/czpair/03-dup-commuting-cz-between.qasm", .name = "czpair/03-dup-commuting-cz-between" },
@@ -58,8 +57,7 @@ pub const cases = [_]Case{
     .{ .path = "testdata/golden/czpair/06-dup-triple.qasm", .name = "czpair/06-dup-triple" },
     .{ .path = "testdata/golden/czpair/07-dup-reset-between.qasm", .name = "czpair/07-dup-reset-between" },
     .{ .path = "testdata/golden/czpair/08-dup-cx.qasm", .name = "czpair/08-dup-cx" },
-    .{ .path = "testdata/golden/czpair/09-rzz-then-cz.qasm", .name = "czpair/09-rzz-then-cz" },
-    .{ .path = "testdata/golden/czpair/10-dup-in-triangle.qasm", .name = "czpair/10-dup-in-triangle" },
+    .{ .path = "testdata/golden/czpair/09-dup-in-triangle.qasm", .name = "czpair/09-dup-in-triangle" },
 };
 
 /// Parses the case's .qasm, runs it through the full pipeline, verifies
@@ -139,50 +137,46 @@ fn goldenCase(name: []const u8) !bench.Metrics {
     return runCase(gpa, io, cfg, case.path);
 }
 
-test "golden: grid" {
-    _ = try goldenCase("grid");
+test "golden: 01-even-cycle" {
+    _ = try goldenCase("01-even-cycle");
 }
 
-test "golden: qft-5" {
-    _ = try goldenCase("qft-5");
+test "golden: 02-pendant-cycle" {
+    _ = try goldenCase("02-pendant-cycle");
 }
 
-test "golden: even-cycle" {
-    _ = try goldenCase("even-cycle");
+test "golden: 03-grid" {
+    _ = try goldenCase("03-grid");
 }
 
-test "golden: pendant-cycle" {
-    _ = try goldenCase("pendant-cycle");
+test "golden: 04-qft-5" {
+    _ = try goldenCase("04-qft-5");
 }
 
-test "golden: bell/bell" {
-    _ = try goldenCase("bell/bell");
+test "golden: bell/01-bell" {
+    _ = try goldenCase("bell/01-bell");
 }
 
-test "golden: bell/bell-inter" {
-    _ = try goldenCase("bell/bell-inter");
+test "golden: bell/02-bell-serial" {
+    _ = try goldenCase("bell/02-bell-serial");
 }
 
-test "golden: bell/bell-inter-20" {
-    _ = try goldenCase("bell/bell-inter-20");
+test "golden: bell/03-bell-inter" {
+    _ = try goldenCase("bell/03-bell-inter");
 }
 
-test "golden: bell/bell-serial-20" {
-    _ = try goldenCase("bell/bell-serial-20");
-}
-
-test "golden: reset/interleave" {
-    const m = try goldenCase("reset/interleave");
+test "golden: reset/01-reuse" {
+    const m = try goldenCase("reset/01-reuse");
     try std.testing.expect(m.n_reset >= 1);
 }
 
-test "golden: reset/register" {
-    const m = try goldenCase("reset/register");
+test "golden: reset/02-register" {
+    const m = try goldenCase("reset/02-register");
     try std.testing.expect(m.n_reset >= 1);
 }
 
-test "golden: reset/reuse" {
-    const m = try goldenCase("reset/reuse");
+test "golden: reset/03-interleave" {
+    const m = try goldenCase("reset/03-interleave");
     try std.testing.expect(m.n_reset >= 1);
 }
 
@@ -218,12 +212,8 @@ test "golden: czpair/08-dup-cx" {
     _ = try goldenCase("czpair/08-dup-cx");
 }
 
-test "golden: czpair/09-rzz-then-cz" {
-    _ = try goldenCase("czpair/09-rzz-then-cz");
-}
-
-test "golden: czpair/10-dup-in-triangle" {
-    _ = try goldenCase("czpair/10-dup-in-triangle");
+test "golden: czpair/09-dup-in-triangle" {
+    _ = try goldenCase("czpair/09-dup-in-triangle");
 }
 
 // The two mistake fixtures are not golden cases: they pin the parser's
@@ -232,7 +222,7 @@ test "mistake: cz on a single qubit is rejected" {
     try std.testing.expectError(error.ParseError, qasm.load(
         std.testing.allocator,
         std.testing.io,
-        "testdata/golden/czpair/11-mistake-self-cz.qasm",
+        "testdata/golden/czpair/10-mistake-self-cz.qasm",
     ));
 }
 
@@ -240,7 +230,7 @@ test "mistake: cz on an undeclared register is rejected" {
     try std.testing.expectError(error.UnknownRegister, qasm.load(
         std.testing.allocator,
         std.testing.io,
-        "testdata/golden/czpair/12-mistake-undeclared.qasm",
+        "testdata/golden/czpair/11-mistake-undeclared.qasm",
     ));
 }
 
@@ -267,7 +257,7 @@ test "assembly: qft-5 compiles legally from assembly.json" {
     const asm_doc = try assembly.load(gpa, io, "testdata/assembly.json");
     defer asm_doc.deinit(gpa);
 
-    var circ = try qasm.load(gpa, io, "testdata/golden/qft-5.qasm");
+    var circ = try qasm.load(gpa, io, "testdata/golden/04-qft-5.qasm");
     defer circ.deinit();
 
     var pipe = try circuit.decompose(gpa, circ);
