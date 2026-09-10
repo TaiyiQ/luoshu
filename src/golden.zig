@@ -145,7 +145,7 @@ pub fn buildCycle6(gpa: std.mem.Allocator) !circuit.Circuit {
 }
 
 // Five-cycle 0-1-3-4-2-0 with a pendant qubit 5 on 1 (mirrors
-// qasm/cyclic-aod.qasm). Historically forced CyclicAodOrder and a
+// ex/cycle/cyclic-aod.qasm). Historically forced CyclicAodOrder and a
 // split-into-rounds fallback in the driver; coloring against the fixed AOD
 // sequence (arXiv:2405.08068) rejects conflicting colors during coloring,
 // so it routes in a single pickup. Kept as the regression case for that
@@ -350,10 +350,6 @@ test "qasm: bell compiles legally from testdata/bell.qasm" {
 }
 
 // All six CZs land in one stage and route as a single pickup round.
-test "qasm: cyclic-aod compiles legally from testdata/cyclic-aod.qasm" {
-    try qasmCompilesLegally("testdata/cyclic-aod.qasm");
-}
-
 test "qasm: reset compiles legally from testdata/reset.qasm" {
     try qasmCompilesLegally("testdata/reset.qasm");
 }

@@ -420,7 +420,7 @@ test "computeSequence leaves a triangle's SLM-SLM edge uncovered" {
 test "computeSequence routes the cyclic-aod graph in one round" {
     const gpa = std.testing.allocator;
     // Five-cycle 0-1-3-4-2-0 with a pendant qubit 5 on 1, the interaction
-    // graph of testdata/cyclic-aod.qasm. The old post-hoc AOD column
+    // graph of ex/cycle/cyclic-aod.qasm. The old post-hoc AOD column
     // ordering rejected this with CyclicAodOrder. The odd cycle still
     // drops one SLM-SLM edge, so coverage stays incomplete.
     var g = try Graph.init(gpa, 6, false);
