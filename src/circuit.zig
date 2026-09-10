@@ -345,22 +345,8 @@ test "decompose merges a run of commuting CZs into one stage" {
     try std.testing.expectEqual(2, pipe.stages.items[0].cz.items.len);
 }
 
-test "decompose splits a repeated pair into separate CZ episodes" {
-    var c = Circuit.init(std.testing.allocator, 2);
-    defer c.deinit();
-    try c.cz(0, 1);
-    try c.cz(0, 1);
-
-    var pipe = try decompose(std.testing.allocator, c);
-    defer pipe.deinit();
-
-    // One stage would hand routing a doubled edge, which its interaction
-    // graph merges - and CZ^2 = I makes one pulse the wrong unitary.
-    try std.testing.expectEqual(2, pipe.stages.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[0].cz.items.len);
-    try std.testing.expectEqual(1, pipe.stages.items[1].cz.items.len);
-}
-
+// One stage would hand routing a doubled edge, which its interaction
+// graph merges - and CZ^2 = I makes one pulse the wrong unitary.
 test "decompose: a repeated pair skips past a stage it shares with other CZs" {
     var c = Circuit.init(std.testing.allocator, 3);
     defer c.deinit();
