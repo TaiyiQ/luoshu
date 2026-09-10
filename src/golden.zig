@@ -5,8 +5,8 @@
 //! - correctness: verify.verify accepts the schedule, including CZ
 //!   coverage against the decomposed pipeline, so neither an illegal
 //!   schedule nor a silently dropped gate can pass;
-//! - quality: the case's bench metrics match one line in
-//!   testdata/metrics.json, so a routing regression shows up as a
+//! - quality: the case's bench metrics match one row in
+//!   testdata/metrics.txt, so a routing regression shows up as a
 //!   one-line reviewable diff instead of hundreds of coordinates.
 //!   Regenerate with `zig build update-goldens`.
 
@@ -21,7 +21,7 @@ const serialize = @import("serialize");
 const verify = @import("verify");
 
 pub const arch_path = "testdata/arch.toml";
-pub const metrics_path = "testdata/metrics.json";
+pub const metrics_path = "testdata/metrics.txt";
 pub const golden_dir = "testdata/golden";
 
 fn collectCases(gpa: std.mem.Allocator, io: std.Io) ![][]const u8 {
@@ -52,7 +52,7 @@ fn collectCases(gpa: std.mem.Allocator, io: std.Io) ![][]const u8 {
     // An empty corpus means the walk ran against the wrong directory.
     if (list.items.len == 0) return error.EmptyGoldenCorpus;
 
-    // Paths are sorted to keep metrics.json byte-stable; within each folder
+    // Paths are sorted to keep metrics.txt byte-stable; within each folder
     // the number prefixes make sorted order the simplest-first order.
     std.mem.sort([]const u8, list.items, {}, struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
@@ -105,11 +105,54 @@ pub fn runCase(
     return m;
 }
 
-/// Builds the metrics golden: one line of bench numbers per case, keyed by
-/// name, in sorted path order. compile_ns is excluded (non-deterministic);
+// One aligned column per bench field, so the table scans down as well as
+// across. Header and rows share the widths; case names are left-aligned,
+// numbers right-aligned.
+const table_header =
+    "{s:<36}" ++ // case
+    "{s:>7}" ++ // qubits
+    "{s:>8}" ++ // frames
+    "{s:>6}" ++ // load
+    "{s:>7}" ++ // store
+    "{s:>6}" ++ // move
+    "{s:>9}" ++ // rydberg
+    "{s:>7}" ++ // raman
+    "{s:>9}" ++ // measure
+    "{s:>7}" ++ // reset
+    "{s:>4}" ++ // cz
+    "{s:>8}" ++ // cz_req
+    "{s:>8}" ++ // colors
+    "{s:>5}" ++ // deg
+    "{s:>13}" ++ // move_nm
+    "{s:>11}" ++ // max_nm
+    "{s:>11}" ++ // us
+    "\n";
+
+const table_row =
+    "{s:<36}" ++ // case
+    "{d:>7}" ++ // qubits
+    "{d:>8}" ++ // frames
+    "{d:>6}" ++ // load
+    "{d:>7}" ++ // store
+    "{d:>6}" ++ // move
+    "{d:>9}" ++ // rydberg
+    "{d:>7}" ++ // raman
+    "{d:>9}" ++ // measure
+    "{d:>7}" ++ // reset
+    "{d:>4}" ++ // cz
+    "{d:>8}" ++ // cz_req
+    "{d:>8}" ++ // colors
+    "{d:>5}" ++ // deg
+    "{d:>13.1}" ++ // move_nm
+    "{d:>11.1}" ++ // max_nm
+    "{d:>11.3}" ++ // us
+    "\n";
+
+/// Builds the metrics golden: one table row of bench numbers per case,
+/// in sorted path order. compile_ns is excluded (non-deterministic);
 /// everything else is deterministic arithmetic over a deterministic
 /// schedule, so the file is byte-stable.
-pub fn metricsJson(gpa: std.mem.Allocator, io: std.Io, cfg: arch.ArchConfig) ![]u8 {
+pub fn metricsTable(gpa: std.mem.Allocator, io: std.Io, cfg: arch.ArchConfig) ![]u8 {
     const paths = try collectCases(gpa, io);
     defer {
         for (paths) |p| gpa.free(p);
@@ -118,28 +161,26 @@ pub fn metricsJson(gpa: std.mem.Allocator, io: std.Io, cfg: arch.ArchConfig) ![]
 
     var buf: std.Io.Writer.Allocating = .init(gpa);
     defer buf.deinit();
+
     const w = &buf.writer;
 
-    try w.writeAll("{\n");
-    for (paths, 0..) |path, i| {
+    try w.print(table_header, .{
+        "case",    "qubits",  "frames", "load", "store",  "move",   "rydberg",
+        "raman",   "measure", "reset",  "cz",   "cz_req", "colors", "deg",
+        "move_nm", "max_nm",  "us",
+    });
+
+    for (paths) |path| {
         errdefer std.debug.print("golden case failed: {s}\n", .{path});
         const m = try runCase(gpa, io, cfg, path);
 
-        if (i > 0) try w.writeAll(",\n");
-        try w.print(
-            "  \"{s}\": {{ \"qubits\": {d}, \"frames\": {d}, \"load\": {d}, \"store\": {d}, " ++
-                "\"move\": {d}, \"rydberg\": {d}, \"raman\": {d}, \"measure\": {d}, \"reset\": {d}, " ++
-                "\"cz_pairs\": {d}, \"cz_requested\": {d}, \"colors\": {d}, \"max_degree\": {d}, " ++
-                "\"total_move_nm\": {d:.1}, \"max_move_nm\": {d:.1}, \"total_us\": {d:.3} }}",
-            .{
-                caseName(path), m.num_qubits,     m.frames,   m.n_load,       m.n_store,
-                m.n_move,       m.n_rydberg,      m.n_raman,  m.n_measure,    m.n_reset,
-                m.cz_pairs,     m.cz_requested.?, m.colors.?, m.max_degree.?, m.total_move_nm,
-                m.max_move_nm,  m.totalUs(),
-            },
-        );
+        try w.print(table_row, .{
+            caseName(path), m.num_qubits,     m.frames,   m.n_load,       m.n_store,
+            m.n_move,       m.n_rydberg,      m.n_raman,  m.n_measure,    m.n_reset,
+            m.cz_pairs,     m.cz_requested.?, m.colors.?, m.max_degree.?, m.total_move_nm,
+            m.max_move_nm,  m.totalUs(),
+        });
     }
-    try w.writeAll("\n}");
 
     return gpa.dupe(u8, buf.written());
 }
@@ -152,25 +193,25 @@ pub fn main(init: std.process.Init) !void {
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    const json = try metricsJson(gpa, io, cfg);
-    defer gpa.free(json);
+    const table = try metricsTable(gpa, io, cfg);
+    defer gpa.free(table);
 
-    try serialize.writeJsonFile(io, metrics_path, json);
+    try serialize.writeJsonFile(io, metrics_path, table);
 
     std.debug.print("wrote {s}\n", .{metrics_path});
 }
 
-test "golden: metrics match testdata/metrics.json" {
+test "golden: metrics match testdata/metrics.txt" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
 
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    const json = try metricsJson(gpa, io, cfg);
-    defer gpa.free(json);
+    const table = try metricsTable(gpa, io, cfg);
+    defer gpa.free(table);
 
-    try serialize.expectMatchesFile(gpa, io, metrics_path, json);
+    try serialize.expectMatchesFile(gpa, io, metrics_path, table);
 }
 
 test {
