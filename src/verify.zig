@@ -5,6 +5,8 @@
 //!
 //!  - trap-state machine: load only from SLM, move/store only from AOD,
 //!    every atom back in an SLM trap at the end of the schedule;
+//!  - SLM-site validity: every store deposits an atom at an actual site of
+//!    a SLM grid;
 //!  - op coherence: move sources match the replayed positions, moves are
 //!    axis-aligned (Manhattan), raman targets match the replayed positions;
 //!  - path legality: no move sweeps through a trap site that is occupied
@@ -143,13 +145,13 @@ fn replayOps(
                     });
                     return error.StorePositionMismatch;
                 }
-                if (!isAnySlmSite(cfg, st.position)) {
+                if (!isSite(cfg, st.position)) {
                     vfail(
                         t,
                         "store of qubit {d} at ({d},{d}), which is not an SLM site",
                         .{ q, st.position.x, st.position.y },
                     );
-                    return error.StorePositionNotSlmSite;
+                    return error.StoreOffSite;
                 }
                 trap[q] = .slm;
             },
@@ -286,7 +288,7 @@ fn isGridSite(grid: arch.Grid, p: Point) bool {
 }
 
 /// Whether `p` belongs to any SLM grid in the architecture.
-fn isAnySlmSite(cfg: arch.ArchConfig, p: Point) bool {
+fn isSite(cfg: arch.ArchConfig, p: Point) bool {
     if (isGridSite(cfg.storage_zone.grid(), p)) return true;
 
     for (cfg.compute_zone.slms, 0..) |_, i| {
@@ -1417,7 +1419,7 @@ test "rejects a store outside every SLM grid" {
     defer quiet = false;
 
     try std.testing.expectError(
-        error.StorePositionNotSlmSite,
+        error.StoreOffSite,
         verify(gpa, &hw),
     );
 }
