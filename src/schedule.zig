@@ -329,9 +329,17 @@ pub const Hardware = struct {
     // Atoms come home to the nearest free columns instead of packing the left edge.
     fn compressToStorage(s: *Hardware, qubits: []const usize) !void {
         const sgrid = s.cfg.storage_zone.grid();
-        const y_storage_bottom = sgrid.bottomRowY();
 
-        var occ = try occupiedStorageX(s.gpa, qubits, s.placement, y_storage_bottom);
+        const target_row = (try findAvailableStorageRow(
+            s.gpa,
+            qubits,
+            s.placement,
+            sgrid,
+        )) orelse return error.StorageRowFull;
+
+        const y_storage_target = sgrid.y(target_row);
+
+        var occ = try occupiedStorageX(s.gpa, qubits, s.placement, y_storage_target);
         defer occ.deinit();
 
         var free: std.ArrayList(i32) = .empty;
@@ -352,17 +360,59 @@ pub const Hardware = struct {
         const dest = try assignNearestColumns(s.gpa, xs, free.items);
         defer s.gpa.free(dest);
 
+        // Take a quick path when returning to the bottommost row.
+        if (target_row == sgrid.num_row - 1) {
+            for (qubits, dest) |q, dest_x| {
+                const a = &s.placement[q];
+                if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
+            }
+            s.step();
+
+            for (qubits) |q| {
+                const a = &s.placement[q];
+                if (a.pos.y != y_storage_target) {
+                    try s.moveAtom(a, 0, y_storage_target - a.pos.y);
+                }
+                try s.storeAtom(a);
+            }
+            s.step();
+
+            return;
+        }
+
+        const d_x = sgrid.halfSepX();
+
+        // Take a slow path to a higher storage row to avoid
+        // sweeping lower SLM trap sites.
+        // Step 1: align each atom with the inter-column lane
         for (qubits, dest) |q, dest_x| {
             const a = &s.placement[q];
-            if (a.pos.x != dest_x) try s.moveAtom(a, dest_x - a.pos.x, 0);
+            const lane_x = dest_x + d_x;
+
+            if (a.pos.x != lane_x) {
+                try s.moveAtom(a, lane_x - a.pos.x, 0);
+            }
         }
         s.step();
 
+        // Step 2: rise directly to the selected storage row along the inter-column lanes.
         for (qubits) |q| {
             const a = &s.placement[q];
-            if (a.pos.y != y_storage_bottom) {
-                try s.moveAtom(a, 0, y_storage_bottom - a.pos.y);
+
+            if (a.pos.y != y_storage_target) {
+                try s.moveAtom(a, 0, y_storage_target - a.pos.y);
             }
+        }
+        s.step();
+
+        // Step 3: slide half a column spacing onto the destination traps and store.
+        for (qubits, dest) |q, dest_x| {
+            const a = &s.placement[q];
+
+            if (a.pos.x != dest_x) {
+                try s.moveAtom(a, dest_x - a.pos.x, 0);
+            }
+
             try s.storeAtom(a);
         }
         s.step();
@@ -840,6 +890,45 @@ fn occupiedStorageX(
     return occ;
 }
 
+// Finds the first storage row, scanning from bottom to top, that has
+// enough free SLM sites for the entire returning AOD register.
+fn findAvailableStorageRow(
+    gpa: std.mem.Allocator,
+    returning: []const usize,
+    placement: []const Atom,
+    grid: arch.Grid,
+) !?usize {
+    const num_rows = grid.num_row;
+    const num_cols = grid.num_col;
+
+    for (0..num_rows) |offset| {
+        const row = num_rows - 1 - offset;
+        const row_y = grid.y(row);
+
+        var occupied = try occupiedStorageX(
+            gpa,
+            returning,
+            placement,
+            row_y,
+        );
+        defer occupied.deinit();
+
+        var free_count: usize = 0;
+
+        for (0..num_cols) |col| {
+            if (!occupied.contains(grid.x(col))) {
+                free_count += 1;
+            }
+        }
+
+        if (free_count >= returning.len) {
+            return row;
+        }
+    }
+
+    return null;
+}
+
 // Can every atom take an unused free column within `bound`?
 // Two-pointer technique.
 fn fitsWithin(xs: []const i32, free: []const i32, bound: i32, dest: ?[]i32) bool {
@@ -1124,6 +1213,36 @@ fn testShuttleCfg() arch.ArchConfig {
     cfg.constraints.db_nm = 1000;
     cfg.constraints.dz_nm = 1000;
     return cfg;
+}
+
+test "moveSlmStorage scans upward for a row that fits the returning register" {
+    const gpa = std.testing.allocator;
+    const cfg = testShuttleCfg();
+
+    var hw = try Hardware.init(gpa, cfg, 5, &.{
+        .{ .row = 2, .col = 0 }, // q0: returning
+        .{ .row = 2, .col = 1 }, // q1: returning
+        .{ .row = 1, .col = 0 }, // q2: returning
+        .{ .row = 2, .col = 2 }, // q3: remains in storage
+        .{ .row = 2, .col = 3 }, // q4: remains in storage
+    });
+    defer hw.deinit();
+
+    const fixed = [_]?usize{ 0, 1, 2 };
+
+    try hw.moveSlmCompute(&fixed);
+
+    try hw.moveSlmStorage(&fixed);
+
+    const storage = cfg.storage_zone.grid();
+    const expected_y = storage.y(1);
+
+    try std.testing.expectEqual(expected_y, hw.placement[0].pos.y);
+    try std.testing.expectEqual(expected_y, hw.placement[1].pos.y);
+    try std.testing.expectEqual(expected_y, hw.placement[2].pos.y);
+
+    try std.testing.expectEqual(hw.initial[3], hw.placement[3].pos);
+    try std.testing.expectEqual(hw.initial[4], hw.placement[4].pos);
 }
 
 // Replays `frames`, asserting that all AOD-held atoms share one y at the
