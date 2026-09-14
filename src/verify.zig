@@ -638,21 +638,6 @@ fn pt(x: i32, y: i32) Point {
     return .{ .x = x, .y = y };
 }
 
-/// Verifies `hw` against its own rydberg pairs. The legality tests below
-/// hand-build schedules with no source circuit and coverage is not their
-/// subject; the dedicated coverage tests feed a real mismatch.
-fn verifySelf(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
-    var pairs: std.ArrayList([2]u32) = .empty;
-    defer pairs.deinit(gpa);
-    for (hw.frames.items) |frame| {
-        for (frame.items) |op| {
-            if (op != .rydberg) continue;
-            try pairs.appendSlice(gpa, op.rydberg.pairs);
-        }
-    }
-    return verify(gpa, hw, pairs.items);
-}
-
 test "accepts a legal load-move-store round trip" {
     const gpa = std.testing.allocator;
 
@@ -704,7 +689,7 @@ test "accepts a legal load-move-store round trip" {
         },
     });
 
-    try verifySelf(gpa, &hw);
+    try verify(gpa, &hw, &.{});
 }
 
 test "catches a load while already in the AOD" {
@@ -731,7 +716,7 @@ test "catches a load while already in the AOD" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.LoadWhileInAod, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.LoadWhileInAod, verify(gpa, &hw, &.{}));
 }
 
 test "catches a move of a stored atom" {
@@ -752,7 +737,7 @@ test "catches a move of a stored atom" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.MoveWhileStored, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.MoveWhileStored, verify(gpa, &hw, &.{}));
 }
 
 test "catches a move whose source disagrees with the replayed position" {
@@ -777,7 +762,7 @@ test "catches a move whose source disagrees with the replayed position" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.MoveSourceMismatch, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.MoveSourceMismatch, verify(gpa, &hw, &.{}));
 }
 
 test "catches a sweep through an occupied trap site" {
@@ -809,7 +794,7 @@ test "catches a sweep through an occupied trap site" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.MoveThroughOccupiedSite, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.MoveThroughOccupiedSite, verify(gpa, &hw, &.{}));
 }
 
 test "atoms loaded in the same frame are not path obstacles" {
@@ -866,7 +851,7 @@ test "atoms loaded in the same frame are not path obstacles" {
         },
     });
 
-    try verifySelf(gpa, &hw);
+    try verify(gpa, &hw, &.{});
 }
 
 test "catches two atoms on the same site at end of frame" {
@@ -897,7 +882,7 @@ test "catches two atoms on the same site at end of frame" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.SiteConflict, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.SiteConflict, verify(gpa, &hw, &.{}));
 }
 
 test "catches an AOD order inversion" {
@@ -944,7 +929,7 @@ test "catches an AOD order inversion" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.AodOrderInversion, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.AodOrderInversion, verify(gpa, &hw, &.{}));
 }
 
 test "catches AOD columns closer than the minimum separation" {
@@ -982,7 +967,7 @@ test "catches AOD columns closer than the minimum separation" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.AodSeparationViolation, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.AodSeparationViolation, verify(gpa, &hw, &.{}));
 }
 
 test "catches more AOD columns than the hardware has" {
@@ -1034,7 +1019,7 @@ test "catches more AOD columns than the hardware has" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.AodCapacityExceeded, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.AodCapacityExceeded, verify(gpa, &hw, &.{}));
 }
 
 test "catches an AOD register split across rows" {
@@ -1072,7 +1057,7 @@ test "catches an AOD register split across rows" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.AodRowSplit, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.AodRowSplit, verify(gpa, &hw, &.{}));
 }
 
 test "catches a load while the register hovers on another row" {
@@ -1119,7 +1104,7 @@ test "catches a load while the register hovers on another row" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.LoadOffRegisterRow, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.LoadOffRegisterRow, verify(gpa, &hw, &.{}));
 }
 
 test "catches an atom left in the AOD at end of schedule" {
@@ -1139,7 +1124,7 @@ test "catches an atom left in the AOD at end of schedule" {
 
     quiet = true;
     defer quiet = false;
-    try std.testing.expectError(error.AtomLeftInAod, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.AtomLeftInAod, verify(gpa, &hw, &.{}));
 }
 
 test "catches a blockade violation during a rydberg pulse" {
@@ -1159,7 +1144,7 @@ test "catches a blockade violation during a rydberg pulse" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.BlockadeViolation, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.BlockadeViolation, verify(gpa, &hw, &.{}));
 }
 
 test "accepts an isolated pair during a rydberg pulse" {
@@ -1174,7 +1159,7 @@ test "accepts an isolated pair during a rydberg pulse" {
 
     try addFrame(&hw, &.{.{ .rydberg = .{ .zone = .compute } }});
 
-    try verifySelf(gpa, &hw);
+    try verify(gpa, &hw, &.{});
 }
 
 test "catches a routed pair parked outside blockade range" {
@@ -1200,7 +1185,10 @@ test "catches a routed pair parked outside blockade range" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.PairOutOfBlockadeRange, verifySelf(gpa, &hw));
+    try std.testing.expectError(
+        error.PairOutOfBlockadeRange,
+        verify(gpa, &hw, &.{.{ 0, 1 }}),
+    );
 }
 
 test "accepts a routed pair within blockade range" {
@@ -1221,7 +1209,7 @@ test "accepts a routed pair within blockade range" {
         },
     });
 
-    try verifySelf(gpa, &hw);
+    try verify(gpa, &hw, &.{.{ 0, 1 }});
 }
 
 test "catches a dropped CZ: a wanted pair no rydberg op entangles" {
@@ -1361,7 +1349,7 @@ test "catches a measurement outside its zone" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.MeasureOutsideZone, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.MeasureOutsideZone, verify(gpa, &hw, &.{}));
 }
 
 test "catches a reset outside its zone" {
@@ -1384,7 +1372,7 @@ test "catches a reset outside its zone" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.ResetOutsideZone, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.ResetOutsideZone, verify(gpa, &hw, &.{}));
 }
 
 test "catches a reset of a qubit held in the AOD" {
@@ -1412,7 +1400,7 @@ test "catches a reset of a qubit held in the AOD" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.ResetWhileInAod, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.ResetWhileInAod, verify(gpa, &hw, &.{}));
 }
 
 test "catches a sweep along a storage row across an empty trap site" {
@@ -1440,7 +1428,7 @@ test "catches a sweep along a storage row across an empty trap site" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.SweptTrapSite, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.SweptTrapSite, verify(gpa, &hw, &.{}));
 }
 
 test "catches a descent along a storage column through an empty trap site" {
@@ -1467,7 +1455,7 @@ test "catches a descent along a storage column through an empty trap site" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.SweptTrapSite, verifySelf(gpa, &hw));
+    try std.testing.expectError(error.SweptTrapSite, verify(gpa, &hw, &.{}));
 }
 
 // The compute zone is exempt from the trap-sweep rule: the dip choreography
@@ -1494,7 +1482,7 @@ test "accepts a slide along a compute row" {
         .{ .store = .{ .qubit = 0, .position = pt(3000, 5800) } },
     });
 
-    try verifySelf(gpa, &hw);
+    try verify(gpa, &hw, &.{});
 }
 
 test {
