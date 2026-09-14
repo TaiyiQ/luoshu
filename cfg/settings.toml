@@ -1,6 +1,6 @@
 # ── Options ────────────────────────────────────────────────────────
 # Input options, one key per CLI flag; commented keys fall back to
-# built-in defaults. Only read when passed via `gatecomp --cfg <file>`,
+# built-in defaults. Only read when passed via `luoshu --cfg <file>`,
 # which cannot be combined with --arch/--asm/--out.
 [options]
 # arch = "cfg/arch.toml"            # architecture TOML (the built-in default)

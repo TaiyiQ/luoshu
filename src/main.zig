@@ -79,7 +79,7 @@ fn compileOne(
     defer circ.deinit();
 
     for (warnings.items) |w|
-        std.debug.print("gatecomp: {s}:{d}:{d}: warning: {s}\n", .{
+        std.debug.print("luoshu: {s}:{d}:{d}: warning: {s}\n", .{
             job.qasm,
             w.line,
             w.col,
