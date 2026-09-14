@@ -80,6 +80,26 @@ pub const Pipeline = struct {
         s.stages.deinit(s.gpa);
     }
 
+    /// The requested CZ gates as normalized (lo, hi) pairs in stage order:
+    /// the wanted side of verify.verify's CZ coverage check.
+    pub fn czPairs(s: *const Pipeline, gpa: std.mem.Allocator) ![][2]u32 {
+        var pairs: std.ArrayList([2]u32) = .empty;
+        defer pairs.deinit(gpa);
+
+        for (s.stages.items) |stage| {
+            if (stage != .cz) continue;
+
+            for (stage.cz.items) |g| {
+                try pairs.append(gpa, .{
+                    @min(g.control, g.target),
+                    @max(g.control, g.target),
+                });
+            }
+        }
+
+        return pairs.toOwnedSlice(gpa);
+    }
+
     fn place(s: *Pipeline, n: usize, gate: Native) !void {
         if (s.stages.items.len <= n) {
             std.debug.assert(s.stages.items.len == n);
@@ -108,17 +128,38 @@ pub const Pipeline = struct {
 /// Gates never reorder across a shared qubit; across disjoint qubits
 /// a gate may join an earlier stage of its kind, which is safe
 /// exactly because disjoint gates commute.
+///
+/// A repeated CZ pair never shares a stage with its earlier occurrence:
+/// routing builds the stage's interaction graph, which merges the repeat
+/// into one edge, and CZ^2 = I makes that merge a wrong-unitary loss. The
+/// repeat takes the next CZ episode instead - safe to postpone past the
+/// stage's other gates because CZs all commute - so it compiles faithfully
+/// as a second pulse.
 pub fn decompose(gpa: std.mem.Allocator, c: Circuit) !Pipeline {
     var pipe = Pipeline.init(gpa, c.n);
     errdefer pipe.deinit();
 
-    // Earliest stage of the wanted kind at or past `from`; falling off the
-    // end names the fresh stage that place() then creates.
+    // Earliest stage at or past `from` that can accept `gate`: the kind
+    // must match, and a CZ stage must not already hold the gate's pair.
+    // Falling off the end names the fresh stage that place() then creates.
     const fit = struct {
-        fn earliest(stages: []const Stage, from: usize, want: StageKind) usize {
+        fn earliest(stages: []const Stage, from: usize, gate: Native) usize {
             var s = from;
-            while (s < stages.len and stages[s] != want) s += 1;
+            while (s < stages.len) : (s += 1) {
+                if (stages[s] != @as(StageKind, gate)) continue;
+                if (gate == .cz and holdsPair(stages[s].cz.items, gate.cz)) continue;
+                return s;
+            }
             return s;
+        }
+
+        fn holdsPair(czs: []const Cz, g: Cz) bool {
+            for (czs) |e| {
+                if (@min(e.control, e.target) == @min(g.control, g.target) and
+                    @max(e.control, e.target) == @max(g.control, g.target))
+                    return true;
+            }
+            return false;
         }
     }.earliest;
 
@@ -302,6 +343,23 @@ test "decompose merges a run of commuting CZs into one stage" {
 
     try std.testing.expectEqual(1, pipe.stages.items.len);
     try std.testing.expectEqual(2, pipe.stages.items[0].cz.items.len);
+}
+
+// One stage would hand routing a doubled edge, which its interaction
+// graph merges - and CZ^2 = I makes one pulse the wrong unitary.
+test "decompose: a repeated pair skips past a stage it shares with other CZs" {
+    var c = Circuit.init(std.testing.allocator, 3);
+    defer c.deinit();
+    try c.cz(0, 1);
+    try c.cz(1, 2);
+    try c.cz(1, 0); // reversed operands are the same pair
+
+    var pipe = try decompose(std.testing.allocator, c);
+    defer pipe.deinit();
+
+    try std.testing.expectEqual(2, pipe.stages.items.len);
+    try std.testing.expectEqual(2, pipe.stages.items[0].cz.items.len);
+    try std.testing.expectEqual(1, pipe.stages.items[1].cz.items.len);
 }
 
 test "decompose: a U barrier splits CZs on its qubit into separate stages" {

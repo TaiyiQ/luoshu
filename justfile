@@ -15,7 +15,7 @@ test:
 	zig build test --summary all
 
 update:
-	zig build update-snapshots
+	zig build update-goldens
 
 fmt:
 	zig fmt build.zig build.zig.zon src

@@ -2,7 +2,6 @@ const std = @import("std");
 const resting = @import("resting");
 const trace = @import("trace");
 const color = @import("color");
-const serialize = @import("serialize");
 
 const Graph = @import("graph").Graph;
 
@@ -295,90 +294,6 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-/// Graph snapshot cases, routed and byte-compared against testdata/. The
-/// snapshot tests below and `zig build update-snapshots` both walk this
-/// table, so the regenerator can never drift from the tests.
-pub const SnapshotKind = enum {
-    mvp,
-    cycle,
-    ladder,
-    grid,
-    ghz,
-    qft,
-    graph_10_0,
-};
-
-pub fn buildSnapshotGraph(kind: SnapshotKind, gpa: std.mem.Allocator) !Graph {
-    return switch (kind) {
-        .mvp => buildMvpGraph(gpa),
-        .cycle => buildCycleGraph(gpa),
-        .ladder => buildLadderGraph(gpa),
-        .grid => buildGridGraph(gpa),
-        .ghz => buildGhzGraph(gpa),
-        .qft => buildQftGraph(gpa),
-        .graph_10_0 => buildGraph10Graph(gpa),
-    };
-}
-
-pub const SnapshotCase = struct {
-    kind: SnapshotKind,
-    path: []const u8,
-
-    /// A single computeSequence round cannot cover this graph: it is
-    /// non-bipartite, so the greedy MIS leaves SLM-SLM edges uncolored.
-    /// Not a lost gate - compiler.routeStage reroutes the residue in
-    /// further rounds until every CZ is covered - but asserted here to pin
-    /// computeSequence's single-round contract.
-    known_incomplete: bool = false,
-};
-
-pub const snapshot_cases = [_]SnapshotCase{
-    // aod set, coloring, schedule shape; triangle {2,3,4}
-    .{ .kind = .mvp, .path = "testdata/mvp.json", .known_incomplete = true },
-
-    // detect cycle in graph.
-    .{ .kind = .cycle, .path = "testdata/cycle.json" },
-
-    // parallel AOD lanes
-    .{ .kind = .ladder, .path = "testdata/ladder.json" },
-
-    // complex MIS and gap pressure
-    .{ .kind = .grid, .path = "testdata/grid.json" },
-
-    // binary tree
-    .{ .kind = .ghz, .path = "testdata/ghz.json" },
-
-    // K5: SLM set is K4
-    .{ .kind = .qft, .path = "testdata/qft.json", .known_incomplete = true },
-
-    // only known graph exercising the mid-sweep flush in
-    // resting.mergeConstraints; triangles {0,3,8} and {4,6,9} force
-    // SLM-SLM edges, so the cover is incomplete.
-    .{ .kind = .graph_10_0, .path = "testdata/graph-10-0.json", .known_incomplete = true },
-};
-
-/// Routes the graph built for `kind` and serialises the result: the payload
-/// of the route-level snapshots, shared by the snapshot test below and
-/// `zig build update-snapshots`.
-pub fn snapshotJson(gpa: std.mem.Allocator, kind: SnapshotKind) ![]u8 {
-    var g = try buildSnapshotGraph(kind, gpa);
-    defer g.deinit();
-
-    var seq = try computeSequence(gpa, &g);
-    defer seq.deinit();
-
-    return serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
-}
-
-test "snapshots: routed graphs match testdata/" {
-    const gpa = std.testing.allocator;
-    for (snapshot_cases) |case| {
-        const actual = try snapshotJson(gpa, case.kind);
-        defer gpa.free(actual);
-        try serialize.expectMatchesFile(gpa, std.testing.io, case.path, actual);
-    }
-}
-
 // Asserts `seq` realizes `g` exactly: every edge appears as an active pair
 // (fixed[i] and moveable[t][i] both non-null) in exactly one timeframe,
 // nothing is pulsed that is not an edge, and no qubit is both fixed and
@@ -390,6 +305,7 @@ fn expectSequenceCoversGraph(gpa: std.mem.Allocator, g: *const Graph, seq: *cons
     var is_fixed = try gpa.alloc(bool, g.n);
     defer gpa.free(is_fixed);
     @memset(is_fixed, false);
+
     for (seq.fixed) |maybe_q| {
         if (maybe_q) |q| is_fixed[q] = true;
     }
@@ -425,37 +341,86 @@ fn expectSequenceCoversGraph(gpa: std.mem.Allocator, g: *const Graph, seq: *cons
             n_edges += 1;
         }
     }
+
     if (covered.count() != n_edges) {
         trace.print("{d} active pairs for {d} edges\n", .{ covered.count(), n_edges });
         complete = false;
     }
+
     if (!complete) return error.SequenceIncomplete;
 }
 
-test "computeSequence covers every snapshot graph's edges exactly once" {
+test "computeSequence covers an even cycle exactly once" {
     const gpa = std.testing.allocator;
-    for (snapshot_cases) |case| {
-        var g = try buildSnapshotGraph(case.kind, gpa);
-        defer g.deinit();
+    // Bipartite ring 0-1-2-3-4-5-0: one round suffices.
+    var g = try Graph.init(gpa, 6, false);
+    defer g.deinit();
+    try g.addEdge(0, 1);
+    try g.addEdge(1, 2);
+    try g.addEdge(2, 3);
+    try g.addEdge(3, 4);
+    try g.addEdge(4, 5);
+    try g.addEdge(5, 0);
 
-        var seq = try computeSequence(gpa, &g);
-        defer seq.deinit();
+    var seq = try computeSequence(gpa, &g);
+    defer seq.deinit();
 
-        if (case.known_incomplete) {
-            try std.testing.expectError(
-                error.SequenceIncomplete,
-                expectSequenceCoversGraph(gpa, &g, &seq),
-            );
-        } else {
-            try expectSequenceCoversGraph(gpa, &g, &seq);
-        }
-    }
+    try expectSequenceCoversGraph(gpa, &g, &seq);
 }
 
-test "computeSequence routes the cyclic-aod graph in one round" {
+test "computeSequence covers a ladder exactly once" {
+    const gpa = std.testing.allocator;
+    // Vertical rungs create cross-row constraints: the SLM topo-sort
+    // must merge constraints from two independent AOD lanes.
+    //
+    // 0-1-2-3
+    // | | | |
+    // 4-5-6-7
+    var g = try Graph.init(gpa, 8, false);
+    defer g.deinit();
+    try g.addEdge(0, 1);
+    try g.addEdge(1, 2);
+    try g.addEdge(2, 3);
+    try g.addEdge(4, 5);
+    try g.addEdge(5, 6);
+    try g.addEdge(6, 7);
+    try g.addEdge(0, 4);
+    try g.addEdge(1, 5);
+    try g.addEdge(2, 6);
+    try g.addEdge(3, 7);
+
+    var seq = try computeSequence(gpa, &g);
+    defer seq.deinit();
+
+    try expectSequenceCoversGraph(gpa, &g, &seq);
+}
+
+test "computeSequence leaves a triangle's SLM-SLM edge uncovered" {
+    const gpa = std.testing.allocator;
+    // The smallest odd cycle: the greedy MIS takes one node as AOD, the
+    // other two land in the SLM, and their shared edge stays uncolored.
+    // Not a lost gate - compiler.routeStage reroutes the residue in
+    // further rounds - but asserted here to pin computeSequence's
+    // single-round contract.
+    var g = try Graph.init(gpa, 3, false);
+    defer g.deinit();
+    try g.addEdge(0, 1);
+    try g.addEdge(1, 2);
+    try g.addEdge(2, 0);
+
+    var seq = try computeSequence(gpa, &g);
+    defer seq.deinit();
+
+    try std.testing.expectError(
+        error.SequenceIncomplete,
+        expectSequenceCoversGraph(gpa, &g, &seq),
+    );
+}
+
+test "computeSequence routes the pendant-cycle graph in one round" {
     const gpa = std.testing.allocator;
     // Five-cycle 0-1-3-4-2-0 with a pendant qubit 5 on 1, the interaction
-    // graph of testdata/cyclic-aod.qasm. The old post-hoc AOD column
+    // graph of testdata/golden/02-pendant-cycle.qasm. The old post-hoc AOD column
     // ordering rejected this with CyclicAodOrder. The odd cycle still
     // drops one SLM-SLM edge, so coverage stays incomplete.
     var g = try Graph.init(gpa, 6, false);
@@ -474,123 +439,4 @@ test "computeSequence routes the cyclic-aod graph in one round" {
         error.SequenceIncomplete,
         expectSequenceCoversGraph(gpa, &g, &seq),
     );
-}
-
-pub fn buildMvpGraph(gpa: std.mem.Allocator) !Graph {
-    var g = try Graph.init(gpa, 7, false);
-    try g.addEdge(0, 1);
-    try g.addEdge(0, 5);
-    try g.addEdge(1, 6);
-    try g.addEdge(5, 6);
-    try g.addEdge(6, 3);
-    try g.addEdge(6, 4);
-    try g.addEdge(3, 4);
-    try g.addEdge(3, 2);
-    try g.addEdge(4, 2);
-    return g;
-}
-
-pub fn buildCycleGraph(gpa: std.mem.Allocator) !Graph {
-    var g = try Graph.init(gpa, 6, false);
-    try g.addEdge(0, 1);
-    try g.addEdge(1, 2);
-    try g.addEdge(2, 3);
-    try g.addEdge(3, 4);
-    try g.addEdge(4, 5);
-    try g.addEdge(5, 0);
-    return g;
-}
-
-// Vertical rungs create cross-row constraints: the SLM topo-sort
-// must merge constraints from two independent AOD lanes.
-//
-// 0-1-2-3
-// | | | |
-// 4-5-6-7
-pub fn buildLadderGraph(gpa: std.mem.Allocator) !Graph {
-    var g = try Graph.init(gpa, 8, false);
-    try g.addEdge(0, 1);
-    try g.addEdge(1, 2);
-    try g.addEdge(2, 3);
-    try g.addEdge(4, 5);
-    try g.addEdge(5, 6);
-    try g.addEdge(6, 7);
-    try g.addEdge(0, 4);
-    try g.addEdge(1, 5);
-    try g.addEdge(2, 6);
-    try g.addEdge(3, 7);
-    return g;
-}
-
-// Checkerboard MIS (5 AODs, 4 SLMs): many unmatched AODs per timestep
-// pressure gap counting and the left-scan resting logic.
-//
-// 0-1-2
-// | | |
-// 3-4-5
-// | | |
-// 6-7-8
-pub fn buildGridGraph(gpa: std.mem.Allocator) !Graph {
-    var g = try Graph.init(gpa, 9, false);
-    try g.addEdge(0, 1);
-    try g.addEdge(1, 2);
-    try g.addEdge(3, 4);
-    try g.addEdge(4, 5);
-    try g.addEdge(6, 7);
-    try g.addEdge(7, 8);
-    try g.addEdge(0, 3);
-    try g.addEdge(3, 6);
-    try g.addEdge(1, 4);
-    try g.addEdge(4, 7);
-    try g.addEdge(2, 5);
-    try g.addEdge(5, 8);
-    return g;
-}
-
-pub fn buildGhzGraph(gpa: std.mem.Allocator) !Graph {
-    var g = try Graph.init(gpa, 8, false);
-    try g.addEdge(0, 4);
-    try g.addEdge(0, 2);
-    try g.addEdge(4, 6);
-    try g.addEdge(0, 1);
-    try g.addEdge(2, 3);
-    try g.addEdge(4, 5);
-    try g.addEdge(6, 7);
-    return g;
-}
-
-pub fn buildQftGraph(gpa: std.mem.Allocator) !Graph {
-    var g = try Graph.init(gpa, 5, false);
-    try g.addEdge(0, 1);
-    try g.addEdge(0, 2);
-    try g.addEdge(0, 3);
-    try g.addEdge(0, 4);
-    try g.addEdge(1, 2);
-    try g.addEdge(1, 3);
-    try g.addEdge(1, 4);
-    try g.addEdge(2, 3);
-    try g.addEdge(2, 4);
-    try g.addEdge(3, 4);
-    return g;
-}
-
-/// Interaction graph of testdata/graph-10-0.qasm, edges in gate order.
-pub fn buildGraph10Graph(gpa: std.mem.Allocator) !Graph {
-    var g = try Graph.init(gpa, 10, false);
-    try g.addEdge(0, 1);
-    try g.addEdge(0, 3);
-    try g.addEdge(0, 8);
-    try g.addEdge(1, 2);
-    try g.addEdge(1, 5);
-    try g.addEdge(3, 8);
-    try g.addEdge(3, 5);
-    try g.addEdge(8, 9);
-    try g.addEdge(2, 7);
-    try g.addEdge(2, 6);
-    try g.addEdge(7, 5);
-    try g.addEdge(7, 4);
-    try g.addEdge(4, 9);
-    try g.addEdge(4, 6);
-    try g.addEdge(9, 6);
-    return g;
 }

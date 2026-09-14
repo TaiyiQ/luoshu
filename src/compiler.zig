@@ -70,6 +70,7 @@ pub fn routeStage(
 
             var delta: usize = 0;
             for (g.degree) |d| delta = @max(delta, d);
+
             s.max_degree += delta;
         }
 
@@ -80,7 +81,10 @@ pub fn routeStage(
             var e = g.edges[x];
             while (e) |edge| : (e = edge.next) {
                 if (x < edge.y and edge.color == null) {
-                    try remaining.append(gpa, .{ .control = @intCast(x), .target = @intCast(edge.y) });
+                    try remaining.append(gpa, .{
+                        .control = @intCast(x),
+                        .target = @intCast(edge.y),
+                    });
                 }
             }
         }
@@ -364,68 +368,122 @@ test "lowerU: pulse stream plus residual frame phase reproduces the U product" {
 }
 
 // The compiler-level completeness pin, sibling of route.zig's single-round
-// coverage test: computeSequence provably cannot cover a non-bipartite
-// graph in one round (the known_incomplete cases assert that), so this
-// checks that routeStage's residue loop closes the gap - every edge of
-// every snapshot graph gates exactly once across the rounds, and nothing
-// gates that was not asked for. Gates are reconstructed from the sequences
-// themselves: an AOD qubit sharing a column with an SLM qubit at some
-// timestep is one fired CZ.
-test "routeStage gates every stage edge exactly once across rounds" {
+// coverage tests: computeSequence provably cannot cover a non-bipartite
+// graph in one round, so the tests below check that routeStage's residue
+// loop closes the gap. Fired CZs are reconstructed from the sequences
+// themselves - an AOD qubit sharing a column with an SLM qubit at some
+// timestep is one fired CZ - and every requested gate must fire exactly
+// once across the rounds, with nothing fired that was not asked for.
+fn expectGatedExactlyOnce(
+    gpa: std.mem.Allocator,
+    gates: []const circuit.Cz,
+    n_qubits: usize,
+    sequences: []const route.Sequence,
+) !void {
+    // fired[lo * n + hi] = times the pair (lo, hi) gated.
+    const fired = try gpa.alloc(usize, n_qubits * n_qubits);
+    defer gpa.free(fired);
+    @memset(fired, 0);
+
+    for (sequences) |seq| {
+        for (seq.moveable) |row| {
+            for (row, seq.fixed) |aod, slm| {
+                const q = aod orelse continue;
+                const p = slm orelse continue;
+                fired[@min(p, q) * n_qubits + @max(p, q)] += 1;
+            }
+        }
+    }
+
+    for (gates) |gate| {
+        const lo: usize = @min(gate.control, gate.target);
+        const hi: usize = @max(gate.control, gate.target);
+        try std.testing.expectEqual(1, fired[lo * n_qubits + hi]);
+    }
+
+    var total: usize = 0;
+    for (fired) |n| total += n;
+
+    try std.testing.expectEqual(gates.len, total);
+}
+
+test "routeStage closes a triangle in exactly two rounds" {
     const gpa = std.testing.allocator;
 
-    for (route.snapshot_cases) |case| {
-        var g = try route.buildSnapshotGraph(case.kind, gpa);
-        defer g.deinit();
+    // A triangle's MIS is a single node: round one gates its two edges,
+    // and the SLM-SLM edge left behind forces exactly one residue round.
+    const gates = [_]circuit.Cz{
+        .{ .control = 0, .target = 1 },
+        .{ .control = 1, .target = 2 },
+        .{ .control = 2, .target = 0 },
+    };
 
-        // The stage's gate list: one Cz per undirected edge.
-        var gates: std.ArrayList(circuit.Cz) = .empty;
-        defer gates.deinit(gpa);
-
-        for (0..g.n) |x| {
-            var e = g.edges[x];
-            while (e) |edge| : (e = edge.next) {
-                if (x < edge.y) {
-                    try gates.append(gpa, .{
-                        .control = @intCast(x),
-                        .target = @intCast(edge.y),
-                    });
-                }
-            }
-        }
-
-        const sequences = try routeStage(gpa, gates.items, g.n, null);
-        defer {
-            for (sequences) |*s| s.deinit();
-            gpa.free(sequences);
-        }
-
-        // fired[lo * n + hi] = times the pair (lo, hi) gated.
-        const fired = try gpa.alloc(usize, g.n * g.n);
-        defer gpa.free(fired);
-        @memset(fired, 0);
-
-        for (sequences) |seq| {
-            for (seq.moveable) |row| {
-                for (row, seq.fixed) |aod, slm| {
-                    const q = aod orelse continue;
-                    const p = slm orelse continue;
-                    fired[@min(p, q) * g.n + @max(p, q)] += 1;
-                }
-            }
-        }
-
-        for (gates.items) |gate| {
-            const lo: usize = @min(gate.control, gate.target);
-            const hi: usize = @max(gate.control, gate.target);
-            try std.testing.expectEqual(1, fired[lo * g.n + hi]);
-        }
-
-        var total: usize = 0;
-        for (fired) |n| total += n;
-
-        try std.testing.expectEqual(gates.items.len, total);
+    const sequences = try routeStage(gpa, &gates, 3, null);
+    defer {
+        for (sequences) |*s| s.deinit();
+        gpa.free(sequences);
     }
+
+    try std.testing.expectEqual(2, sequences.len);
+    try expectGatedExactlyOnce(gpa, &gates, 3, sequences);
+}
+
+test "routeStage peels K5 in exactly four rounds" {
+    const gpa = std.testing.allocator;
+
+    // K_n's only independent sets are single nodes, so each round gates
+    // one node's remaining edges: 4+3+2+1 rounds for the ten edges of K5.
+    // The deepest residue recursion in the suite.
+    var gates: std.ArrayList(circuit.Cz) = .empty;
+    defer gates.deinit(gpa);
+    for (0..5) |a| {
+        for (a + 1..5) |b| {
+            try gates.append(gpa, .{ .control = @intCast(a), .target = @intCast(b) });
+        }
+    }
+
+    const sequences = try routeStage(gpa, gates.items, 5, null);
+    defer {
+        for (sequences) |*s| s.deinit();
+        gpa.free(sequences);
+    }
+
+    try std.testing.expectEqual(4, sequences.len);
+    try expectGatedExactlyOnce(gpa, gates.items, 5, sequences);
+}
+
+test "routeStage covers graph-10-0 exactly once" {
+    const gpa = std.testing.allocator;
+
+    // Interaction graph of testdata/graph-10-0.qasm, edges in gate order:
+    // the graph whose first-round routing exercises the mid-sweep flush in
+    // resting.mergeConstraints (the flush itself is unit-tested in
+    // resting.zig). Triangles {0,3,8} and {4,6,9} force SLM-SLM residue.
+    const gates = [_]circuit.Cz{
+        .{ .control = 0, .target = 1 },
+        .{ .control = 0, .target = 3 },
+        .{ .control = 0, .target = 8 },
+        .{ .control = 1, .target = 2 },
+        .{ .control = 1, .target = 5 },
+        .{ .control = 3, .target = 8 },
+        .{ .control = 3, .target = 5 },
+        .{ .control = 8, .target = 9 },
+        .{ .control = 2, .target = 7 },
+        .{ .control = 2, .target = 6 },
+        .{ .control = 7, .target = 5 },
+        .{ .control = 7, .target = 4 },
+        .{ .control = 4, .target = 9 },
+        .{ .control = 4, .target = 6 },
+        .{ .control = 9, .target = 6 },
+    };
+
+    const sequences = try routeStage(gpa, &gates, 10, null);
+    defer {
+        for (sequences) |*s| s.deinit();
+        gpa.free(sequences);
+    }
+
+    try expectGatedExactlyOnce(gpa, &gates, 10, sequences);
 }
 
 test {
