@@ -22,3 +22,7 @@ fmt:
 
 check:
 	zig fmt --check build.zig build.zig.zon src
+
+tag version:
+	git tag -a v{{version}} -m "v{{version}}"
+	git push origin v{{version}}
