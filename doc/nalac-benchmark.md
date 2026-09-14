@@ -1,12 +1,12 @@
-# Benchmark report: gate-compiler vs NALAC
+# Benchmark report: luoshu vs NALAC
 
-*2026-09-04 · gate-compiler `8dd70a6` · MQT QMAP `9583c1a` · MQT Bench 1.1.9, 20-qubit circuits*
+*2026-09-04 · luoshu `8dd70a6` · MQT QMAP `9583c1a` · MQT Bench 1.1.9, 20-qubit circuits*
 
-This report compares gate-compiler against **NALAC**, the zoned neutral-atom compiler from MQT QMAP - [arXiv:2405.08068](https://arxiv.org/abs/2405.08068). Both compilers are evaluated on the same circuits, the same architecture family, and the same timing model.
+This report compares luoshu against **NALAC**, the zoned neutral-atom compiler from MQT QMAP - [arXiv:2405.08068](https://arxiv.org/abs/2405.08068). Both compilers are evaluated on the same circuits, the same architecture family, and the same timing model.
 
 ## Executive Summary
 
-Across the twelve MQT Bench 20-qubit circuits the pinned NALAC build can compile, gate-compiler:
+Across the twelve MQT Bench 20-qubit circuits the pinned NALAC build can compile, luoshu:
 
 - Achieves **12.8% higher entangling-gate parallelism**, with identical CZ pair counts on every circuit.
 - Routes **43.4% faster** (×1.77), winning **all 12 of 12** circuits;
@@ -28,12 +28,12 @@ The paper's fixture, taken from MQT QMAP's own test suite (`test_namapper.cpp`):
 - readout `4×72` at `5 um` pitch
 - `~20 µm` inter-zone gaps.
 
-NALAC runs on its native JSON fixture; gate-compiler runs on an `arch.toml` audited coordinate-for-coordinate against that fixture.
+NALAC runs on its native JSON fixture; luoshu runs on an `arch.toml` audited coordinate-for-coordinate against that fixture.
 
 One asymmetry is geometric and documented below:
 
 - NALAC fixture stacks: entangling | storage | readout (readout adjacent to storage),
-- Gate Compiler's zone model stacks: storage | compute | readout, so our readout trip additionally crosses the compute zone.
+- Luoshu's zone model stacks: storage | compute | readout, so our readout trip additionally crosses the compute zone.
 
 ### Timing Methodology
 
@@ -44,7 +44,7 @@ All microsecond figures in this report come from replaying each compiler's emitt
 - **0.2 us** per entangling pulse.
 - each frame billed at its slowest atom's transit.
 
-This is exactly the model `bench.zig` applies to gate-compiler's own schedules (see [benchmark.md](./benchmark.md)); NALAC's LOAD/MOVE/STORE stream is replayed under the same constants.
+This is exactly the model `bench.zig` applies to luoshu's own schedules (see [benchmark.md](./benchmark.md)); NALAC's LOAD/MOVE/STORE stream is replayed under the same constants.
 
 ## Benchmark Results
 
@@ -76,11 +76,11 @@ Geometric means over the 12 NALAC-feasible circuits (`qnn` excluded):
 
 ## Compiler Wall-Clock
 
-Everything above prices the *schedules*; this section compares the time the compilers themselves take to produce them. Both sides were measured on the same machine from optimized builds (gate-compiler `zig build -Doptimize=ReleaseFast`; NALAC the Release CMake build of the pinned tree).
+Everything above prices the *schedules*; this section compares the time the compilers themselves take to produce them. Both sides were measured on the same machine from optimized builds (luoshu `zig build -Doptimize=ReleaseFast`; NALAC the Release CMake build of the pinned tree).
 
-Gate Compiler's number times `compiler.compile()` - routing plus scheduling, excluding QASM parsing and output serialization - while NALAC's is the mapper's own reported wall-clock, excluding its harness's circuit construction.
+Luoshu's number times `compiler.compile()` - routing plus scheduling, excluding QASM parsing and output serialization - while NALAC's is the mapper's own reported wall-clock, excluding its harness's circuit construction.
 
-| Circuit | NALAC ms | Gate Compiler ms | Speedup |
+| Circuit | NALAC ms | Luoshu ms | Speedup |
 | :--- | ---: | ---: | ---: |
 | ae | 19.83 | 0.70 | ×28 |
 | dj | 0.55 | 0.06 | ×10 |
@@ -102,11 +102,11 @@ Both compilers are fast in absolute terms, but sub-millisecond compilation leave
 
 ## Reproduction
 
-Gate-compiler side, from this repository at `8dd70a6` or later:
+Luoshu side, from this repository at `8dd70a6` or later:
 
 ```shell
 zig build
-./gatecomp ex/mqt/ae_20.qasm --out zig-out # writes ae_20-bench.json
+./luoshu ex/mqt/ae_20.qasm --out zig-out # writes ae_20-bench.json
 ```
 
 The metrics schema, including every timing constant used here, is documented in [benchmark.md](./benchmark.md); the schedule format in [schedule.md](./schedule.md). Pinned upstream inputs: MQT Bench `1.1.9`, MQT QMAP `9583c1a`, timing constants from arXiv:2405.08068 §V (0.55 µm/µs, 20 µs load/store, 0.2 µs CZ).

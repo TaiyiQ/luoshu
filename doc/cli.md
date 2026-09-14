@@ -1,7 +1,7 @@
 # CLI
 
 ```shell
-gatecomp <circuit.qasm>... [options]
+luoshu <circuit.qasm>... [options]
 ```
 
 Compiles each circuit given. Several circuits run as a benchmark suite: a metrics table prints per circuit and the visualizer stays closed. Inputs come from flags **or** from a config file, never both.
@@ -9,7 +9,7 @@ Compiles each circuit given. Several circuits run as a benchmark suite: a metric
 ## Mode 1: Flags - name the inputs on the command line:
 
 ```shell
-gatecomp circuit.qasm --arch cfg/arch.toml --asm cfg/assembly.json --out zig-out
+luoshu circuit.qasm --arch cfg/arch.toml --asm cfg/assembly.json --out zig-out
 ```
 
 - `--arch <file>` — architecture TOML (default: `cfg/arch.toml`)
@@ -19,7 +19,7 @@ gatecomp circuit.qasm --arch cfg/arch.toml --asm cfg/assembly.json --out zig-out
 ## Mode 2: Config - reference a settings TOML instead:
 
 ```shell
-gatecomp circuit.qasm --cfg cfg/settings.toml
+luoshu circuit.qasm --cfg cfg/settings.toml
 ```
 
 The file carries the same three inputs as an `[options]` table; commented-out keys fall back to the built-in defaults:

@@ -1,6 +1,6 @@
 build:
 	zig build
-	cp ./zig-out/bin/gatecomp .
+	cp ./zig-out/bin/luoshu .
 
 run:
 	zig build run

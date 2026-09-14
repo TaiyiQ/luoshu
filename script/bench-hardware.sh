@@ -35,19 +35,21 @@ SHA=$(git rev-parse --short "$2")
 AB=zig-out/ab
 
 build_binaries() {
-    local wt
+    local wt bin
 
     echo ">> building current tree"
     zig build -Doptimize=ReleaseFast
     mkdir -p "$AB"
-    cp zig-out/bin/gatecomp "$AB/gatecomp-new"
+    cp zig-out/bin/luoshu "$AB/luoshu-new"
 
-    if [[ ! -x $AB/gatecomp-$SHA ]]; then
+    if [[ ! -x $AB/luoshu-$SHA ]]; then
         echo ">> building baseline $SHA"
         wt=$(mktemp -d)/wt
         git worktree add --quiet "$wt" "$SHA"
         (cd "$wt" && zig build -Doptimize=ReleaseFast)
-        cp "$wt/zig-out/bin/gatecomp" "$AB/gatecomp-$SHA"
+        bin=$wt/zig-out/bin/luoshu
+        [[ -x $bin ]] || bin=$wt/zig-out/bin/gatecomp # baseline predates the luoshu rename
+        cp "$bin" "$AB/luoshu-$SHA"
         git worktree remove --force "$wt"
     fi
 }
@@ -60,7 +62,7 @@ bench_json() { # <binary> <circuit> <json-out>
 }
 
 run_bench() {
-    local base="$AB/gatecomp-$SHA" new="$AB/gatecomp-new"
+    local base="$AB/luoshu-$SHA" new="$AB/luoshu-new"
     local c same bsh nsh brt nrt
 
     echo ">> base = $SHA"

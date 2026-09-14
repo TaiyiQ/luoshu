@@ -21,7 +21,7 @@
   "metadata": {
     "source": "atom-assembly",
     "status": "OPTIMAL",
-    "generated_from": "../gate-compiler/arch.toml",
+    "generated_from": "../luoshu/arch.toml",
     "timestamp": "2026-06-24T04:53:53Z"
   }
 }

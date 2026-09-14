@@ -2,7 +2,7 @@ const std = @import("std");
 const settings = @import("settings");
 
 const usage =
-    \\usage: gatecomp <circuit.qasm>... [options]
+    \\usage: luoshu <circuit.qasm>... [options]
     \\
     \\Compiles each circuit given. Several circuits run as a suite: a
     \\metrics table prints per circuit and the visualizer stays closed.
@@ -47,7 +47,7 @@ pub const Options = struct {
 };
 
 pub fn fatal(comptime fmt: []const u8, args: anytype) noreturn {
-    std.debug.print("gatecomp: " ++ fmt ++ "\n", args);
+    std.debug.print("luoshu: " ++ fmt ++ "\n", args);
     std.process.exit(1);
 }
 
