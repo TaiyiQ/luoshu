@@ -43,11 +43,11 @@ build_binaries() {
         echo ">> building baseline $SHA"
         wt=$(mktemp -d)/wt
         git worktree add --quiet "$wt" "$SHA"
+        trap "git worktree remove --force '$wt'; rm -rf '${wt%/wt}'" EXIT # also on failure
         (cd "$wt" && zig build -Doptimize=ReleaseFast)
         bin=$wt/zig-out/bin/luoshu
         [[ -x $bin ]] || bin=$wt/zig-out/bin/gatecomp # baseline predates the luoshu rename
         cp "$bin" "$AB/luoshu-$SHA"
-        git worktree remove --force "$wt"
     fi
 }
 
