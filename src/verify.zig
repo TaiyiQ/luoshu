@@ -1424,6 +1424,29 @@ test "rejects a store outside every SLM grid" {
     );
 }
 
+test "accepts a return to the first available storage row" {
+    const gpa = std.testing.allocator;
+    const cfg = arch.testConfig();
+
+    // row 0: .  .  .  .   <- enough room for both returning atoms
+    // row 1: .  q2 q3 q4  <- only one free site
+    var hw = try schedule.Hardware.init(gpa, cfg, 5, &.{
+        .{ .row = 1, .col = 0 }, // q0: returning
+        .{ .row = 0, .col = 0 }, // q1: returning
+        .{ .row = 1, .col = 1 }, // remains in storage
+        .{ .row = 1, .col = 2 }, // remains in storage
+        .{ .row = 1, .col = 3 }, // remains in storage
+    });
+    defer hw.deinit();
+
+    const fixed = [_]?usize{ 0, 1 };
+
+    try hw.moveSlmCompute(&fixed);
+    try hw.moveSlmStorage(&fixed);
+
+    try verify(gpa, &hw);
+}
+
 test {
     std.testing.refAllDecls(@This());
 }
