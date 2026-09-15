@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const exe = b.addExecutable(.{
-        .name = "gatecomp",
+        .name = "luoshu",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -204,7 +204,7 @@ pub fn build(b: *std.Build) void {
 
     if (b.args) |args| run_cmd.addArgs(args); // pass -- args through
 
-    const run_step = b.step("run", "Run gatecomp"); // enables `zig build run`
+    const run_step = b.step("run", "Run luoshu"); // enables `zig build run`
     run_step.dependOn(&run_cmd.step);
 
     // --- Tests: `zig build test`.

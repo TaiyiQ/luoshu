@@ -1,7 +1,7 @@
 .{
-    .name = .gatecomp,
+    .name = .luoshu,
     .version = "0.1.0",
-    .fingerprint = 0xb9e23656c55db1b7, // Changing this has security and trust implications.
+    .fingerprint = 0x477f547dc55db1b7, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .toml = .{

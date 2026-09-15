@@ -1,6 +1,6 @@
 # Benchmark metrics
 
-`gatecomp <circuit.qasm> --out <dir>` writes `<dir>/<name>-bench.json`: one JSON object summarizing the compiled schedule.
+`luoshu <circuit.qasm> --out <dir>` writes `<dir>/<name>-bench.json`: one JSON object summarizing the compiled schedule.
 
 ## Example
 
@@ -78,7 +78,7 @@ From `ex/mqt/ae_20.qasm`:
                                   // the same reason
   },
 
-  // wall-clock nanoseconds gatecomp itself spent producing this schedule
+  // wall-clock nanoseconds luoshu itself spent producing this schedule
   "compile_ns": 251648625
 }
 ```

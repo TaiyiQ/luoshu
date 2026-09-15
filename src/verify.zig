@@ -5,6 +5,8 @@
 //!
 //!  - trap-state machine: load only from SLM, move/store only from AOD,
 //!    every atom back in an SLM trap at the end of the schedule;
+//!  - SLM-site validity: every store deposits an atom at an actual site of
+//!    a SLM grid;
 //!  - op coherence: move sources match the replayed positions, moves are
 //!    axis-aligned (Manhattan), raman targets match the replayed positions;
 //!  - path legality: no move sweeps through a trap site that is occupied
@@ -76,7 +78,7 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
         @memcpy(start_trap, trap);
         moves.clearRetainingCapacity();
 
-        try replayOps(gpa, t, frame, n, pos, trap, &moves);
+        try replayOps(gpa, t, hw.cfg, frame, n, pos, trap, &moves);
         try checkPathLegality(t, n, moves.items, start_trap, trap, pos);
         try checkTrapSweeps(t, hw.cfg, moves.items);
         try checkSiteExclusivity(t, n, pos, &occupied);
@@ -95,6 +97,7 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
 fn replayOps(
     gpa: std.mem.Allocator,
     t: usize,
+    cfg: arch.ArchConfig,
     frame: schedule.Frame,
     n: usize,
     pos: []Point,
@@ -141,6 +144,14 @@ fn replayOps(
                         q, st.position.x, st.position.y, pos[q].x, pos[q].y,
                     });
                     return error.StorePositionMismatch;
+                }
+                if (!isSite(cfg, st.position)) {
+                    vfail(
+                        t,
+                        "store of qubit {d} at ({d},{d}), which is not an SLM site",
+                        .{ q, st.position.x, st.position.y },
+                    );
+                    return error.StoreOffSite;
                 }
                 trap[q] = .slm;
             },
@@ -259,6 +270,32 @@ fn gridIndex(origin: i32, sep: i32, n: u32, v: i32) ?usize {
     const i = @divExact(rel, sep);
     if (i < 0 or i >= n) return null;
     return @intCast(i);
+}
+
+/// Whether `p` is exactly one of the discrete trap sites of `grid`.
+fn isGridSite(grid: arch.Grid, p: Point) bool {
+    return gridIndex(
+        grid.origin_nm[0],
+        grid.sep_nm[0],
+        grid.num_col,
+        p.x,
+    ) != null and gridIndex(
+        grid.origin_nm[1],
+        grid.sep_nm[1],
+        grid.num_row,
+        p.y,
+    ) != null;
+}
+
+/// Whether `p` belongs to any SLM grid in the architecture.
+fn isSite(cfg: arch.ArchConfig, p: Point) bool {
+    if (isGridSite(cfg.storage_zone.grid(), p)) return true;
+
+    for (cfg.compute_zone.slms, 0..) |_, i| {
+        if (isGridSite(cfg.compute_zone.grid(i), p)) return true;
+    }
+
+    return isGridSite(cfg.readout_zone.grid(), p);
 }
 
 /// Index of the first grid line strictly between `a` and `b`, if any.
@@ -785,17 +822,50 @@ test "atoms loaded in the same frame are not path obstacles" {
         },
     });
 
+    // Return through the trap-free lane to the columns of real storage sites.
     try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(-3000, 500),
+                .dest = pt(0, 500),
+            },
+        },
+        .{
+            .move = .{
+                .qubit = 1,
+                .src = pt(-2000, 500),
+                .dest = pt(2000, 500),
+            },
+        },
+    });
+
+    // Descend onto actual storage SLM sites before depositing.
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(0, 500),
+                .dest = pt(0, 0),
+            },
+        },
+        .{
+            .move = .{
+                .qubit = 1,
+                .src = pt(2000, 500),
+                .dest = pt(2000, 0),
+            },
+        },
         .{
             .store = .{
                 .qubit = 0,
-                .position = pt(-3000, 500),
+                .position = pt(0, 0),
             },
         },
         .{
             .store = .{
                 .qubit = 1,
-                .position = pt(-2000, 500),
+                .position = pt(2000, 0),
             },
         },
     });
@@ -1312,6 +1382,46 @@ test "accepts a slide along a compute row" {
     });
 
     try verify(gpa, &hw);
+}
+
+test "rejects a store outside every SLM grid" {
+    const gpa = std.testing.allocator;
+
+    var hw = try makeHw(gpa, &.{pt(0, 0)});
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{
+        .{
+            .load = .{
+                .qubit = 0,
+                .position = pt(0, 0),
+            },
+        },
+    });
+
+    try addFrame(&hw, &.{
+        .{
+            .move = .{
+                .qubit = 0,
+                .src = pt(0, 0),
+                .dest = pt(0, 500),
+            },
+        },
+        .{
+            .store = .{
+                .qubit = 0,
+                .position = pt(0, 500),
+            },
+        },
+    });
+
+    quiet = true;
+    defer quiet = false;
+
+    try std.testing.expectError(
+        error.StoreOffSite,
+        verify(gpa, &hw),
+    );
 }
 
 test "accepts a return to the first available storage row" {

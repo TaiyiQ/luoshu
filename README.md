@@ -1,10 +1,6 @@
-<p align="center">
-  <img src="doc/logo.svg" alt="Neutral Atom Gate Compiler" width="600">
-</p>
+# Luòshū
 
-# Gate Compiler
-
-Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule for a neutral-atom quantum computer. Native gate transpilation, qubit routing, and atom-move / pulse scheduling.
+A neutral atom gate compiler, that compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule for a neutral-atom quantum computer. Native gate transpilation, qubit routing, and atom-move / pulse scheduling.
 
 ## Requirements
 
@@ -16,14 +12,14 @@ Compiles [OpenQASM 3](https://openqasm.com/) circuits into a hardware schedule f
 
 - Quick start leveraging defaults.
 ```shell
-# Build the binary (or: zig build && cp zig-out/bin/gatecomp .)
+# Build the binary (or: zig build && cp zig-out/bin/luoshu .)
 > just build
 
 # Run the CLI with help options
-> ./gatecomp -h
+> ./luoshu -h
 
 # Run a single circuit and visualize
-> ./gatecomp ./ex/mvp/mvp.qasm --viz
+> ./luoshu ./ex/mvp/mvp.qasm --viz
 ```
 
 For an in-depth understanding, see [CLI](./doc/cli.md).
@@ -45,11 +41,11 @@ Inputs come from flags or from a config file, never both:
 ```shell
 # Flag Mode:
 # Specify inputs on the command line
-> ./gatecomp circuit.qasm --arch cfg/arch.toml --out zig-out
+> ./luoshu circuit.qasm --arch cfg/arch.toml --out zig-out
 
 # Config Mode:
 # Reference a settings TOML instead
-> ./gatecomp circuit.qasm --cfg cfg/settings.toml
+> ./luoshu circuit.qasm --cfg cfg/settings.toml
 ```
 
 Mixing `--cfg` with `--arch`, `--asm`, or `--out` is an error. The runtime toggles `--viz` and `-v/--verbose` are CLI-only and work in either mode. With neither flags nor `--cfg`, the built-in defaults apply.
@@ -61,7 +57,7 @@ For a comparison against MQT QMAP's NALAC compiler on the MQT Bench 20-qubit sui
 Passing several circuits runs them as a suite: the visualizer stays closed, each circuit writes [Schedule](./doc/schedule.md) and [Benchmark](./doc/benchmark.md) when the `out` directory is set, and a schedule-quality table prints:
 
 ```shell
-> ./gatecomp ex/mqt/*.qasm --out zig-out
+> ./luoshu ex/mqt/*.qasm --out zig-out
 
 circuit           | qubits | frames |      cz |  colors | cz/pulse | shuttle_ms | load_ms | route_ms | compile_ms
 -----------------------------------------------------------------------------------------------------------------

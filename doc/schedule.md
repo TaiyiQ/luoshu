@@ -1,6 +1,6 @@
 # Schedule
 
-`gatecomp <circuit.qasm> --out <dir>` writes `<dir>/<name>-schedule.json`: the compiled hardware schedule as a flat list of ops. This file is the contract with the downstream pulse compiler.
+`luoshu <circuit.qasm> --out <dir>` writes `<dir>/<name>-schedule.json`: the compiled hardware schedule as a flat list of ops. This file is the contract with the downstream pulse compiler.
 
 ## Semantics
 

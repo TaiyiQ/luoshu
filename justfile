@@ -1,6 +1,6 @@
 build:
 	zig build
-	cp ./zig-out/bin/gatecomp .
+	cp ./zig-out/bin/luoshu .
 
 run:
 	zig build run
@@ -22,3 +22,7 @@ fmt:
 
 check:
 	zig fmt --check build.zig build.zig.zon src
+
+tag version:
+	git tag -a v{{version}} -m "v{{version}}"
+	git push origin v{{version}}

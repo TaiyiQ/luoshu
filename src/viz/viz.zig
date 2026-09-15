@@ -42,8 +42,6 @@ const GUTTER_W = circuit_view.GUTTER_W;
 const ScheduleView = schedule_view.ScheduleView;
 const LogicalView = logical_view.LogicalView;
 
-// The UI font ships inside the binary, so the visualizer renders the
-// same no matter what directory gatecomp runs from.
 const font_ttf = @embedFile("JetBrainsMonoNerdFont-Regular.ttf");
 
 const View = enum(i32) {
@@ -209,7 +207,7 @@ pub fn run(
         .window_highdpi = true,
     });
     rl.setTraceLogLevel(.err);
-    rl.initWindow(1280, 800, "gatecomp");
+    rl.initWindow(1280, 800, "luoshu");
     defer rl.closeWindow();
     rl.setTargetFPS(60);
     // Escape is handled manually: it closes a pending frame-box edit first
