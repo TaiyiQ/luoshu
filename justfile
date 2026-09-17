@@ -14,7 +14,7 @@ bench-hw *args:
 test:
 	zig build test --summary all
 
-update:
+goldens:
 	zig build update-goldens
 
 fmt:
