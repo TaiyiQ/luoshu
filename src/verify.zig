@@ -32,6 +32,14 @@
 //!    `db_nm` at pulse time (a pair parked farther apart entangles nothing,
 //!    legally — this is the check that proves the pulse does what the
 //!    router asked);
+//!  - CZ coverage: the multiset of pairs carried on rydberg ops equals the
+//!    requested CZ list the caller passes in. Every other check audits the
+//!    schedule's own claims, so this is what catches a silently dropped
+//!    gate. A pipeline that repeats a pair within one stage fails here by
+//!    design: routing's interaction graph deduplicates, and CZ^2 = I makes
+//!    that dedup semantically lossy. decompose never builds such a stage
+//!    (a repeated pair takes the next CZ episode), so this end of the
+//!    check backstops directly built pipelines;
 //!  - measurement: measured qubits lie inside the named zone;
 //!  - reset: reset qubits sit in an SLM trap and lie inside the named zone.
 //!
@@ -50,7 +58,11 @@ const Trap = enum { slm, aod };
 
 const MoveRec = struct { q: usize, src: Point, dest: Point };
 
-pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
+pub fn verify(
+    gpa: std.mem.Allocator,
+    hw: *const schedule.Hardware,
+    wanted_cz: []const [2]u32,
+) !void {
     const n = hw.initial.len;
 
     const pos = try gpa.alloc(Point, n);
@@ -88,6 +100,46 @@ pub fn verify(gpa: std.mem.Allocator, hw: *const schedule.Hardware) !void {
     }
 
     try checkTerminalState(hw.frames.items.len, n, trap);
+    try checkCzCoverage(gpa, hw, wanted_cz);
+}
+
+fn pairLessThan(_: void, a: [2]u32, b: [2]u32) bool {
+    if (a[0] != b[0]) return a[0] < b[0];
+    return a[1] < b[1];
+}
+
+/// The multiset of CZ pairs recorded on the schedule's rydberg ops must
+/// equal the requested gates. Pair intent proves each recorded pair is
+/// physically entangled; this proves the recorded pairs are the ones the
+/// circuit asked for, so a silently dropped gate cannot verify. The
+/// duplicate direction backstops directly built pipelines: decompose
+/// splits a repeated pair into separate stages, so its output never
+/// carries a within-stage duplicate for routing to merge away.
+fn checkCzCoverage(
+    gpa: std.mem.Allocator,
+    hw: *const schedule.Hardware,
+    wanted_cz: []const [2]u32,
+) !void {
+    const wanted = try gpa.dupe([2]u32, wanted_cz);
+    defer gpa.free(wanted);
+
+    var got: std.ArrayList([2]u32) = .empty;
+    defer got.deinit(gpa);
+    for (hw.frames.items) |frame| {
+        for (frame.items) |op| {
+            if (op != .rydberg) continue;
+            for (op.rydberg.pairs) |p|
+                try got.append(gpa, .{ @min(p[0], p[1]), @max(p[0], p[1]) });
+        }
+    }
+
+    std.mem.sort([2]u32, wanted, {}, pairLessThan);
+    std.mem.sort([2]u32, got.items, {}, pairLessThan);
+
+    if (!std.mem.eql([2]u32, wanted, got.items)) {
+        trace.diag(quiet, "schedule verify: CZ coverage mismatch: circuit wants {any}, schedule entangles {any}", .{ wanted, got.items });
+        return error.CzCoverageMismatch;
+    }
 }
 
 /// Replays one frame's ops in emission order: trap-state machine (load only
@@ -544,10 +596,9 @@ fn contains(b: Bounds, p: Point) bool {
 // were computed by moveAodCompute from the same inputs as the placement,
 // so a bug that corrupts recording and placement consistently passes here,
 // and a pulse that was never emitted leaves nothing to check. That end of
-// the contract is held by schedule.zig's expectRydbergPairsWithinBlockade,
-// which derives the intent independently from (fixed, moveable) and counts
-// the pulses. Breadth here (every schedule, trusted claim); depth there
-// (one scenario, untrusted claim).
+// the contract is held by checkCzCoverage: wrongly recorded or missing
+// pairs no longer match the requested CZ list, so between the two checks
+// the schedule entangles exactly what the circuit asked for.
 fn checkPairs(t: usize, cfg: arch.ArchConfig, pos: []const Point, pairs: []const [2]u32, n: usize) !void {
     const db: i64 = cfg.constraints.db_nm;
     const db2 = db * db;
@@ -675,7 +726,7 @@ test "accepts a legal load-move-store round trip" {
         },
     });
 
-    try verify(gpa, &hw);
+    try verify(gpa, &hw, &.{});
 }
 
 test "catches a load while already in the AOD" {
@@ -702,7 +753,7 @@ test "catches a load while already in the AOD" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.LoadWhileInAod, verify(gpa, &hw));
+    try std.testing.expectError(error.LoadWhileInAod, verify(gpa, &hw, &.{}));
 }
 
 test "catches a move of a stored atom" {
@@ -723,7 +774,7 @@ test "catches a move of a stored atom" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.MoveWhileStored, verify(gpa, &hw));
+    try std.testing.expectError(error.MoveWhileStored, verify(gpa, &hw, &.{}));
 }
 
 test "catches a move whose source disagrees with the replayed position" {
@@ -748,7 +799,7 @@ test "catches a move whose source disagrees with the replayed position" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.MoveSourceMismatch, verify(gpa, &hw));
+    try std.testing.expectError(error.MoveSourceMismatch, verify(gpa, &hw, &.{}));
 }
 
 test "catches a sweep through an occupied trap site" {
@@ -780,7 +831,7 @@ test "catches a sweep through an occupied trap site" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.MoveThroughOccupiedSite, verify(gpa, &hw));
+    try std.testing.expectError(error.MoveThroughOccupiedSite, verify(gpa, &hw, &.{}));
 }
 
 test "atoms loaded in the same frame are not path obstacles" {
@@ -870,7 +921,7 @@ test "atoms loaded in the same frame are not path obstacles" {
         },
     });
 
-    try verify(gpa, &hw);
+    try verify(gpa, &hw, &.{});
 }
 
 test "catches two atoms on the same site at end of frame" {
@@ -901,7 +952,7 @@ test "catches two atoms on the same site at end of frame" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.SiteConflict, verify(gpa, &hw));
+    try std.testing.expectError(error.SiteConflict, verify(gpa, &hw, &.{}));
 }
 
 test "catches an AOD order inversion" {
@@ -948,7 +999,7 @@ test "catches an AOD order inversion" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.AodOrderInversion, verify(gpa, &hw));
+    try std.testing.expectError(error.AodOrderInversion, verify(gpa, &hw, &.{}));
 }
 
 test "catches AOD columns closer than the minimum separation" {
@@ -986,7 +1037,7 @@ test "catches AOD columns closer than the minimum separation" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.AodSeparationViolation, verify(gpa, &hw));
+    try std.testing.expectError(error.AodSeparationViolation, verify(gpa, &hw, &.{}));
 }
 
 test "catches more AOD columns than the hardware has" {
@@ -1038,7 +1089,7 @@ test "catches more AOD columns than the hardware has" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.AodCapacityExceeded, verify(gpa, &hw));
+    try std.testing.expectError(error.AodCapacityExceeded, verify(gpa, &hw, &.{}));
 }
 
 test "catches an AOD register split across rows" {
@@ -1076,7 +1127,7 @@ test "catches an AOD register split across rows" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.AodRowSplit, verify(gpa, &hw));
+    try std.testing.expectError(error.AodRowSplit, verify(gpa, &hw, &.{}));
 }
 
 test "catches a load while the register hovers on another row" {
@@ -1123,7 +1174,7 @@ test "catches a load while the register hovers on another row" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.LoadOffRegisterRow, verify(gpa, &hw));
+    try std.testing.expectError(error.LoadOffRegisterRow, verify(gpa, &hw, &.{}));
 }
 
 test "catches an atom left in the AOD at end of schedule" {
@@ -1143,7 +1194,7 @@ test "catches an atom left in the AOD at end of schedule" {
 
     quiet = true;
     defer quiet = false;
-    try std.testing.expectError(error.AtomLeftInAod, verify(gpa, &hw));
+    try std.testing.expectError(error.AtomLeftInAod, verify(gpa, &hw, &.{}));
 }
 
 test "catches a blockade violation during a rydberg pulse" {
@@ -1163,7 +1214,7 @@ test "catches a blockade violation during a rydberg pulse" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.BlockadeViolation, verify(gpa, &hw));
+    try std.testing.expectError(error.BlockadeViolation, verify(gpa, &hw, &.{}));
 }
 
 test "accepts an isolated pair during a rydberg pulse" {
@@ -1178,7 +1229,7 @@ test "accepts an isolated pair during a rydberg pulse" {
 
     try addFrame(&hw, &.{.{ .rydberg = .{ .zone = .compute } }});
 
-    try verify(gpa, &hw);
+    try verify(gpa, &hw, &.{});
 }
 
 test "catches a routed pair parked outside blockade range" {
@@ -1204,7 +1255,10 @@ test "catches a routed pair parked outside blockade range" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.PairOutOfBlockadeRange, verify(gpa, &hw));
+    try std.testing.expectError(
+        error.PairOutOfBlockadeRange,
+        verify(gpa, &hw, &.{.{ 0, 1 }}),
+    );
 }
 
 test "accepts a routed pair within blockade range" {
@@ -1225,7 +1279,124 @@ test "accepts a routed pair within blockade range" {
         },
     });
 
-    try verify(gpa, &hw);
+    try verify(gpa, &hw, &.{.{ 0, 1 }});
+}
+
+test "catches a dropped CZ: a wanted pair no rydberg op entangles" {
+    const gpa = std.testing.allocator;
+
+    var hw = try makeHw(gpa, &.{
+        pt(1000, 6000),
+        pt(1200, 6000),
+    });
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{.{ .rydberg = .{ .zone = .compute } }});
+
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(
+        error.CzCoverageMismatch,
+        verify(gpa, &hw, &.{.{ 0, 1 }}),
+    );
+}
+
+test "catches an unrequested CZ: an entangled pair the circuit never asked for" {
+    const gpa = std.testing.allocator;
+
+    var hw = try makeHw(gpa, &.{
+        pt(1000, 6000),
+        pt(1200, 6000),
+    });
+    defer hw.deinit();
+
+    try addFrame(&hw, &.{
+        .{
+            .rydberg = .{
+                .zone = .compute,
+                .pairs = &.{.{ 1, 0 }},
+            },
+        },
+    });
+
+    quiet = true;
+    defer quiet = false;
+    try std.testing.expectError(
+        error.CzCoverageMismatch,
+        verify(gpa, &hw, &.{}),
+    );
+}
+
+// Mirror of schedule.zig's shuttle test config: 3x4 storage grid, two
+// compute SLMs whose paired columns sit dr (500nm) apart within db
+// (1000nm), while a wrong-column pairing lands a full 3000nm column
+// separation out of blockade range.
+var shuttle_compute_slms = [2]arch.Slm{
+    .{
+        .slm_id = 1,
+        .num_row = 2,
+        .num_col = 4,
+        .sep_nm = .{ 3000, 2000 },
+        .offset_nm = .{ 0, 0 },
+    },
+    .{
+        .slm_id = 2,
+        .num_row = 2,
+        .num_col = 4,
+        .sep_nm = .{ 3000, 2000 },
+        .offset_nm = .{ 0, 500 },
+    },
+};
+
+fn shuttleCfg() arch.ArchConfig {
+    var cfg = arch.testConfig();
+    cfg.aod = .{ .aod_id = 0, .min_sep_nm = 500, .max_num_row = 1, .max_num_col = 8 };
+    cfg.storage_zone.slm.num_row = 3;
+    cfg.compute_zone.offset_nm = .{ 0, 6000 };
+    cfg.compute_zone.dr_nm = 500;
+    cfg.compute_zone.dw_nm = 2500;
+    cfg.compute_zone.slms = &shuttle_compute_slms;
+    cfg.readout_zone.offset_nm = .{ 0, 12000 };
+    cfg.readout_zone.slm = .{
+        .slm_id = 3,
+        .num_row = 1,
+        .num_col = 4,
+        .sep_nm = .{ 1000, 1000 },
+        .offset_nm = .{ 0, 0 },
+    };
+    cfg.constraints.db_nm = 1000;
+    cfg.constraints.dz_nm = 1000;
+    return cfg;
+}
+
+test "choreographed round trip entangles exactly the requested pairs" {
+    const gpa = std.testing.allocator;
+    const cfg = shuttleCfg();
+
+    // GHZ-shaped rounds through the real producer: q1 entangles with q0
+    // (timeframe 0, column 0), then slides to column 1 to entangle with q2
+    // (timeframe 1), and the register returns to storage. Unlike the
+    // raw-frame tests above, nothing here is hand-recorded: moveAodCompute
+    // derives the rydberg pairs itself, and coverage plus pair intent must
+    // find them equal to the request and within blockade range.
+    var hw = try schedule.Hardware.init(gpa, cfg, 3, &.{
+        .{ .row = 2, .col = 0 },
+        .{ .row = 2, .col = 1 },
+        .{ .row = 2, .col = 2 },
+    });
+    defer hw.deinit();
+
+    const fixed = [_]?usize{ 0, 2 };
+    var t0 = [_]?usize{ 1, null };
+    var t1 = [_]?usize{ null, 1 };
+    var moveable = [_][]?usize{ &t0, &t1 };
+
+    try hw.moveSlmCompute(&fixed);
+    try hw.moveAodCompute(&fixed, &moveable);
+    try hw.moveAodStorage(&moveable);
+    try hw.moveSlmStorage(&fixed);
+
+    try verify(gpa, &hw, &.{ .{ 0, 1 }, .{ 1, 2 } });
 }
 
 test "catches a measurement outside its zone" {
@@ -1248,7 +1419,7 @@ test "catches a measurement outside its zone" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.MeasureOutsideZone, verify(gpa, &hw));
+    try std.testing.expectError(error.MeasureOutsideZone, verify(gpa, &hw, &.{}));
 }
 
 test "catches a reset outside its zone" {
@@ -1271,7 +1442,7 @@ test "catches a reset outside its zone" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.ResetOutsideZone, verify(gpa, &hw));
+    try std.testing.expectError(error.ResetOutsideZone, verify(gpa, &hw, &.{}));
 }
 
 test "catches a reset of a qubit held in the AOD" {
@@ -1299,7 +1470,7 @@ test "catches a reset of a qubit held in the AOD" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.ResetWhileInAod, verify(gpa, &hw));
+    try std.testing.expectError(error.ResetWhileInAod, verify(gpa, &hw, &.{}));
 }
 
 test "catches a sweep along a storage row across an empty trap site" {
@@ -1327,7 +1498,7 @@ test "catches a sweep along a storage row across an empty trap site" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.SweptTrapSite, verify(gpa, &hw));
+    try std.testing.expectError(error.SweptTrapSite, verify(gpa, &hw, &.{}));
 }
 
 test "catches a descent along a storage column through an empty trap site" {
@@ -1354,7 +1525,7 @@ test "catches a descent along a storage column through an empty trap site" {
     quiet = true;
     defer quiet = false;
 
-    try std.testing.expectError(error.SweptTrapSite, verify(gpa, &hw));
+    try std.testing.expectError(error.SweptTrapSite, verify(gpa, &hw, &.{}));
 }
 
 // The compute zone is exempt from the trap-sweep rule: the dip choreography
@@ -1381,7 +1552,7 @@ test "accepts a slide along a compute row" {
         .{ .store = .{ .qubit = 0, .position = pt(3000, 5800) } },
     });
 
-    try verify(gpa, &hw);
+    try verify(gpa, &hw, &.{});
 }
 
 test "rejects a store outside every SLM grid" {
@@ -1420,7 +1591,7 @@ test "rejects a store outside every SLM grid" {
 
     try std.testing.expectError(
         error.StoreOffSite,
-        verify(gpa, &hw),
+        verify(gpa, &hw, &.{}),
     );
 }
 
@@ -1444,7 +1615,7 @@ test "accepts a return to the first available storage row" {
     try hw.moveSlmCompute(&fixed);
     try hw.moveSlmStorage(&fixed);
 
-    try verify(gpa, &hw);
+    try verify(gpa, &hw, &.{});
 }
 
 test {

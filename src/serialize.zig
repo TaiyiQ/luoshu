@@ -312,11 +312,10 @@ fn zoneName(z: schedule.Zone) []const u8 {
     };
 }
 
-/// Test helper: byte-compares `actual` against the checked-in snapshot at
+/// Test helper: byte-compares `actual` against the checked-in golden at
 /// `path`, printing a diff-style report on mismatch and a regeneration hint
-/// when the snapshot is missing. Lives here because every snapshot producer
-/// (route's graph snapshots, golden's pipeline snapshots) already imports
-/// this module.
+/// when the golden is missing. Lives here because the golden tests already
+/// import this module.
 pub fn expectMatchesFile(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -326,8 +325,8 @@ pub fn expectMatchesFile(
     const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
         if (err == error.FileNotFound) {
             std.debug.print(
-                "\nSnapshot missing: {s}\n" ++
-                    "  Run `zig build update-snapshots` to generate it.\n",
+                "\nGolden missing: {s}\n" ++
+                    "  Run `zig build update-goldens` to generate it.\n",
                 .{path},
             );
         }
@@ -342,10 +341,10 @@ pub fn expectMatchesFile(
 
     if (!std.mem.eql(u8, actual, expected)) {
         std.debug.print(
-            "\nSnapshot mismatch: {s}\n--- expected ---\n{s}\n--- actual ---\n{s}\n",
+            "\nGolden mismatch: {s}\n--- expected ---\n{s}\n--- actual ---\n{s}\n",
             .{ path, expected, actual },
         );
-        return error.SnapshotMismatch;
+        return error.GoldenMismatch;
     }
 }
 

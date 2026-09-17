@@ -14,8 +14,8 @@ bench-hw *args:
 test:
 	zig build test --summary all
 
-update:
-	zig build update-snapshots
+goldens:
+	zig build update-goldens
 
 fmt:
 	zig fmt build.zig build.zig.zon src

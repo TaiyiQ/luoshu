@@ -44,7 +44,7 @@ pub fn main(init: std.process.Init) !void {
 
     var sum = bench.Table.Totals{};
     for (opts.jobs) |job| {
-        const metrics = try compileOne(init, opts, cfg, asm_doc, job);
+        const metrics = try compileJob(init, opts, cfg, asm_doc, job);
         if (suite) {
             table.row(std.fs.path.stem(job.qasm), metrics);
             sum.add(metrics);
@@ -54,7 +54,7 @@ pub fn main(init: std.process.Init) !void {
     if (suite) table.totals(sum);
 }
 
-fn compileOne(
+fn compileJob(
     init: std.process.Init,
     opts: cli.Options,
     cfg: arch.ArchConfig,
@@ -62,6 +62,7 @@ fn compileOne(
     job: cli.Job,
 ) !bench.Metrics {
     var diag: ?qasm.Diagnostic = null;
+
     var warnings: std.ArrayList(qasm.Diagnostic) = .empty;
     defer warnings.deinit(init.gpa);
 
@@ -105,7 +106,12 @@ fn compileOne(
     const compile_ns: u64 = @intCast(compile_start.durationTo(std.Io.Clock.awake.now(init.io)).nanoseconds);
     defer sch.deinit();
 
-    if (builtin.mode == .Debug) try verify.verify(init.gpa, &sch);
+    if (builtin.mode == .Debug) {
+        const wanted = try pipeline.czPairs(init.gpa);
+        defer init.gpa.free(wanted);
+
+        try verify.verify(init.gpa, &sch, wanted);
+    }
 
     if (job.out) |path| {
         try createParentDir(init.io, path);

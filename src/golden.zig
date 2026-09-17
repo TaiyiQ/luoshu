@@ -1,371 +1,217 @@
-//! End-to-end golden tests: each case runs the full pipeline (circuit ->
-//! decompose -> route -> compile) and byte-compares the logical routing
-//! output (Sequence JSON, one object per CZ stage) and the physical
-//! schedule (Hardware JSON) against checked-in snapshots in testdata/.
+//! End-to-end golden tests: each case parses a pinned .qasm and runs the
+//! full pipeline (parse -> decompose -> route -> compile), asserting two
+//! things:
 //!
-//! Snapshots pin stability, not correctness: any change to MIS/coloring/
-//! choreography shows up as a reviewable diff. Regenerate with `zig build
-//! update-snapshots`. Correctness comes from verify.verify, which runs in
-//! every case, so a blessed snapshot is always a legal schedule.
+//! - correctness: verify.verify accepts the schedule, including CZ
+//!   coverage against the decomposed pipeline, so neither an illegal
+//!   schedule nor a silently dropped gate can pass;
+//! - quality: the case's bench metrics match one row in
+//!   testdata/metrics.txt, so a routing regression shows up as a
+//!   one-line reviewable diff instead of hundreds of coordinates.
+//!   Regenerate with `zig build update-goldens`.
 
 const std = @import("std");
 const arch = @import("arch");
 const assembly = @import("assembly");
+const bench = @import("bench");
 const circuit = @import("circuit");
 const qasm = @import("qasm");
 const compiler = @import("compiler");
 const serialize = @import("serialize");
 const verify = @import("verify");
 
-/// Pinned copy of the architecture config: cfg/arch.toml is user-editable
-/// for experiments, so the goldens compile against this frozen twin.
 pub const arch_path = "testdata/arch.toml";
+pub const metrics_path = "testdata/metrics.txt";
+pub const golden_dir = "testdata/golden";
 
-/// One tag per golden circuit. Cases name their circuit by tag and
-/// buildCircuit dispatches exhaustively, so an unused builder or a case
-/// without a builder fails to compile.
-pub const Kind = enum {
-    bell,
-    ghz3,
-    grid,
-    qft5,
-    cycle6,
-    cyclic_aod,
-    bell_reset,
-};
-
-pub fn buildCircuit(kind: Kind, gpa: std.mem.Allocator) !circuit.Circuit {
-    return switch (kind) {
-        .bell => buildBell(gpa),
-        .ghz3 => buildGhz3(gpa),
-        .grid => buildGrid(gpa),
-        .qft5 => buildQft5(gpa),
-        .cycle6 => buildCycle6(gpa),
-        .cyclic_aod => buildCyclicAod(gpa),
-        .bell_reset => buildBellReset(gpa),
-    };
-}
-
-pub const Case = struct {
-    kind: Kind,
-    sequence_path: []const u8,
-    hardware_path: []const u8,
-};
-
-/// Walked by the per-case tests below and by `zig build update-snapshots`,
-/// so the regenerator can never drift from the tests.
-pub const cases = [_]Case{
-    .{
-        .kind = .bell,
-        .sequence_path = "testdata/bell.sequence.json",
-        .hardware_path = "testdata/bell.hardware.json",
-    },
-    .{
-        .kind = .ghz3,
-        .sequence_path = "testdata/ghz-3.sequence.json",
-        .hardware_path = "testdata/ghz-3.hardware.json",
-    },
-    .{
-        .kind = .grid,
-        .sequence_path = "testdata/grid.sequence.json",
-        .hardware_path = "testdata/grid.hardware.json",
-    },
-    .{
-        .kind = .qft5,
-        .sequence_path = "testdata/qft-5.sequence.json",
-        .hardware_path = "testdata/qft-5.hardware.json",
-    },
-    .{
-        .kind = .cycle6,
-        .sequence_path = "testdata/cycle-6.sequence.json",
-        .hardware_path = "testdata/cycle-6.hardware.json",
-    },
-    .{
-        .kind = .cyclic_aod,
-        .sequence_path = "testdata/cyclic-aod.sequence.json",
-        .hardware_path = "testdata/cyclic-aod.hardware.json",
-    },
-    .{
-        .kind = .bell_reset,
-        .sequence_path = "testdata/bell-reset.sequence.json",
-        .hardware_path = "testdata/bell-reset.hardware.json",
-    },
-};
-
-pub fn buildBell(gpa: std.mem.Allocator) !circuit.Circuit {
-    var c = circuit.Circuit.init(gpa, 2);
-    errdefer c.deinit();
-    try c.h(0);
-    try c.cx(0, 1);
-    return c;
-}
-
-// Bell pair with a mid-circuit reset on q0. The snapshot pins the whole
-// round trip — shuttle out, readout-zone repump, shuttle home — and the
-// frame-phase zeroing: reset(0) voids q0's virtual-Z reference (pi after
-// the first H), so the trailing H fires with a different drive phase than
-// it would without the zeroing.
-pub fn buildBellReset(gpa: std.mem.Allocator) !circuit.Circuit {
-    var c = circuit.Circuit.init(gpa, 2);
-    errdefer c.deinit();
-    try c.h(0);
-    try c.cx(0, 1);
-    try c.reset(0);
-    try c.h(0);
-    return c;
-}
-
-pub fn buildGhz3(gpa: std.mem.Allocator) !circuit.Circuit {
-    var c = circuit.Circuit.init(gpa, 3);
-    errdefer c.deinit();
-    try c.h(0);
-    try c.cx(0, 1);
-    try c.cx(1, 2);
-    return c;
-}
-
-// CZ on every edge of a 3x3 grid — one big stage, maximum routing pressure.
-//
-// 0-1-2
-// | | |
-// 3-4-5
-// | | |
-// 6-7-8
-pub fn buildGrid(gpa: std.mem.Allocator) !circuit.Circuit {
-    var c = circuit.Circuit.init(gpa, 9);
-    errdefer c.deinit();
-    try c.cz(0, 1);
-    try c.cz(1, 2);
-    try c.cz(3, 4);
-    try c.cz(4, 5);
-    try c.cz(6, 7);
-    try c.cz(7, 8);
-    try c.cz(0, 3);
-    try c.cz(3, 6);
-    try c.cz(1, 4);
-    try c.cz(4, 7);
-    try c.cz(2, 5);
-    try c.cz(5, 8);
-    return c;
-}
-
-// CZ ring over 6 qubits — mirrors route.buildCycleGraph. Its first
-// timeframe places the AOD atoms away from the leftmost compute columns,
-// pinning down that the entry move stores atoms directly at their
-// first-timeframe positions.
-pub fn buildCycle6(gpa: std.mem.Allocator) !circuit.Circuit {
-    var c = circuit.Circuit.init(gpa, 6);
-    errdefer c.deinit();
-    try c.cz(0, 1);
-    try c.cz(1, 2);
-    try c.cz(2, 3);
-    try c.cz(3, 4);
-    try c.cz(4, 5);
-    try c.cz(5, 0);
-    return c;
-}
-
-// Five-cycle 0-1-3-4-2-0 with a pendant qubit 5 on 1 (mirrors
-// qasm/cyclic-aod.qasm). Historically forced CyclicAodOrder and a
-// split-into-rounds fallback in the driver; coloring against the fixed AOD
-// sequence (arXiv:2405.08068) rejects conflicting colors during coloring,
-// so it routes in a single pickup. Kept as the regression case for that
-// coloring. A single round still leaves one SLM-SLM edge uncovered (the odd
-// cycle is non-bipartite); the driver reroutes the residue in a further
-// round, so every CZ lands in the schedule.
-pub fn buildCyclicAod(gpa: std.mem.Allocator) !circuit.Circuit {
-    var c = circuit.Circuit.init(gpa, 6);
-    errdefer c.deinit();
-    try c.cz(0, 1);
-    try c.cz(0, 2);
-    try c.cz(1, 3);
-    try c.cz(1, 5);
-    try c.cz(2, 4);
-    try c.cz(3, 4);
-    return c;
-}
-
-// QFT-shaped interaction pattern on 5 qubits: H per qubit, then a CZ between
-// every pair (the controlled-phase skeleton) — complete-graph routing.
-pub fn buildQft5(gpa: std.mem.Allocator) !circuit.Circuit {
-    var c = circuit.Circuit.init(gpa, 5);
-    errdefer c.deinit();
-    var i: u32 = 0;
-    while (i < 5) : (i += 1) {
-        try c.h(i);
-        var j = i + 1;
-        while (j < 5) : (j += 1) try c.cz(i, j);
+fn collectCases(gpa: std.mem.Allocator, io: std.Io) ![][]const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (list.items) |p| gpa.free(p);
+        list.deinit(gpa);
     }
-    return c;
-}
 
-/// Serializes the routing output of every CZ-carrying stage as a JSON array,
-/// one Sequence object per routing round (a stage routes in rounds until
-/// every CZ is covered). U-only stages route nothing and are skipped.
-pub fn sequencesJson(gpa: std.mem.Allocator, pipe: *circuit.Pipeline) ![]u8 {
-    var buf: std.Io.Writer.Allocating = .init(gpa);
-    defer buf.deinit();
-    const w = &buf.writer;
+    var dir = try std.Io.Dir.cwd().openDir(
+        io,
+        golden_dir,
+        .{ .iterate = true },
+    );
+    defer dir.close(io);
 
-    try w.writeAll("[\n");
-    var first = true;
-    for (pipe.stages.items) |*stage| {
-        if (stage.* != .cz) continue;
+    var walker = try dir.walk(gpa);
+    defer walker.deinit();
 
-        const seqs = try compiler.routeStage(
-            gpa,
-            stage.cz.items,
-            pipe.num_qubits,
-            null,
-        );
-        defer {
-            for (seqs) |*s| s.deinit();
-            gpa.free(seqs);
-        }
-
-        for (seqs) |*seq| {
-            const json = try serialize.sequenceToJson(gpa, seq.fixed, seq.moveable);
-            defer gpa.free(json);
-
-            if (!first) try w.writeAll(",\n");
-            first = false;
-            try w.writeAll(json);
-        }
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.path, ".qasm")) continue;
+        const full = try std.fmt.allocPrint(gpa, golden_dir ++ "/{s}", .{entry.path});
+        errdefer gpa.free(full);
+        try list.append(gpa, full);
     }
-    try w.writeAll("\n]");
 
-    return gpa.dupe(u8, buf.written());
+    // An empty corpus means the walk ran against the wrong directory.
+    if (list.items.len == 0) return error.EmptyGoldenCorpus;
+
+    // Paths are sorted to keep metrics.txt byte-stable; within each folder
+    // the number prefixes make sorted order the simplest-first order.
+    std.mem.sort([]const u8, list.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+
+    return list.toOwnedSlice(gpa);
 }
 
-/// Runs `case` through the full pipeline and returns both snapshot payloads,
-/// verifying the schedule on the way so an illegal one can never be blessed
-/// as a golden baseline. Shared by the per-case tests and
-/// `zig build update-snapshots`, so the two can never drift.
-pub fn caseJson(
+/// Metrics key for a corpus path: the path under testdata/golden/, minus
+/// the extension.
+fn caseName(path: []const u8) []const u8 {
+    const prefix = "testdata/golden/";
+    std.debug.assert(std.mem.startsWith(u8, path, prefix));
+    std.debug.assert(std.mem.endsWith(u8, path, ".qasm"));
+    return path[prefix.len .. path.len - ".qasm".len];
+}
+
+/// Parses the case's .qasm, runs it through the full pipeline, verifies
+/// the schedule (CZ coverage included), and returns the bench metrics.
+/// Shared by the tests and `zig build update-goldens`, so an illegal or
+/// lossy schedule can never be blessed as a baseline.
+pub fn runCase(
     gpa: std.mem.Allocator,
+    io: std.Io,
     cfg: arch.ArchConfig,
-    case: Case,
-) !struct { seq: []u8, hw: []u8 } {
-    var circ = try buildCircuit(case.kind, gpa);
-    defer circ.deinit();
-
-    var pipe = try circuit.decompose(gpa, circ);
-    defer pipe.deinit();
-
-    const seq_json = try sequencesJson(gpa, &pipe);
-    errdefer gpa.free(seq_json);
-
-    var hw = try compiler.compile(gpa, &pipe, cfg, null, null);
-    defer hw.deinit();
-
-    try verify.verify(gpa, &hw);
-
-    const hw_json = try serialize.hardwareToJson(gpa, &hw);
-    return .{ .seq = seq_json, .hw = hw_json };
-}
-
-fn goldenCase(case: Case) !void {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-
-    const cfg = try arch.load(gpa, io, arch_path);
-    defer cfg.deinit(gpa);
-
-    const json = try caseJson(gpa, cfg, case);
-    defer gpa.free(json.seq);
-    defer gpa.free(json.hw);
-
-    try serialize.expectMatchesFile(gpa, io, case.sequence_path, json.seq);
-    try serialize.expectMatchesFile(gpa, io, case.hardware_path, json.hw);
-}
-
-test "golden: bell" {
-    try goldenCase(cases[0]);
-}
-
-test "golden: ghz-3" {
-    try goldenCase(cases[1]);
-}
-
-test "golden: grid" {
-    try goldenCase(cases[2]);
-}
-
-test "golden: qft-5" {
-    try goldenCase(cases[3]);
-}
-
-test "golden: cycle-6" {
-    try goldenCase(cases[4]);
-}
-
-test "golden: cyclic-aod" {
-    try goldenCase(cases[5]);
-}
-
-test "golden: bell-reset" {
-    try goldenCase(cases[6]);
-}
-
-// Not a snapshot test: pins down that an explicit assembly handoff (a fully
-// occupied storage grid, of which qft-5 uses only its first 5 atoms) still
-// compiles to a schedule the verifier accepts.
-test "assembly: qft-5 compiles legally from assembly.json" {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-
-    const asm_doc = try assembly.load(gpa, io, "testdata/assembly.json");
-    defer asm_doc.deinit(gpa);
-
-    var circ = try buildQft5(gpa);
-    defer circ.deinit();
-
-    var pipe = try circuit.decompose(gpa, circ);
-    defer pipe.deinit();
-
-    const cfg = try arch.load(gpa, io, arch_path);
-    defer cfg.deinit(gpa);
-
-    var hw = try compiler.compile(gpa, &pipe, cfg, asm_doc.sites, null);
-    defer hw.deinit();
-
-    try verify.verify(gpa, &hw);
-}
-
-/// The CLI input path: parse a vendored .qasm with qasm.load (the case
-/// builders construct Circuits directly, bypassing the parser) and require
-/// a schedule the verifier accepts. Not a snapshot test, so it pins the
-/// parser-to-schedule path without freezing its output.
-fn qasmCompilesLegally(path: []const u8) !void {
-    const gpa = std.testing.allocator;
-    const io = std.testing.io;
-
+    path: []const u8,
+) !bench.Metrics {
     var circ = try qasm.load(gpa, io, path);
     defer circ.deinit();
 
     var pipe = try circuit.decompose(gpa, circ);
     defer pipe.deinit();
 
+    var stats = compiler.RouteStats{};
+    var hw = try compiler.compile(gpa, &pipe, cfg, null, &stats);
+    defer hw.deinit();
+
+    const wanted = try pipe.czPairs(gpa);
+    defer gpa.free(wanted);
+
+    try verify.verify(gpa, &hw, wanted);
+
+    var m = bench.measure(&hw);
+    m.cz_requested = stats.cz_requested;
+    m.colors = stats.colors;
+    m.max_degree = stats.max_degree;
+
+    return m;
+}
+
+// One aligned column per bench field, so the table scans down as well as
+// across. Header and rows share the widths; case names are left-aligned,
+// numbers right-aligned.
+const table_header =
+    "{s:<36}" ++ // case
+    "{s:>7}" ++ // qubits
+    "{s:>8}" ++ // frames
+    "{s:>6}" ++ // load
+    "{s:>7}" ++ // store
+    "{s:>6}" ++ // move
+    "{s:>9}" ++ // rydberg
+    "{s:>7}" ++ // raman
+    "{s:>9}" ++ // measure
+    "{s:>7}" ++ // reset
+    "{s:>4}" ++ // cz
+    "{s:>8}" ++ // cz_req
+    "{s:>8}" ++ // colors
+    "{s:>5}" ++ // deg
+    "{s:>13}" ++ // move_nm
+    "{s:>11}" ++ // max_nm
+    "{s:>11}" ++ // us
+    "\n";
+
+const table_row =
+    "{s:<36}" ++ // case
+    "{d:>7}" ++ // qubits
+    "{d:>8}" ++ // frames
+    "{d:>6}" ++ // load
+    "{d:>7}" ++ // store
+    "{d:>6}" ++ // move
+    "{d:>9}" ++ // rydberg
+    "{d:>7}" ++ // raman
+    "{d:>9}" ++ // measure
+    "{d:>7}" ++ // reset
+    "{d:>4}" ++ // cz
+    "{d:>8}" ++ // cz_req
+    "{d:>8}" ++ // colors
+    "{d:>5}" ++ // deg
+    "{d:>13.1}" ++ // move_nm
+    "{d:>11.1}" ++ // max_nm
+    "{d:>11.3}" ++ // us
+    "\n";
+
+/// Builds the metrics golden: one table row of bench numbers per case,
+/// in sorted path order. compile_ns is excluded (non-deterministic);
+/// everything else is deterministic arithmetic over a deterministic
+/// schedule, so the file is byte-stable.
+pub fn metricsTable(gpa: std.mem.Allocator, io: std.Io, cfg: arch.ArchConfig) ![]u8 {
+    const paths = try collectCases(gpa, io);
+    defer {
+        for (paths) |p| gpa.free(p);
+        gpa.free(paths);
+    }
+
+    var buf: std.Io.Writer.Allocating = .init(gpa);
+    defer buf.deinit();
+
+    const w = &buf.writer;
+
+    try w.print(table_header, .{
+        "case",    "qubits",  "frames", "load", "store",  "move",   "rydberg",
+        "raman",   "measure", "reset",  "cz",   "cz_req", "colors", "deg",
+        "move_nm", "max_nm",  "us",
+    });
+
+    for (paths) |path| {
+        errdefer std.debug.print("golden case failed: {s}\n", .{path});
+        const m = try runCase(gpa, io, cfg, path);
+
+        try w.print(table_row, .{
+            caseName(path), m.num_qubits,     m.frames,   m.n_load,       m.n_store,
+            m.n_move,       m.n_rydberg,      m.n_raman,  m.n_measure,    m.n_reset,
+            m.cz_pairs,     m.cz_requested.?, m.colors.?, m.max_degree.?, m.total_move_nm,
+            m.max_move_nm,  m.totalUs(),
+        });
+    }
+
+    return gpa.dupe(u8, buf.written());
+}
+
+// Entry point of `zig build update-goldens`.
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    const io = init.io;
+
     const cfg = try arch.load(gpa, io, arch_path);
     defer cfg.deinit(gpa);
 
-    var hw = try compiler.compile(gpa, &pipe, cfg, null, null);
-    defer hw.deinit();
+    const table = try metricsTable(gpa, io, cfg);
+    defer gpa.free(table);
 
-    try verify.verify(gpa, &hw);
+    try serialize.writeJsonFile(io, metrics_path, table);
+
+    std.debug.print("wrote {s}\n", .{metrics_path});
 }
 
-test "qasm: bell compiles legally from testdata/bell.qasm" {
-    try qasmCompilesLegally("testdata/bell.qasm");
-}
+test "golden: metrics match testdata/metrics.txt" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
 
-// All six CZs land in one stage and route as a single pickup round.
-test "qasm: cyclic-aod compiles legally from testdata/cyclic-aod.qasm" {
-    try qasmCompilesLegally("testdata/cyclic-aod.qasm");
-}
+    const cfg = try arch.load(gpa, io, arch_path);
+    defer cfg.deinit(gpa);
 
-test "qasm: reset compiles legally from testdata/reset.qasm" {
-    try qasmCompilesLegally("testdata/reset.qasm");
+    const table = try metricsTable(gpa, io, cfg);
+    defer gpa.free(table);
+
+    try serialize.expectMatchesFile(gpa, io, metrics_path, table);
 }
 
 test {

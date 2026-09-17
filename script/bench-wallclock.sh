@@ -46,7 +46,7 @@ build_binaries() {
         trap "git worktree remove --force '$wt'; rm -rf '${wt%/wt}'" EXIT # also on failure
         (cd "$wt" && zig build -Doptimize=ReleaseFast)
         bin=$wt/zig-out/bin/luoshu
-        [[ -x $bin ]] || bin=$wt/zig-out/bin/gatecomp # baseline predates the luoshu rename
+        [[ -x $bin ]] || bin=$wt/zig-out/bin/luoshu # baseline predates the luoshu rename
         cp "$bin" "$AB/luoshu-$SHA"
     fi
 }
