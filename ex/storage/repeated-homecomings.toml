@@ -1,0 +1,55 @@
+[platform]
+name = "storage-repeated-homecomings"
+version = "0.2"
+
+[aod]
+aod_id = 0
+min_sep_um = 1.5
+max_num_row = 7
+max_num_col = 100
+
+[storage_zone]
+zone_id = 0
+offset_um = [0.0, 0.0]
+
+[storage_zone.slm]
+slm_id = 0
+num_row = 3
+num_col = 6
+sep_um = [3.0, 3.0]
+offset_um = [0.0, 0.0]
+
+[compute_zone]
+zone_id = 1
+gap_um = 20.0
+dr_um = 2.0
+dw_um = 10.0
+
+[[compute_zone.slms]]
+slm_id = 1
+num_row = 4
+num_col = 16
+sep_um = [10.0, 12.0]
+offset_um = [0.0, 0.0]
+
+[[compute_zone.slms]]
+slm_id = 2
+num_row = 4
+num_col = 16
+sep_um = [10.0, 12.0]
+offset_um = [0.0, 2.0]
+
+[readout_zone]
+zone_id = 2
+gap_um = 20.0
+
+[readout_zone.slm]
+slm_id = 3
+num_row = 2
+num_col = 16
+sep_um = [4.0, 4.0]
+offset_um = [0.0, 0.0]
+
+[constraints]
+db_um = 3.0
+dz_um = 3.0

@@ -1,11 +1,16 @@
 # Storage return examples
 
-These examples use a compact five-column storage grid to exercise storage-row selection.
+These examples exercise storage-row selection.
 
 
-| Circuit | Returning groups | Expected result |
-| --- | --- | --- |
-| `bottom-row.qasm` | 1 AOD, then 1 fixed | Both groups return to the bottom row. |
-| `exact-fit.qasm` | 1 AOD, then 4 fixed | The second group exactly fills the four remaining bottom-row sites. |
-| `next-row.qasm` | 3 AOD, then 3 fixed | The second group skips the bottom row, which has only two free sites, and returns to the row above. |
-| `no-available-row.qasm` | 1 AOD, then 6 fixed | The six-atom group fits in no five-site row, so compilation returns `error.StorageRowFull`. |
+| Circuit | Architecture | Returning group or operation | 
+| --- | --- | --- | 
+| `bottom-row.qasm` | `arch.toml` (3x5 storage) | 1 AOD, then 1 fixed |
+| `exact-fit.qasm` | `arch.toml` (3x5 storage) | 1 AOD, then 4 fixed | 
+| `next-row.qasm` | `arch.toml` (3x5 storage) | 3 AOD, then 3 fixed | 
+| `multi-row.qasm` | `arch.toml` (3x5 storage) | 1 AOD, then 6 fixed | 
+| `just-over-one-row.qasm` | `just-over-one-row.toml` (3x8 storage) | 1 AOD, then 9 fixed | 
+| `fallback-right-edge.qasm` | `fallback-right-edge.toml` (3x6 storage) | Reset round trip of 5 selected atoms | 
+| `best-fit-last-row.qasm` | `best-fit-last-row.toml` (4x6 storage) | Reset round trip of 8 selected atoms | 
+| `three-row-return.qasm` | `three-row-return.toml` (4x6 storage) | Reset round trip of 13 selected atoms |
+| `repeated-homecomings.qasm` | `repeated-homecomings.toml` (3x6 storage) | Sparse reset return followed by a 12-cycle CZ stage | 
