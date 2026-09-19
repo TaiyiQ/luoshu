@@ -339,6 +339,7 @@ pub const Hardware = struct {
         );
         defer s.gpa.free(plan);
 
+        // Atoms still held by AOD.
         var held: std.ArrayList(usize) = .empty;
         defer held.deinit(s.gpa);
         try held.appendSlice(s.gpa, qubits);
@@ -357,8 +358,10 @@ pub const Hardware = struct {
                 is_free.* = !occ.contains(sgrid.x(col));
             }
 
+            // To which inter-column lane should the atoms (currently held by AOD) be aligned.
             const lane_x = try s.gpa.alloc(i32, held.items.len);
             defer s.gpa.free(lane_x);
+            // Should atoms be stored at current storage row.
             const store_here = try s.gpa.alloc(bool, held.items.len);
             defer s.gpa.free(store_here);
             @memset(store_here, false);
